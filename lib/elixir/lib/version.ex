@@ -25,7 +25,7 @@ defmodule Version do
   ## Struct
 
   The version is represented by the Version struct and fields
-  are named according to Semver: `:major`, `:minor`, `:patch`,
+  are named according to SemVer: `:major`, `:minor`, `:patch`,
   `:pre` and `:build`.
 
   ## Requirements
@@ -66,7 +66,7 @@ defmodule Version do
 
   When `allow_pre: false` is set the requirement will not match a
   pre-release version unless the operand is a pre-release version.
-  The default is to allow always allow pre-releases but note that in
+  The default is to always allow pre-releases but note that in
   Hex `:allow_pre` is set to `false.` See the table below for examples.
 
   Requirement    | Version     | `:allow_pre` | Matches

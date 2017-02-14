@@ -198,12 +198,13 @@ defmodule Float do
   end
 
   defp round(float, precision, rounding) do
-    <<sign::size(1), exp::size(11), significant::size(52)-bitstring>> = <<float::float>>
+    <<sign::1, exp::11, significant::52-bitstring>> = <<float::float>>
     {num, count, _} = decompose(significant)
     count = count - exp + 1023
 
     cond do
-      count <= 0 -> # There is no decimal precision
+      count <= 0 or  # There is no decimal precision
+      (0 == exp and <<0::52>> == significant) -> #zero or minus zero
         float
 
       count >= 104 -> # Precision beyond 15 digits
@@ -235,36 +236,48 @@ defmodule Float do
         # Convert back to float without loss
         # http://www.exploringbinary.com/correct-decimal-to-floating-point-using-big-integers/
         den = power_of_10(precision)
+        boundary = den <<< 52
 
-        case num / den do
-          0.0 ->
+        cond do
+          num == 0 ->
             0.0
-          val ->
-            exp = trunc(floor(:math.log2(val)))
-
-            {num, den} =
-              if exp > 52 do
-                {num, shift_left_until_zero(den, exp - 52)}
-              else
-                {shift_left_until_zero(num, 52 - exp), den}
-              end
-
-            quo = div(num, den)
-            rem = num - quo * den
-
-            tmp =
-              case den >>> 1 do
-                den when rem > den -> quo + 1
-                den when rem < den -> quo
-                _ when (quo &&& 1) === 1 -> quo + 1
-                _ -> quo
-              end
-
-            tmp = tmp - @power_of_2_to_52
-            <<tmp::float>> = <<sign::size(1), (exp + 1023)::size(11), tmp::size(52)>>
-            tmp
+          num >= boundary ->
+            {den, exp} = scale_down(num, boundary, 52)
+            decimal_to_float(sign, num, den, exp)
+          true ->
+            {num, exp} = scale_up(num, boundary, 52)
+            decimal_to_float(sign, num, den, exp)
         end
     end
+  end
+
+  defp scale_up(num, boundary, exp) when num >= boundary, do: {num, exp}
+  defp scale_up(num, boundary, exp), do: scale_up(num <<< 1, boundary, exp - 1)
+
+  defp scale_down(num, den, exp) do
+    new_den = den <<< 1
+    if num < new_den do
+      {den >>> 52, exp}
+    else
+      scale_down(num, new_den, exp + 1)
+    end
+  end
+
+  defp decimal_to_float(sign, num, den, exp) do
+    quo = div(num, den)
+    rem = num - quo * den
+
+    tmp =
+      case den >>> 1 do
+        den when rem > den -> quo + 1
+        den when rem < den -> quo
+        _ when (quo &&& 1) === 1 -> quo + 1
+        _ -> quo
+      end
+
+    tmp = tmp - @power_of_2_to_52
+    <<tmp::float>> = <<sign::1, (exp + 1023)::11, tmp::52>>
+    tmp
   end
 
   defp rounding(:floor, 1, _num, div), do: div + 1
@@ -295,35 +308,41 @@ defmodule Float do
 
       iex> Float.ratio(3.14)
       {7070651414971679, 2251799813685248}
+      iex> Float.ratio(-3.14)
+      {-7070651414971679, 2251799813685248}
       iex> Float.ratio(1.5)
       {3, 2}
       iex> Float.ratio(-1.5)
       {-3, 2}
+      iex> Float.ratio(16.0)
+      {16, 1}
+      iex> Float.ratio(-16.0)
+      {-16, 1}
 
   """
-  def ratio(float) do
-    <<sign::size(1), exp::size(11), significant::size(52)-bitstring>> = <<float::float>>
+  def ratio(float) when is_float(float) do
+    <<sign::1, exp::11, significant::52-bitstring>> = <<float::float>>
     {num, _, den} = decompose(significant)
-
     num = sign(sign, num)
-    den =
-      case exp - 1023 do
-        exp when exp > 0 -> shift_right_until_zero(den, exp)
-        exp when exp < 0 -> shift_left_until_zero(den, abs(exp))
-        0 -> den
-      end
-
-    {num, den}
+    case exp - 1023 do
+      exp when exp > 0 ->
+        {den, exp} = shift_right(den, exp)
+        {shift_left(num, exp), den}
+      exp when exp < 0 ->
+        {num, shift_left(den, -exp)}
+      0 ->
+        {num, den}
+    end
   end
 
   defp decompose(significant) do
     decompose(significant, 1, 0, 2, 1, 1)
   end
 
-  defp decompose(<<1::size(1), bits::bitstring>>, count, last_count, power, _last_power, acc) do
-    decompose(bits, count + 1, count, power <<< 1, power, shift_left_until_zero(acc, count - last_count) + 1)
+  defp decompose(<<1::1, bits::bitstring>>, count, last_count, power, _last_power, acc) do
+    decompose(bits, count + 1, count, power <<< 1, power, shift_left(acc, count - last_count) + 1)
   end
-  defp decompose(<<0::size(1), bits::bitstring>>, count, last_count, power, last_power, acc) do
+  defp decompose(<<0::1, bits::bitstring>>, count, last_count, power, last_power, acc) do
     decompose(bits, count + 1, last_count, power <<< 1, last_power, acc)
   end
   defp decompose(<<>>, _count, last_count, _power, last_power, acc) do
@@ -333,11 +352,12 @@ defmodule Float do
   defp sign(0, num), do: num
   defp sign(1, num), do: -num
 
-  defp shift_left_until_zero(num, 0), do: num
-  defp shift_left_until_zero(num, x), do: shift_left_until_zero(num <<< 1, x - 1)
+  defp shift_left(num, 0), do: num
+  defp shift_left(num, times), do: shift_left(num <<< 1, times - 1)
 
-  defp shift_right_until_zero(num, 0), do: num
-  defp shift_right_until_zero(num, x), do: shift_right_until_zero(num >>> 1, x - 1)
+  defp shift_right(num, 0), do: {num, 0}
+  defp shift_right(1, times), do: {1, times}
+  defp shift_right(num, times), do: shift_right(num >>> 1, times - 1)
 
   @doc """
   Returns a charlist which corresponds to the text representation
@@ -379,19 +399,22 @@ defmodule Float do
     IO.iodata_to_binary(:io_lib_format.fwrite_g(float))
   end
 
-  # TODO: Deprecate by v1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   @doc false
   def to_char_list(float), do: Float.to_charlist(float)
 
   @doc false
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def to_char_list(float, options) do
-    IO.warn "Float.to_char_list/2 is deprecated, use :erlang.float_to_list/2 instead"
     :erlang.float_to_list(float, expand_compact(options))
   end
 
   @doc false
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def to_string(float, options) do
-    IO.warn "Float.to_string/2 is deprecated, use :erlang.float_to_binary/2 instead"
     :erlang.float_to_binary(float, expand_compact(options))
   end
 

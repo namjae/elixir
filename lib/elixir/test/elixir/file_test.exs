@@ -26,21 +26,21 @@ defmodule FileTest do
     # Renaming files
     # :ok               -> rename file to existing file default behaviour
     # {:error, :eisdir} -> rename file to existing empty dir
-    # {:error, :eisdir} -> rename file to existing non empty dir
-    # :ok               -> rename file to non existing location
+    # {:error, :eisdir} -> rename file to existing non-empty dir
+    # :ok               -> rename file to non-existing location
     # {:error, :eexist} -> rename file to existing file
     # :ok               -> rename file to itself
 
     # Renaming dirs
     # {:error, :enotdir} -> rename dir to existing file
-    # :ok                -> rename dir to non existing leaf location
-    # {:error, ??}       -> rename dir to non existing parent location
+    # :ok                -> rename dir to non-existing leaf location
+    # {:error, ??}       -> rename dir to non-existing parent location
     # :ok                -> rename dir to itself
     # :ok                -> rename dir to existing empty dir default behaviour
     # {:error, :eexist}  -> rename dir to existing empty dir
     # {:error, :einval}  -> rename parent dir to existing sub dir
-    # {:error, :einval}  -> rename parent dir to non existing sub dir
-    # {:error, :eexist}  -> rename dir to existing non empty dir
+    # {:error, :einval}  -> rename parent dir to non-existing sub dir
+    # {:error, :eexist}  -> rename dir to existing non-empty dir
 
     # other tests
     # {:error, :enoent} -> rename unknown source
@@ -79,7 +79,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename file to existing non empty dir" do
+    test "rename file to existing non-empty dir" do
       src  = tmp_fixture_path("file.txt")
       dest = tmp_path("tmp")
 
@@ -94,7 +94,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename file to non existing location" do
+    test "rename file to non-existing location" do
       src  = tmp_fixture_path("file.txt")
       dest = tmp_path("tmp.file")
 
@@ -152,7 +152,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename dir to non existing leaf location" do
+    test "rename dir to non-existing leaf location" do
       src  = tmp_fixture_path("cp_r")
       dest = tmp_path("tmp")
 
@@ -181,7 +181,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename dir to non existing parent location" do
+    test "rename dir to non-existing parent location" do
       src  = tmp_fixture_path("cp_r")
       dest = tmp_path("tmp/a/b")
 
@@ -222,7 +222,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename parent dir to non existing sub dir" do
+    test "rename parent dir to non-existing sub dir" do
       src  = tmp_fixture_path("cp_r")
       dest = tmp_path("cp_r/x")
       try do
@@ -282,7 +282,7 @@ defmodule FileTest do
       end
     end
 
-    test "rename dir to existing non empty dir" do
+    test "rename dir to existing non-empty dir" do
       src  = tmp_fixture_path("cp_r")
       dest = tmp_path("tmp")
 
@@ -1310,6 +1310,38 @@ defmodule FileTest do
     assert stream.line_or_bytes == 10
   end
 
+  test "stream count" do
+    src = fixture_path("file.txt")
+    stream = File.stream!(src)
+    assert Enum.count(stream) == 1
+
+    stream = File.stream!(src, [:utf8])
+    assert Enum.count(stream) == 1
+
+    stream = File.stream!(src, [], 2)
+    assert Enum.count(stream) == 2
+  end
+
+  test "stream keeps BOM" do
+    src = fixture_path("utf8_bom.txt")
+    bom_line =
+      src
+      |> File.stream!()
+      |> Enum.take(1)
+
+    assert [<<239, 187, 191>> <> "Русский\n"] == bom_line
+  end
+
+  test "trim BOM via option" do
+    src = fixture_path("utf8_bom.txt")
+    bom_line =
+      src
+      |> File.stream!([:trim_bom])
+      |> Enum.take(1)
+
+    assert ["Русский\n"] == bom_line
+  end
+
   test "stream line UTF-8" do
     src  = fixture_path("file.txt")
     dest = tmp_path("tmp_test.txt")
@@ -1418,8 +1450,32 @@ defmodule FileTest do
     end
   end
 
-  test "ln s" do
+  test "ln" do
     existing  = fixture_path("file.txt")
+    new = tmp_path("tmp_test.txt")
+    try do
+      refute File.exists?(new)
+      assert File.ln(existing, new) == :ok
+      assert File.read(new) == {:ok, "FOO\n"}
+    after
+      File.rm(new)
+    end
+  end
+
+  test "ln with existing destination" do
+    existing = fixture_path("file.txt")
+    assert File.ln(existing, existing) == {:error, :eexist}
+  end
+
+  test "ln! with existing destination" do
+    assert_raise File.LinkError, fn ->
+      existing = fixture_path("file.txt")
+      File.ln!(existing, existing)
+    end
+  end
+
+  test "ln_s" do
+    existing = fixture_path("file.txt")
     new = tmp_path("tmp_test.txt")
     try do
       refute File.exists?(new)
@@ -1430,9 +1486,16 @@ defmodule FileTest do
     end
   end
 
-  test "ln s with existing destination" do
-    existing  = fixture_path("file.txt")
+  test "ln_s with existing destination" do
+    existing = fixture_path("file.txt")
     assert File.ln_s(existing, existing) == {:error, :eexist}
+  end
+
+  test "ln_s! with existing destination" do
+    existing = fixture_path("file.txt")
+    assert_raise File.LinkError, fn ->
+      File.ln_s!(existing, existing)
+    end
   end
 
   test "copy" do

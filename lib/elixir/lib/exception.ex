@@ -429,17 +429,14 @@ defmodule Exception do
   "anonymous fn in func/arity"
   """
   def format_mfa(module, fun, arity) when is_atom(module) and is_atom(fun) do
-    fun =
-      case inspect(fun) do
-        ":" <> fun -> fun
-        fun -> fun
-      end
+    fun = Atom.to_string(fun)
 
-    case match?("\"-" <> _, fun) and String.split(fun, "-") do
-      [ "\"", outer_fun, "fun", _count, "\"" ] ->
-        "anonymous fn#{format_arity(arity)} in #{inspect module}.#{outer_fun}"
-      _ ->
-        "#{inspect module}.#{fun}#{format_arity(arity)}"
+    case Inspect.Function.extract_anonymous_fun_parent(fun) do
+      {outer_name, outer_arity} ->
+        "anonymous fn#{format_arity(arity)} in " <>
+          "#{inspect(module)}.#{Inspect.Function.escape_name(outer_name)}/#{outer_arity}"
+      :error ->
+        "#{inspect(module)}.#{Inspect.Function.escape_name(fun)}#{format_arity(arity)}"
     end
   end
 
@@ -561,6 +558,14 @@ defmodule BadMapError do
   end
 end
 
+defmodule BadBooleanError do
+  defexception [:term, :operator]
+
+  def message(exception) do
+    "expected a boolean on left-side of \"#{exception.operator}\", got: #{inspect(exception.term)}"
+  end
+end
+
 defmodule MatchError do
   defexception [:term]
 
@@ -639,7 +644,7 @@ defmodule UndefinedFunctionError do
   def message(%{reason: :"function not exported",  module: module, function: function, arity: arity, exports: exports}) do
     suffix =
       if macro_exported?(module, function, arity) do
-        " but #{inspect(module)} defines a macro with the same name and arity." <>
+        ". However there is a macro with the same name and arity." <>
           " Be sure to require #{inspect(module)} if you intend to invoke this macro"
       else
         did_you_mean(module, function, arity, exports)
@@ -817,11 +822,22 @@ defmodule File.CopyError do
   end
 end
 
+defmodule File.LinkError do
+  defexception [:reason, :existing, :new, action: ""]
+
+  def message(exception) do
+    formatted =
+      IO.iodata_to_binary(:file.format_error(exception.reason))
+    "could not #{exception.action} from #{inspect(exception.existing)} to " <>
+      "#{inspect(exception.new)}: #{formatted}"
+  end
+end
+
 defmodule ErlangError do
   defexception [:original]
 
   def message(exception) do
-    "erlang error: #{inspect(exception.original)}"
+    "Erlang error: #{inspect(exception.original)}"
   end
 
   @doc false
@@ -859,6 +875,10 @@ defmodule ErlangError do
 
   def normalize({:badmap, term}, _stacktrace) do
     %BadMapError{term: term}
+  end
+
+  def normalize({:badbool, op, term}, _stacktrace) do
+    %BadBooleanError{operator: op, term: term}
   end
 
   def normalize({:badkey, key}, stacktrace) do

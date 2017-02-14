@@ -3,12 +3,7 @@ Code.require_file "test_helper.exs", __DIR__
 defmodule TaskTest do
   use ExUnit.Case
   doctest Task
-
-  setup do
-    Logger.remove_backend(:console)
-    on_exit fn -> Logger.add_backend(:console, flush: true) end
-    :ok
-  end
+  @moduletag :capture_log
 
   def wait_and_send(caller, atom) do
     send caller, :ready
@@ -267,7 +262,7 @@ defmodule TaskTest do
     test "exits on :noconnection" do
       ref  = make_ref()
       task = %Task{ref: ref, pid: self(), owner: self()}
-      send self(), {:DOWN, ref, self(), self(), :noconnection}
+      send self(), {:DOWN, ref, :process, self(), :noconnection}
       assert catch_exit(Task.yield_many([task])) |> elem(0) == {:nodedown, :nonode@nohost}
     end
 
@@ -280,11 +275,10 @@ defmodule TaskTest do
     test "returns results from multiple tasks" do
       task1 = %Task{ref: make_ref(), owner: self()}
       task2 = %Task{ref: make_ref(), owner: self()}
-      task3 = Task.async(fn -> exit :normal end)
+      task3 = %Task{ref: make_ref(), owner: self()}
 
       send(self(), {task1.ref, :result})
-      ref = Process.monitor(task3.pid)
-      assert_receive {:DOWN, ^ref, _, _, :normal}
+      send(self(), {:DOWN, task3.ref, :process, self(), :normal})
 
       assert Task.yield_many([task1, task2, task3], 0) ==
              [{task1, {:ok, :result}}, {task2, nil}, {task3, {:exit, :normal}}]
@@ -370,7 +364,7 @@ defmodule TaskTest do
       task = Task.async(fn() ->
         Process.flag(:trap_exit, true)
         wait_and_send(caller, :ready)
-        :timer.sleep(:infinity)
+        Process.sleep(:infinity)
       end)
 
       receive do: (:ready -> :ok)
@@ -447,7 +441,7 @@ defmodule TaskTest do
       task = Task.async(fn() ->
         Process.flag(:trap_exit, true)
         wait_and_send(caller, :ready)
-        :timer.sleep(:infinity)
+        Process.sleep(:infinity)
       end)
 
       receive do: (:ready -> :ok)
@@ -497,6 +491,7 @@ defmodule TaskTest do
         Process.flag(:trap_exit, true)
         assert 1..4 |> Task.async_stream(&exit/1, @opts) |> Enum.to_list ==
                [exit: 1, exit: 2, exit: 3, exit: 4]
+        refute_received {:EXIT, _, _}
       end
 
       test "shuts down unused tasks" do

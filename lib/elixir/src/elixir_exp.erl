@@ -69,8 +69,7 @@ expand({alias, Meta, [Ref, KV]}, E) ->
 
   if
     is_atom(ERef) ->
-      {{alias, Meta, [ERef, EKV]},
-        expand_alias(Meta, true, ERef, EKV, ET)};
+      {ERef, expand_alias(Meta, true, ERef, EKV, ET)};
     true ->
       compile_error(Meta, ?m(E, file),
         "invalid argument for alias, expected a compile time atom or alias, got: ~ts",
@@ -88,8 +87,7 @@ expand({require, Meta, [Ref, KV]}, E) ->
   if
     is_atom(ERef) ->
       elixir_aliases:ensure_loaded(Meta, ERef, ET),
-      {{require, Meta, [ERef, EKV]},
-        expand_require(Meta, ERef, EKV, ET)};
+      {ERef, expand_require(Meta, ERef, EKV, ET)};
     true ->
       compile_error(Meta, ?m(E, file),
         "invalid argument for require, expected a compile time atom or alias, got: ~ts",
@@ -108,8 +106,7 @@ expand({import, Meta, [Ref, KV]}, E) ->
     is_atom(ERef) ->
       elixir_aliases:ensure_loaded(Meta, ERef, ET),
       {Functions, Macros} = elixir_import:import(Meta, ERef, EKV, ET),
-      {{import, Meta, [ERef, EKV]},
-        expand_require(Meta, ERef, EKV, ET#{functions := Functions, macros := Macros})};
+      {ERef, expand_require(Meta, ERef, EKV, ET#{functions := Functions, macros := Macros})};
     true ->
       compile_error(Meta, ?m(E, file),
         "invalid argument for import, expected a compile time atom or alias, got: ~ts",
@@ -165,7 +162,7 @@ expand({quote, Meta, [KV, Do]}, E) when is_list(Do) ->
       Ctx;
     {context, Ctx} ->
       compile_error(Meta, ?m(E, file), "invalid :context for quote, "
-        "expected non nil compile time atom or alias, got: ~ts", ['Elixir.Kernel':inspect(Ctx)]);
+        "expected non-nil compile time atom or alias, got: ~ts", ['Elixir.Kernel':inspect(Ctx)]);
     false ->
       case ?m(E, module) of
         nil -> 'Elixir';
@@ -234,6 +231,7 @@ expand({fn, Meta, Pairs}, E) ->
 expand({'cond', Meta, [KV]}, E) ->
   assert_no_match_or_guard_scope(Meta, 'cond', E),
   {EClauses, EC} = elixir_exp_clauses:'cond'(Meta, KV, E),
+  assert_no_underscore_clause_in_cond(EClauses, E),
   {{'cond', Meta, [EClauses]}, EC};
 
 expand({'case', Meta, [Expr, KV]}, E) ->
@@ -270,10 +268,25 @@ expand({with, Meta, [_ | _] = Args}, E) ->
 
 %% Super
 
-expand({super, Meta, Args}, E) when is_list(Args) ->
-  assert_no_match_or_guard_scope(Meta, super, E),
-  {EArgs, EA} = expand_args(Args, E),
-  {{super, Meta, EArgs}, EA};
+expand({super, Meta, Args}, #{file := File} = E) when is_list(Args) ->
+  Module = assert_module_scope(Meta, super, E),
+  Function = assert_function_scope(Meta, super, E),
+  {_, Arity} = Function,
+
+  case length(Args) of
+    Arity ->
+      {OName, OArity} = elixir_def_overridable:super(Meta, File, Module, Function),
+      {EArgs, EA} = expand_args(Args, E),
+      OArgs =
+        if
+          OArity > Arity -> [{'__CALLER__', [], nil} | EArgs];
+          true -> EArgs
+        end,
+      {{OName, Meta, OArgs}, EA};
+    _ ->
+      compile_error(Meta, File, "super must be called with the same number of "
+                    "arguments as the current definition")
+  end;
 
 %% Vars
 
@@ -309,7 +322,6 @@ expand({Name, Meta, Kind} = Var, #{vars := Vars} = E) when is_atom(Name), is_ato
           compile_error(Meta, ?m(E, file), "expected variable \"~ts\"~ts to expand to an existing variable "
                         "or be part of a match", [Name, elixir_scope:context_info(Kind)]);
         _ ->
-          %% TODO: Consider making it an error on Elixir 2.0
           Message =
             io_lib:format("variable \"~ts\" does not exist and is being expanded to \"~ts()\","
               " please use parentheses to remove the ambiguity or change the variable name", [Name, Name]),
@@ -333,13 +345,13 @@ expand({{'.', Meta, [erlang, 'orelse']}, _, [Left, Right]}, #{context := nil} = 
   Generated = ?generated(Meta),
   TrueClause = {'->', Generated, [[true], true]},
   FalseClause = {'->', Generated, [[false], Right]},
-  expand_boolean_check(Left, TrueClause, FalseClause, Meta, Env);
+  expand_boolean_check('or', Left, TrueClause, FalseClause, Meta, Env);
 
 expand({{'.', Meta, [erlang, 'andalso']}, _, [Left, Right]}, #{context := nil} = Env) ->
   Generated = ?generated(Meta),
   TrueClause = {'->', Generated, [[true], Right]},
   FalseClause = {'->', Generated, [[false], false]},
-  expand_boolean_check(Left, TrueClause, FalseClause, Meta, Env);
+  expand_boolean_check('and', Left, TrueClause, FalseClause, Meta, Env);
 
 expand({{'.', DotMeta, [Left, Right]}, Meta, Args}, E)
     when (is_tuple(Left) orelse is_atom(Left)), is_atom(Right), is_list(Meta), is_list(Args) ->
@@ -403,7 +415,7 @@ expand(Other, E) ->
 
 %% Helpers
 
-expand_boolean_check(Expr, TrueClause, FalseClause, Meta, Env) ->
+expand_boolean_check(Op, Expr, TrueClause, FalseClause, Meta, Env) ->
   {EExpr, EnvExpr} = expand(Expr, Env),
   Clauses =
     case elixir_utils:returns_boolean(EExpr) of
@@ -411,7 +423,7 @@ expand_boolean_check(Expr, TrueClause, FalseClause, Meta, Env) ->
         [TrueClause, FalseClause];
       false ->
         Other = {other, Meta, ?MODULE},
-        OtherExpr = {{'.', Meta, [erlang, error]}, Meta, [{badarg, Other}]},
+        OtherExpr = {{'.', Meta, [erlang, error]}, Meta, [{'{}', [], [badbool, Op, Other]}]},
         [TrueClause, FalseClause, {'->', ?generated(Meta), [[Other], OtherExpr]}]
     end,
   {EClauses, EnvCase} = elixir_exp_clauses:'case'(Meta, [{do, Clauses}], EnvExpr),
@@ -480,6 +492,27 @@ is_useless_building({Var, Meta, Ctx}, {Var, _, Ctx}, _) when is_atom(Ctx) ->
 is_useless_building(_, _, _) ->
   false.
 
+%% Optimizations for known booleans.
+rewrite_case_clauses([{do, [
+  {'->', FalseMeta, [
+    [{'when', _, [Var, {{'.', _, [erlang, 'or']}, _, [
+      {{'.', _, [erlang, '=:=']}, _, [Var, nil]},
+      {{'.', _, [erlang, '=:=']}, _, [Var, false]}
+    ]}]}],
+    FalseExpr
+  ]},
+  {'->', TrueMeta, [
+    [{'_', _, _}],
+    TrueExpr
+  ]}
+]}]) ->
+  [{do, [
+    {'->', FalseMeta, [[false], FalseExpr]},
+    {'->', TrueMeta, [[true], TrueExpr]}
+  ]}];
+rewrite_case_clauses(Clauses) ->
+  Clauses.
+
 %% Variables in arguments are not propagated from one
 %% argument to the other. For instance:
 %%
@@ -537,6 +570,12 @@ assert_no_ambiguous_op(_Atom, _Meta, _Args, _E) ->
 
 expand_local(Meta, Name, Args, #{function := nil} = E) ->
   compile_error(Meta, ?m(E, file), "undefined function ~ts/~B", [Name, length(Args)]);
+expand_local(Meta, Name, Args, #{context := match} = E) ->
+  Message = "cannot invoke local ~ts/~B inside match, called as: ~ts",
+  FormattedCall = 'Elixir.Macro':to_string({Name, Meta, Args}),
+  compile_error(Meta, ?m(E, file), Message, [Name, length(Args), FormattedCall]);
+expand_local(Meta, Name, Args, #{context := guard} = E) ->
+  compile_error(Meta, ?m(E, file), "cannot invoke local ~ts/~B inside guard", [Name, length(Args)]);
 expand_local(Meta, Name, Args, #{module := Module, function := Function} = E) ->
   elixir_locals:record_local({Name, length(Args)}, Module, Function),
   {EArgs, EA} = expand_args(Args, E),
@@ -544,16 +583,31 @@ expand_local(Meta, Name, Args, #{module := Module, function := Function} = E) ->
 
 %% Remote
 
-expand_remote(Receiver, DotMeta, Right, Meta, Args, E, EL) ->
-  if
-    is_atom(Receiver) ->
-      elixir_lexical:record_remote(Receiver, Right, length(Args), ?m(E, function), ?line(Meta), ?m(E, lexical_tracker));
-    true ->
-      ok
-  end,
+expand_remote(Receiver, DotMeta, Right, Meta, Args, #{context := Context} = E, EL) ->
+  Arity = length(Args),
+  is_atom(Receiver) andalso
+    elixir_lexical:record_remote(Receiver, Right, Arity,
+                                 ?m(E, function), ?line(Meta), ?m(E, lexical_tracker)),
   {EArgs, EA} = expand_args(Args, E),
-  {elixir_rewrite:rewrite(Receiver, DotMeta, Right, Meta, EArgs, EA),
-   elixir_env:mergev(EL, EA)}.
+  Rewritten = elixir_rewrite:rewrite(Receiver, DotMeta, Right, Meta, EArgs, EA),
+  case allowed_in_context(Rewritten, Arity, Context) of
+    true ->
+      {Rewritten, elixir_env:mergev(EL, EA)};
+    false ->
+      compile_error(Meta, ?m(E, file), "cannot invoke remote function ~ts.~ts/~B inside ~ts",
+                    ['Elixir.Macro':to_string(Receiver), Right, Arity, Context])
+  end.
+
+allowed_in_context({{'.', _, [erlang, Right]}, _, _}, Arity, match) ->
+  elixir_utils:match_op(Right, Arity);
+allowed_in_context(_, _Arity, match) ->
+  false;
+allowed_in_context({{'.', _, [erlang, Right]}, _, _}, Arity, guard) ->
+  erl_internal:guard_bif(Right, Arity) orelse elixir_utils:guard_op(Right, Arity);
+allowed_in_context(_, _Arity, guard) ->
+  false;
+allowed_in_context(_, _, _) ->
+  true.
 
 %% Lexical helpers
 
@@ -610,12 +664,18 @@ expand_alias(Meta, IncludeByDefault, Ref, KV, #{context_modules := Context} = E)
 expand_as({as, nil}, _Meta, _IncludeByDefault, Ref, _E) ->
   Ref;
 expand_as({as, Atom}, Meta, _IncludeByDefault, _Ref, E) when is_atom(Atom), not is_boolean(Atom) ->
-  case length(string:tokens(atom_to_list(Atom), ".")) of
-    1 -> compile_error(Meta, ?m(E, file),
-           "invalid value for keyword :as, expected an alias, got: ~ts", [elixir_aliases:inspect(Atom)]);
-    2 -> Atom;
-    _ -> compile_error(Meta, ?m(E, file),
-           "invalid value for keyword :as, expected a simple alias, got nested alias: ~ts", [elixir_aliases:inspect(Atom)])
+  case atom_to_list(Atom) of
+    "Elixir." ++ Rest ->
+      case string:tokens(Rest, ".") of
+        [Rest] ->
+          Atom;
+        _ ->
+          Message = "invalid value for keyword :as, expected a simple alias, got nested alias: ~ts",
+          compile_error(Meta, ?m(E, file), Message, [elixir_aliases:inspect(Atom)])
+      end;
+    _ ->
+      Message = "invalid value for keyword :as, expected an alias, got: ~ts",
+      compile_error(Meta, ?m(E, file), Message, [elixir_aliases:inspect(Atom)])
   end;
 expand_as(false, _Meta, IncludeByDefault, Ref, _E) ->
   if IncludeByDefault -> elixir_aliases:last(Ref);
@@ -658,35 +718,33 @@ expand_aliases({'__aliases__', Meta, _} = Alias, E, Report) ->
 
 %% Assertions
 
-rewrite_case_clauses([{do, [
-  {'->', FalseMeta, [
-    [{'when', _, [Var, {{'.', _, [erlang, 'or']}, _, [
-      {{'.', _, [erlang, '=:=']}, _, [Var, nil]},
-      {{'.', _, [erlang, '=:=']}, _, [Var, false]}
-    ]}]}],
-    FalseExpr
-  ]},
-  {'->', TrueMeta, [
-    [{'_', _, _}],
-    TrueExpr
-  ]}
-]}]) ->
-  [{do, [
-    {'->', FalseMeta, [[false], FalseExpr]},
-    {'->', TrueMeta, [[true], TrueExpr]}
-  ]}];
-rewrite_case_clauses(Clauses) ->
-  Clauses.
+assert_module_scope(Meta, Kind, #{module := nil, file := File}) ->
+  compile_error(Meta, File, "cannot invoke ~ts outside module", [Kind]);
+assert_module_scope(_Meta, _Kind, #{module:=Module}) -> Module.
+
+assert_function_scope(Meta, Kind, #{function := nil, file := File}) ->
+  compile_error(Meta, File, "cannot invoke ~ts outside function", [Kind]);
+assert_function_scope(_Meta, _Kind, #{function := Function}) -> Function.
 
 assert_no_match_or_guard_scope(Meta, Kind, E) ->
   assert_no_match_scope(Meta, Kind, E),
   assert_no_guard_scope(Meta, Kind, E).
 assert_no_match_scope(Meta, _Kind, #{context := match, file := File}) ->
-  compile_error(Meta, File, "invalid expression in match");
+  compile_error(Meta, File, "invalid pattern in match");
 assert_no_match_scope(_Meta, _Kind, _E) -> [].
 assert_no_guard_scope(Meta, _Kind, #{context := guard, file := File}) ->
   compile_error(Meta, File, "invalid expression in guard");
 assert_no_guard_scope(_Meta, _Kind, _E) -> [].
+
+assert_no_underscore_clause_in_cond([{do, Clauses}], E) ->
+  case lists:last(Clauses) of
+    {'->', Meta, [[{'_', _, Atom}], _]} when is_atom(Atom) ->
+      Message = "unbound variable _ inside cond. If you want the last clause to always match, "
+                "you probably meant to use: true ->",
+      compile_error(Meta, ?m(E, file), Message);
+    _Other ->
+      ok
+  end.
 
 format_error({useless_literal, Term}) ->
   io_lib:format("code block contains unused literal ~ts "

@@ -4,10 +4,7 @@
   take_definition/2, store_definition/6, unwrap_definitions/2,
   store_each/7, format_error/1]).
 -include("elixir.hrl").
-
 -define(last_def, {elixir, last_def}).
--define(attr, {elixir, def_table}).
--define(clauses_attr, {elixir, clauses_table}).
 
 %% Table management functions. Called internally.
 
@@ -91,13 +88,11 @@ store_definition(Meta, Line, Kind, CheckClauses, Name, Args, Guards, Body, KeepL
   elixir_locals:record_definition(Tuple, Kind, Module),
 
   WrappedBody = expr_from_body(Line, Body),
-  {Function, Defaults, Super} = translate_definition(Kind, Meta, Name, Args, Guards, Body, WrappedBody, E),
+  {Function, Defaults} = translate_definition(Kind, Meta, Name, Args, Guards, Body, WrappedBody, E),
   run_on_definition_callbacks(Kind, Line, Module, Name, Args, Guards, WrappedBody, E),
 
   DefaultsLength = length(Defaults),
   elixir_locals:record_defaults(Tuple, Kind, Module, DefaultsLength),
-
-  compile_super(Module, Super, E),
   check_previous_defaults(Line, Module, Name, Arity, Kind, DefaultsLength, E),
 
   %% Retrieve the file before we changed it based on @file
@@ -111,7 +106,7 @@ store_definition(Meta, Line, Kind, CheckClauses, Name, Args, Guards, Body, KeepL
 
 run_on_definition_callbacks(Kind, Line, Module, Name, Args, Guards, Expr, E) ->
   Env = elixir_env:linify({Line, E}),
-  Callbacks = elixir_module:get_attribute(Module, on_definition),
+  Callbacks = ets:lookup_element(elixir_module:data_table(Module), on_definition, 2),
   _ = [Mod:Fun(Env, Kind, Name, Args, Guards, Expr) || {Mod, Fun} <- Callbacks],
   ok.
 
@@ -119,31 +114,22 @@ run_on_definition_callbacks(Kind, Line, Module, Name, Args, Guards, Expr, E) ->
 %% or @file, otherwise nil
 
 retrieve_location(Location, Module) ->
-  case get_location_attribute(Module) of
-    nil when is_tuple(Location) ->
+  case ets:take(elixir_module:data_table(Module), file) of
+    [] when is_tuple(Location) ->
       {File, Line} = Location,
       {normalize_location(File), Line};
-    nil ->
+    [] ->
       nil;
-    File when is_binary(File) ->
+    [{file, File, _, _}] when is_binary(File) ->
       'Elixir.Module':delete_attribute(Module, file),
       {normalize_location(File), 0};
-    {File, Line} when is_binary(File) andalso is_integer(Line) ->
+    [{file, {File, Line}, _, _}] when is_binary(File) andalso is_integer(Line) ->
       'Elixir.Module':delete_attribute(Module, file),
       {normalize_location(File), Line}
   end.
 
-get_location_attribute(Module) ->
-  elixir_module:get_attribute(Module, file).
-
 normalize_location(File) ->
   elixir_utils:characters_to_list(elixir_utils:relative_to_cwd(File)).
-
-%% Compile super
-
-compile_super(Module, true, #{function := Function}) ->
-  elixir_def_overridable:super(Module, Function);
-compile_super(_Module, _, _E) -> ok.
 
 %% Translate the given call and expression given
 %% and then store it in memory.
@@ -156,14 +142,13 @@ translate_definition(Kind, Meta, Name, Args, Guards, Body, WrappedBody, E) ->
 
   S = elixir_env:env_to_scope(E),
   {Unpacked, Defaults} = elixir_def_defaults:unpack(Kind, Name, EArgs, S),
-  {Clauses, Super} = translate_clause(Body, Kind, Meta, Unpacked, EGuards, EBody, S),
-
+  Clauses = translate_clause(Body, Kind, Meta, Unpacked, EGuards, EBody, S),
   Function = {function, ?ann(Meta), Name, Arity, Clauses},
-  {Function, Defaults, Super}.
+  {Function, Defaults}.
 
 translate_clause(nil, _Kind, Meta, Args, [], _Body, S) ->
   check_args_for_bodyless_clause(Meta, Args, S),
-  {[], false};
+  [];
 translate_clause(nil, Kind, Meta, _Args, _Guards, _Body, #elixir_scope{file=File}) ->
   elixir_errors:form_error(Meta, File, ?MODULE, {missing_do, Kind});
 translate_clause(_, Kind, Meta, Args, Guards, Body, S) ->
@@ -190,7 +175,7 @@ translate_clause(_, Kind, Meta, Args, Guards, Body, S) ->
       TClause
   end,
 
-  {[FClause], TS#elixir_scope.super}.
+  [FClause].
 
 expr_from_body(_Line, nil)          -> nil;
 expr_from_body(_Line, [{do, Expr}]) -> Expr;
@@ -216,7 +201,7 @@ unwrap_definition([[Tuple] | T], File, Module, Table, All, Private) ->
 
   case [Clause || {_, Clause} <- ets:lookup(Table, {clauses, Tuple})] of
     [] ->
-      warn_bodyless_function(Ann, File, Module, Kind, Tuple),
+      warn_bodyless_function(Check, Ann, File, Module, Kind, Tuple),
       unwrap_definition(T, File, Module, Table, All, Private);
     Clauses ->
       Unwrapped = {Tuple, Kind, Ann, Location,
@@ -261,7 +246,7 @@ split_definition([{Tuple, defmacro, Ann, Location, Body} | T], Unreachable,
 
 split_definition([{Tuple, defmacrop, _Ann, _Location, _Body} | T], Unreachable,
                  Def, Defp, Defmacro, Defmacrop, Exports, Functions) ->
-  split_definition(T, Unreachable, Def, Defp, Defmacro, [Tuple | Defmacrop],
+  split_definition(T, Unreachable, Def, [Tuple | Defp], Defmacro, Defmacrop,
                    Exports, Functions);
 
 split_definition([], Unreachable, Def, Defp, Defmacro, Defmacrop, Exports, {Head, Tail}) ->
@@ -289,9 +274,10 @@ default_function_for(Kind, Name, {clause, Ann, Args, _Guards, _Exprs} = Clause)
 default_function_for(_, Name, {clause, Ann, Args, _Guards, _Exprs} = Clause) ->
   {function, Ann, Name, length(Args), [Clause]}.
 
-warn_bodyless_function(_Ann, _File, 'Elixir.Module', _Kind, _Tuple) ->
-  ok; %% Documentation for __info__
-warn_bodyless_function(Ann, File, _Module, Kind, Tuple) ->
+warn_bodyless_function(Check, _Ann, _File, Module, _Kind, _Tuple)
+    when Check == false; Module == 'Elixir.Module' ->
+  ok;
+warn_bodyless_function(_Check, Ann, File, _Module, Kind, Tuple) ->
   elixir_errors:form_warn([{line, erl_anno:line(Ann)}], File, ?MODULE, {bodyless_clause, Kind, Tuple}),
   ok.
 
@@ -308,12 +294,12 @@ store_each(Check, Kind, File, Location, Module, Defaults, {function, Ann, Name, 
 
   {FinalAnn, FinalLocation, FinalDefaults} = case ets:take(Defs, {def, Tuple}) of
     [{_, StoredKind, StoredAnn, StoredFile, StoredCheck,
-        StoredLocation, {StoredDefaults, LastHasBody, LastDefaults}}] ->
+        _StoredLocation, {StoredDefaults, LastHasBody, LastDefaults}}] ->
       check_valid_kind(Ann, File, Name, Arity, Kind, StoredKind),
       (Check and StoredCheck) andalso
         check_valid_clause(Ann, File, Name, Arity, Kind, Data, StoredAnn, StoredFile),
       check_valid_defaults(Ann, File, Name, Arity, Kind, Defaults, StoredDefaults, LastDefaults, LastHasBody),
-      {StoredAnn, StoredLocation, {max(Defaults, StoredDefaults), HasBody, Defaults}};
+      {StoredAnn, Location, {max(Defaults, StoredDefaults), HasBody, Defaults}};
     [] ->
       {Ann, Location, {Defaults, HasBody, Defaults}}
   end,
@@ -391,7 +377,7 @@ assert_valid_name(_Meta, _Kind, _Name, _Args, _S) ->
 %% Format errors
 
 format_error({bodyless_clause, Kind, {Name, Arity}}) ->
-  io_lib:format("bodyless clause provided for nonexistent ~ts ~ts/~B", [Kind, Name, Arity]);
+  io_lib:format("implementation not provided for predefined ~ts ~ts/~B", [Kind, Name, Arity]);
 
 format_error({no_module, {Kind, Name, Arity}}) ->
   io_lib:format("cannot define function outside module, invalid scope for ~ts ~ts/~B", [Kind, Name, Arity]);
@@ -406,7 +392,7 @@ format_error({defs_with_defaults, Name, {Kind, Arity}, {K, A}}) when Arity < A -
 
 format_error({clauses_with_defaults, {Kind, Name, Arity}}) ->
   io_lib:format(""
-    "definitions with multiple clauses and default values require a function head. Instead of:\n"
+    "definitions with multiple clauses and default values require a header. Instead of:\n"
     "\n"
     "    def foo(:first_clause, b \\\\ :default) do ... end\n"
     "    def foo(:second_clause, b) do ... end\n"
@@ -417,7 +403,7 @@ format_error({clauses_with_defaults, {Kind, Name, Arity}}) ->
     "    def foo(:first_clause, b) do ... end\n"
     "    def foo(:second_clause, b) do ... end\n"
     "\n"
-   "~ts ~ts/~B has multiple clauses and defines defaults in a clause with a body", [Kind, Name, Arity]);
+   "~ts ~ts/~B has multiple clauses and defines defaults in one or more clauses", [Kind, Name, Arity]);
 
 format_error({ungrouped_clause, {Kind, Name, Arity, OrigLine, OrigFile}}) ->
   io_lib:format("clauses for the same ~ts should be grouped together, ~ts ~ts/~B was previously defined (~ts:~B)",
@@ -433,10 +419,10 @@ format_error({invalid_def, Kind, NameAndArgs}) ->
   io_lib:format("invalid syntax in ~ts ~ts", [Kind, 'Elixir.Macro':to_string(NameAndArgs)]);
 
 format_error(invalid_args_for_bodyless_clause) ->
-  "can use only variables and \\\\ as arguments in function heads";
+  "can use only variables and \\\\ as arguments in definition header";
 
 format_error({is_record, Kind}) ->
-  io_lib:format("cannot define function named ~ts is_record/2 due to compability "
+  io_lib:format("cannot define function named ~ts is_record/2 due to compatibility "
                 "issues with the Erlang compiler (it is a known bug)", [Kind]);
 
 format_error({missing_do, Kind}) ->

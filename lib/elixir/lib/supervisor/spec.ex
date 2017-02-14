@@ -76,6 +76,10 @@ defmodule Supervisor.Spec do
       terminates abnormally, i.e., with an exit reason other than
       `:normal`, `:shutdown` or `{:shutdown, term}`
 
+  Notice that supervisor that reached maximum restart intensity will exit with `:shutdown` reason.
+  In this case the supervisor will only be restarted if its child specification was defined with
+  the `:restart` option is set to `:permanent` (the default).
+
   ### Shutdown values (:shutdown)
 
   The following shutdown values are supported in the `:shutdown` option:

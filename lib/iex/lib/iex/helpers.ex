@@ -11,46 +11,48 @@ defmodule IEx.Helpers do
   You can use the `h/1` function to invoke the documentation
   for any Elixir module or function:
 
-      iex> h Enum
-      iex> h Enum.map
-      iex> h Enum.reverse/1
+      iex> h(Enum)
+      iex> h(Enum.map)
+      iex> h(Enum.reverse/1)
 
   You can also use the `i/1` function to introspect any value
   you have in the shell:
 
-      iex> i "hello"
+      iex> i("hello")
 
-  There are many other helpers available:
+  There are many other helpers available, here are some examples:
 
-    * `b/1`           - prints callbacks info and docs for a given module
-    * `c/1`           - compiles a file into the current directory
-    * `c/2`           - compiles a file to the given path
-    * `cd/1`          - changes the current directory
-    * `clear/0`       - clears the screen
-    * `flush/0`       - flushes all messages sent to the shell
-    * `h/0`           - prints this help message
-    * `h/1`           - prints help for the given module, function or macro
-    * `i/1`           - prints information about the data type of any given term
-    * `import_file/1` - evaluates the given file in the shell's context
-    * `l/1`           - loads the given module's BEAM code
-    * `ls/0`          - lists the contents of the current directory
-    * `ls/1`          - lists the contents of the specified directory
-    * `nl/2`          - deploys local BEAM code to a list of nodes
-    * `pid/1`         - creates a PID from a string
-    * `pid/3`         - creates a PID with the 3 integer arguments passed
-    * `pwd/0`         - prints the current working directory
-    * `r/1`           - recompiles the given module's source file
-    * `recompile/0`   - recompiles the current project
-    * `respawn/0`     - respawns the current shell
-    * `s/1`           - prints spec information
-    * `t/1`           - prints type information
-    * `v/0`           - retrieves the last value from the history
-    * `v/1`           - retrieves the nth value from the history
+    * `b/1`         - prints callbacks info and docs for a given module
+    * `c/1`         - compiles a file into the current directory
+    * `c/2`         - compiles a file to the given path
+    * `cd/1`        - changes the current directory
+    * `clear/0`     - clears the screen
+    * `e/1`         - show all exports (functions + macros) in a module
+    * `flush/0`     - flushes all messages sent to the shell
+    * `h/0`         - prints this help message
+    * `h/1`         - prints help for the given module, function or macro
+    * `i/0`         - prints information about the last value
+    * `i/1`         - prints information about the given term
+    * `ls/0`        - lists the contents of the current directory
+    * `ls/1`        - lists the contents of the specified directory
+    * `pid/1`       - creates a PID from a string
+    * `pid/3`       - creates a PID with the 3 integer arguments passed
+    * `pwd/0`       - prints the current working directory
+    * `r/1`         - recompiles the given module's source file
+    * `recompile/0` - recompiles the current project
+    * `respawn/0`   - respawns the current shell
+    * `v/0`         - retrieves the last value from the history
+    * `v/1`         - retrieves the nth value from the history
 
   Help for all of those functions can be consulted directly from
   the command line using the `h/1` helper itself. Try:
 
       iex> h(v/0)
+
+  To list all IEx helpers available, which is effectively all
+  exports (functions and macros) in the `IEx.Helpers` module:
+
+      iex> e(IEx.Helpers)
 
   To learn more about IEx as a whole, type `h(IEx)`.
   """
@@ -69,7 +71,7 @@ defmodule IEx.Helpers do
   and restart such servers.
 
   If you want to reload a single module, consider using
-  `r ModuleName` instead.
+  `r(ModuleName)` instead.
 
   This function is meant to be used for development and
   debugging purposes. Do not depend on it in production code.
@@ -77,8 +79,20 @@ defmodule IEx.Helpers do
   def recompile do
     if mix_started?() do
       config = Mix.Project.config
+      consolidation = Mix.Project.consolidation_path(config)
       reenable_tasks(config)
-      Mix.Task.run("compile")
+
+      # No longer allow consolidations to be accessed.
+      Code.delete_path(consolidation)
+      purge_protocols(consolidation)
+
+      result = Mix.Task.run("compile")
+
+      # Reenable consolidation and allow them to be loaded.
+      Code.prepend_path(consolidation)
+      purge_protocols(consolidation)
+
+      result
     else
       IO.puts IEx.color(:eval_error, "Mix is not running. Please start IEx with: iex -S mix")
       :error
@@ -97,6 +111,20 @@ defmodule IEx.Helpers do
     Enum.each compilers, &Mix.Task.reenable("compile.#{&1}")
   end
 
+  defp purge_protocols(path) do
+    case File.ls(path) do
+      {:ok, beams} ->
+        for beam <- beams do
+          module = beam |> Path.rootname |> String.to_atom
+          :code.purge(module)
+          :code.delete(module)
+        end
+        :ok
+      {:error, _} ->
+        :ok
+    end
+  end
+
   @doc """
   Compiles the given files.
 
@@ -110,10 +138,10 @@ defmodule IEx.Helpers do
 
   ## Examples
 
-      iex> c ["foo.ex", "bar.ex"], "ebin"
+      iex> c(["foo.ex", "bar.ex"], "ebin")
       [Foo, Bar]
 
-      iex> c "baz.ex"
+      iex> c("baz.ex")
       [Baz]
 
   """
@@ -151,7 +179,7 @@ defmodule IEx.Helpers do
   on the shell, which means this function is by default
   unavailable on Windows machines.
   """
-  def clear do
+  def clear() do
     if IO.ANSI.enabled? do
       IO.write [IO.ANSI.home, IO.ANSI.clear]
     else
@@ -419,6 +447,9 @@ defmodule IEx.Helpers do
   @doc """
   Prints information about the data type of any given term.
 
+  If no argument is given, the value of the previous expression
+  is used.
+
   ## Examples
 
       iex> i(1..5)
@@ -435,7 +466,7 @@ defmodule IEx.Helpers do
         Range, Map
 
   """
-  def i(term) do
+  def i(term \\ v(-1)) do
     info =
       ["Term": inspect(term)] ++
       IEx.Info.info(term) ++
@@ -508,7 +539,20 @@ defmodule IEx.Helpers do
   end
 
   @doc """
-  Produces a simple list of a directory's contents.
+  Prints a list of all the functions and macros exported by the given module.
+  """
+  def e(module \\ Kernel) do
+    IEx.Autocomplete.exports(module) |> print_exports()
+    dont_display_result()
+  end
+
+  defp print_exports(functions) do
+    list = Enum.map(functions, fn({name, arity}) -> Atom.to_string(name) <> "/" <> Integer.to_string(arity) end)
+    print_table(list)
+  end
+
+  @doc """
+  Prints a list of the given directory's contents.
 
   If `path` points to a file, prints its full path.
   """
@@ -517,7 +561,10 @@ defmodule IEx.Helpers do
     case File.ls(path) do
       {:ok, items} ->
         sorted_items = Enum.sort(items)
-        ls_print(path, sorted_items)
+        printer = fn(item, width) ->
+          format_item(Path.join(path, item), String.pad_trailing(item, width))
+        end
+        print_table(sorted_items, printer)
 
       {:error, :enoent} ->
         IO.puts IEx.color(:eval_error, "No such file or directory #{path}")
@@ -534,19 +581,20 @@ defmodule IEx.Helpers do
 
   defp expand_home(other), do: other
 
-  defp ls_print(_, []) do
+  defp print_table(list, printer \\ &String.pad_trailing/2)
+  defp print_table([], _printer) do
     :ok
   end
 
-  defp ls_print(path, list) do
+  defp print_table(list, printer) do
     # print items in multiple columns (2 columns in the worst case)
     lengths = Enum.map(list, &String.length(&1))
     maxlen = maxlength(lengths)
-    width = min(maxlen, 30) + 5
-    ls_print(path, list, width)
+    offset = min(maxlen, 30) + 5
+    print_table(list, printer, offset)
   end
 
-  defp ls_print(path, list, width) do
+  defp print_table(list, printer, offset) do
     Enum.reduce(list, 0, fn(item, len) ->
       len =
         if len >= 80 do
@@ -555,8 +603,8 @@ defmodule IEx.Helpers do
         else
           len
         end
-      IO.write format_item(Path.join(path, item), String.pad_leading(item, width))
-      len + width
+      IO.write printer.(item, offset)
+      len + offset
     end)
 
     IO.puts ""
@@ -648,6 +696,7 @@ defmodule IEx.Helpers do
     raise ArgumentError, "import_file/1 expects a literal binary as its argument"
   end
 
+  @doc false
   defmacro import_file(path, opts) when is_binary(path) and is_list(opts) do
     IO.warn "import_file/2 is deprecated, please use import_file_if_available/1 instead"
     import_file_if_available(path, Keyword.get(opts, :optional, false))
@@ -707,7 +756,7 @@ defmodule IEx.Helpers do
   end
 
   @doc """
-  Creates a PID with 3 non negative integers passed as arguments
+  Creates a PID with 3 non-negative integers passed as arguments
   to the function.
 
   ## Examples

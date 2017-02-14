@@ -24,18 +24,90 @@ defmodule IEx.Evaluator do
     end
   end
 
+  @doc """
+  Gets a value out of the binding, using the provided
+  variable name and map key path.
+  """
+  @spec value_from_binding(pid, atom, [atom]) :: {:ok, any} | :error
+  def value_from_binding(evaluator, var_name, map_key_path) do
+    ref = make_ref()
+    send evaluator, {:value_from_binding, ref, self(), var_name, map_key_path}
+
+    receive do
+      {^ref, result} -> result
+    after
+      5000 -> :error
+    end
+  end
+
+  @doc """
+  Gets a list of variables out of the binding that match the passed
+  variable prefix.
+  """
+  @spec variables_from_binding(pid, String.t) :: [String.t]
+  def variables_from_binding(evaluator, variable_prefix) do
+    ref = make_ref()
+    send evaluator, {:variables_from_binding, ref, self(), variable_prefix}
+
+    receive do
+      {^ref, result} -> result
+    after
+      5000 -> []
+    end
+  end
+
+  @doc """
+  Returns the named fields from the current session environment.
+  """
+  @spec fields_from_env(pid, [atom]) :: %{atom => term}
+  def fields_from_env(evaluator, fields) do
+    ref = make_ref()
+    send evaluator, {:fields_from_env, ref, self(), fields}
+
+    receive do
+      {^ref, result} -> result
+    after
+      5000 -> %{}
+    end
+  end
+
   defp loop(server, history, state) do
     receive do
       {:eval, ^server, code, iex_state} ->
         {result, history, state} = eval(code, iex_state, history, state)
         send server, {:evaled, self(), result}
         loop(server, history, state)
-      {:peek_env, receiver} ->
-        send receiver, {:peek_env, state.env}
+      {:fields_from_env, ref, receiver, fields} ->
+        send receiver, {ref, Map.take(state.env, fields)}
+        loop(server, history, state)
+      {:value_from_binding, ref, receiver, var_name, map_key_path} ->
+        value = traverse_binding(state.binding, var_name, map_key_path)
+        send receiver, {ref, value}
+        loop(server, history, state)
+      {:variables_from_binding, ref, receiver, var_prefix} ->
+        value = find_matched_variables(state.binding, var_prefix)
+        send receiver, {ref, value}
         loop(server, history, state)
       {:done, ^server} ->
         :ok
     end
+  end
+
+  defp traverse_binding(binding, var_name, map_key_path) do
+    accumulator = Keyword.fetch(binding, var_name)
+
+    Enum.reduce map_key_path, accumulator, fn
+      key, {:ok, map} when is_map(map) -> Map.fetch(map, key)
+      _key, _acc -> :error
+    end
+  end
+
+  defp find_matched_variables(binding, var_prefix) do
+    for {var_name, _value} <- binding,
+        is_atom(var_name),
+        var_name = Atom.to_string(var_name),
+        String.starts_with?(var_name, var_prefix),
+        do: var_name
   end
 
   defp loop_state(opts) do
@@ -189,7 +261,7 @@ defmodule IEx.Evaluator do
 
   defp prune_stacktrace(stacktrace) do
     # The order in which each drop_while is listed is important.
-    # For example, the user my call Code.eval_string/2 in IEx
+    # For example, the user may call Code.eval_string/2 in IEx
     # and if there is an error we should not remove erl_eval
     # and eval_bits information from the user stacktrace.
     stacktrace

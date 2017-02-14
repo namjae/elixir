@@ -7,7 +7,7 @@ defmodule String do
   ## Codepoints and grapheme cluster
 
   The functions in this module act according to the Unicode
-  Standard, version 6.3.0.
+  Standard, version 9.0.0.
 
   As per the standard, a codepoint is a single Unicode Character,
   which may be represented by one or more bytes.
@@ -180,7 +180,7 @@ defmodule String do
   ## Patterns
 
   Many functions in this module work with patterns. For example,
-  String.split/2 can split a string into multiple patterns given
+  `String.split/2` can split a string into multiple patterns given
   a pattern. This pattern can be a string, a list of strings or
   a compiled pattern:
 
@@ -601,11 +601,13 @@ defmodule String do
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   defdelegate rstrip(binary), to: String.Break, as: :trim_trailing
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def rstrip(string, char) when is_integer(char) do
     replace_trailing(string, <<char::utf8>>, "")
   end
@@ -787,23 +789,27 @@ defmodule String do
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   defdelegate lstrip(binary), to: String.Break, as: :trim_leading
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def lstrip(string, char) when is_integer(char) do
     replace_leading(string, <<char::utf8>>, "")
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def strip(string) do
     trim(string)
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def strip(string, char) do
     trim(string, <<char::utf8>>)
   end
@@ -1023,13 +1029,15 @@ defmodule String do
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def rjust(subject, len, pad \\ ?\s) when is_integer(pad) and is_integer(len) and len >= 0 do
     pad(:leading, subject, len, [<<pad::utf8>>])
   end
 
   @doc false
-  # TODO: Deprecate by 1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   def ljust(subject, len, pad \\ ?\s) when is_integer(pad) and is_integer(len) and len >= 0 do
     pad(:trailing, subject, len, [<<pad::utf8>>])
   end
@@ -1038,10 +1046,22 @@ defmodule String do
   Returns a new string created by replacing occurrences of `pattern` in
   `subject` with `replacement`.
 
-  By default, it replaces all occurrences, unless the `global` option is
-  set to `false`, where it will only replace the first one
-
   The `pattern` may be a string or a regular expression.
+
+  By default it replaces all occurrences but this behaviour can be controlled
+  through the `:global` option; see the "Options" section below.
+
+  ## Options
+
+    * `:global` - (boolean) if `true`, all occurrences of `pattern` are replaced
+      with `replacement`, otherwise only the first occurrence is
+      replaced. Defaults to `true`
+
+    * `:insert_replaced` - (integer or list of integers) specifies the position
+      where to insert the replaced part inside the `replacement`. If any
+      position given in the `:insert_replaced` option is larger than the
+      replacement string, or is negative, an `ArgumentError` is raised. See the
+      examples below
 
   ## Examples
 
@@ -1064,7 +1084,7 @@ defmodule String do
   string.
 
   When the pattern is a string, a developer can use the replaced part inside
-  the `replacement` by using the `:insert_replace` option and specifying the
+  the `replacement` by using the `:insert_replaced` option and specifying the
   position(s) inside the `replacement` where the string pattern will be
   inserted:
 
@@ -1077,8 +1097,6 @@ defmodule String do
       iex> String.replace("a,b,c", ",", "[]", insert_replaced: [1, 1])
       "a[,,]b[,,]c"
 
-  If any position given in the `:insert_replace` option is larger than the
-  replacement string, or is negative, an `ArgumentError` is raised.
   """
   @spec replace(t, pattern | Regex.t, t, Keyword.t) :: t
   def replace(subject, pattern, replacement, options \\ []) when is_binary(replacement) do
@@ -1250,8 +1268,8 @@ defmodule String do
 
   @doc false
   # TODO: Remove on 2.0
+  # (hard-deprecated in elixir_dispatch)
   def valid_character?(string) do
-    IO.warn "String.valid_character?/1 is deprecated, please use valid?/1 instead"
     case string do
       <<_::utf8>> -> valid?(string)
       _ -> false
@@ -2017,7 +2035,8 @@ defmodule String do
     end)
   end
 
-  # TODO: Deprecate by v1.5
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   @doc false
   @spec to_char_list(t) :: charlist
   def to_char_list(string), do: String.to_charlist(string)

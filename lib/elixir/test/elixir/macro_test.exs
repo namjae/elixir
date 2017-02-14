@@ -212,11 +212,9 @@ defmodule MacroTest do
     assert Macro.expand_once(expr, __ENV__) == expr
   end
 
-  @foo 1
-
   test "expand once does not expand module attributes" do
     message = "could not call get_attribute on module #{inspect(__MODULE__)} " <>
-      "because it was already compiled"
+              "because it was already compiled"
     assert_raise ArgumentError, message, fn ->
       Macro.expand_once(quote(do: @foo), __ENV__)
     end
@@ -269,6 +267,14 @@ defmodule MacroTest do
     assert Macro.to_string(quote do: foo.bar.([1, 2, 3])) == "foo.bar().([1, 2, 3])"
   end
 
+  test "unusual remote atom fun call to string" do
+    assert Macro.to_string(quote do: Foo."42") == ~s/Foo."42"()/
+    assert Macro.to_string(quote do: Foo.'Bar') == ~s/Foo."Bar"()/
+    assert Macro.to_string(quote do: Foo."bar baz"."") == ~s/Foo."bar baz"().""()/
+    assert Macro.to_string(quote do: Foo."%{}") == ~s/Foo."%{}"()/
+    assert Macro.to_string(quote do: Foo."...") == ~s/Foo."..."()/
+  end
+
   test "atom fun call to string" do
     assert Macro.to_string(quote do: :foo.(1, 2, 3)) == ":foo.(1, 2, 3)"
   end
@@ -313,6 +319,10 @@ defmodule MacroTest do
       3
     )
     """
+  end
+
+  test "not in to string" do
+    assert Macro.to_string(quote do: (false not in [])) == "false not in []"
   end
 
   test "if else to string" do
@@ -664,6 +674,12 @@ defmodule MacroTest do
            [1, 2, 3, [1, 2, 3], 4, 5, 6, [4, 5, 6], {[1, 2, 3], [4, 5, 6]}]
   end
 
+  test "generate_arguments/2" do
+    assert Macro.generate_arguments(0, __MODULE__) == []
+    assert Macro.generate_arguments(1, __MODULE__) == [{:var1, [], __MODULE__}]
+    assert Macro.generate_arguments(4, __MODULE__) |> length == 4
+  end
+
   defp postwalk(ast) do
     Macro.postwalk(ast, [], &{&1, [&1 | &2]}) |> elem(1) |> Enum.reverse
   end
@@ -675,6 +691,7 @@ defmodule MacroTest do
     assert Macro.underscore("FooBar") == "foo_bar"
     assert Macro.underscore("FOOBar") == "foo_bar"
     assert Macro.underscore("FooBAR") == "foo_bar"
+    assert Macro.underscore("FOO_BAR") == "foo_bar"
     assert Macro.underscore("FoBaZa") == "fo_ba_za"
     assert Macro.underscore("Foo10") == "foo10"
     assert Macro.underscore("10Foo") == "10_foo"
@@ -691,6 +708,7 @@ defmodule MacroTest do
     assert Macro.camelize("FooBar") == "FooBar"
     assert Macro.camelize("foo") == "Foo"
     assert Macro.camelize("foo_bar") == "FooBar"
+    assert Macro.camelize("FOO_BAR") == "FooBar"
     assert Macro.camelize("foo_") == "Foo"
     assert Macro.camelize("_foo") == "Foo"
     assert Macro.camelize("foo10") == "Foo10"

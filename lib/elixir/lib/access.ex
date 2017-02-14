@@ -82,7 +82,7 @@ defmodule Access do
       #=> "John"
 
   The same `user.name` syntax can also be used by `Kernel.put_in/2`
-  to for updating structs fields:
+  for updating structs fields:
 
       put_in user.name, "Mary"
       #=> %User{name: "Mary"}
@@ -281,12 +281,13 @@ defmodule Access do
   (the retrieved value, which can be operated on before being returned)
   and the new value to be stored under `key`. The `fun` may also
   return `:pop`, implying the current value shall be removed
-  from the map and returned.
+  from the container and returned.
 
-  The returned value is a tuple with the "get" value returned by
-  `fun` and a new map with the updated value under `key`.
+  The returned value is a two-element tuple with the "get" value returned by
+  `fun` and a new container with the updated value under `key`.
   """
-  @spec get_and_update(t, key, (value -> {get, value})) :: {get, t} when get: var
+  @spec get_and_update(container :: t, key, (value -> {get_value, update_value} | :pop)) ::
+        {get_value, container :: t} when get_value: var, update_value: value
   def get_and_update(container, key, fun)
 
   def get_and_update(%{__struct__: struct} = container, key, fun) do
@@ -514,7 +515,7 @@ defmodule Access do
       {["john", "mary"], [%{}, %{}]}
 
   Here is an example that traverses the list dropping even
-  numbers and multipling odd numbers by 2:
+  numbers and multiplying odd numbers by 2:
 
       iex> require Integer
       iex> get_and_update_in([1, 2, 3, 4, 5], [Access.all], fn

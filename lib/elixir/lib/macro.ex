@@ -56,25 +56,26 @@ defmodule Macro do
   """
 
   @typedoc "Abstract Syntax Tree (AST)"
+  _ = @typedoc # To avoid bootstrap warnings
   @type t :: expr | {t, t} | atom | number | binary | pid | fun | [t]
   @type expr :: {expr | atom, Keyword.t, atom | [t]}
 
-  @binary_ops [:===, :!==,
-    :==, :!=, :<=, :>=,
-    :&&, :||, :<>, :++, :--, :\\, :::, :<-, :.., :|>, :=~,
-    :<, :>, :->,
-    :+, :-, :*, :/, :=, :|, :.,
-    :and, :or, :when, :in,
-    :~>>, :<<~, :~>, :<~, :<~>, :<|>,
-    :<<<, :>>>, :|||, :&&&, :^^^, :~~~]
+  binary_ops =
+    [:===, :!==, :==, :!=, :<=, :>=,
+     :&&, :||, :<>, :++, :--, :\\, :::, :<-, :.., :|>, :=~,
+     :<, :>, :->,
+     :+, :-, :*, :/, :=, :|, :.,
+     :and, :or, :when, :in,
+     :~>>, :<<~, :~>, :<~, :<~>, :<|>,
+     :<<<, :>>>, :|||, :&&&, :^^^, :~~~]
 
   @doc false
-  defmacro binary_ops, do: @binary_ops
+  defmacro binary_ops, do: unquote(binary_ops)
 
-  @unary_ops [:!, :@, :^, :not, :+, :-, :~~~, :&]
+  unary_ops = [:!, :@, :^, :not, :+, :-, :~~~, :&]
 
   @doc false
-  defmacro unary_ops, do: @unary_ops
+  defmacro unary_ops, do: unquote(unary_ops)
 
   @spec binary_op_props(atom) :: {:left | :right, precedence :: integer}
   defp binary_op_props(o) do
@@ -96,6 +97,99 @@ defmodule Macro do
       o when o in [:*, :/]                    -> {:left, 220}
       :.                                      -> {:left, 310}
     end
+  end
+
+  # Classifies the given atom or string into one of the following categories:
+  #
+  #   * :alias - a valid Elixir alias, like Foo, Foo.Bar and so on
+  #
+  #   * :callable - an atom that can be used as a function call after the
+  #     . operator (for example, :<> is callable because Foo.<>(1, 2, 3) is valid
+  #     syntax); this category includes identifiers like :foo
+  #
+  #   * :not_callable - an atom that cannot be used as a function call after the
+  #     . operator (for example, :<<>> is not callable because Foo.<<>> is a
+  #     syntax error); this category includes atoms like :Foo, since they are
+  #     valid identifiers but they need quotes to be used in function calls
+  #     (Foo."Bar")
+  #
+  #   * :atom - any other atom (these are usually escaped when inspected, like
+  #     :"foo and bar")
+  @doc false
+  def classify_identifier(atom_or_string)
+
+  unary_ops_as_strings = :lists.map(&:erlang.atom_to_binary(&1, :utf8), unary_ops)
+  binary_ops_as_strings = :lists.map(&:erlang.atom_to_binary(&1, :utf8), binary_ops)
+
+  def classify_identifier(atom) when is_atom(atom) do
+    classify_identifier(Atom.to_string(atom))
+  end
+
+  def classify_identifier(string) when is_binary(string) do
+    cond do
+      valid_alias?(string) ->
+        :alias
+      valid_atom_identifier?(string) ->
+        first = :binary.first(string)
+        if first >= ?A and first <= ?Z do
+          :not_callable
+        else
+          :callable
+        end
+      string in ["%", "%{}", "{}", "<<>>", "...", "..", "."] ->
+        :not_callable
+      string in unquote(unary_ops_as_strings) or string in unquote(binary_ops_as_strings) ->
+        :callable
+      true ->
+        :other
+    end
+  end
+
+  # Detect if atom is an atom alias (Elixir.Foo.Bar.Baz)
+
+  defp valid_alias?("Elixir" <> rest), do: valid_alias_piece?(rest)
+  defp valid_alias?(_other), do: false
+
+  # Detects if the given binary is a valid "ref" piece, that is, a valid
+  # successor of "Elixir" in atoms like "Elixir.String.Chars".
+  defp valid_alias_piece?(<<?., char, rest::binary>>) when char >= ?A and char <= ?Z,
+    do: valid_alias_piece?(trim_leading_while_valid_identifier(rest))
+  defp valid_alias_piece?(<<>>),
+    do: true
+  defp valid_alias_piece?(_other),
+    do: false
+
+  defp valid_atom_identifier?(<<char, rest::binary>>)
+       when char >= ?a and char <= ?z
+       when char >= ?A and char <= ?Z
+       when char == ?_,
+    do: valid_atom_piece?(rest)
+  defp valid_atom_identifier?(_other),
+    do: false
+
+  defp valid_atom_piece?(binary) do
+    case trim_leading_while_valid_identifier(binary) do
+      rest when rest in ["", "?", "!"] ->
+        true
+      "@" <> rest ->
+        valid_atom_piece?(rest)
+      _other ->
+        false
+    end
+  end
+
+  # Takes a binary and trims all the valid identifier characters (alphanumeric
+  # and _) from its beginning.
+  defp trim_leading_while_valid_identifier(<<char, rest::binary>>)
+       when char >= ?a and char <= ?z
+       when char >= ?A and char <= ?Z
+       when char >= ?0 and char <= ?9
+       when char == ?_ do
+    trim_leading_while_valid_identifier(rest)
+  end
+
+  defp trim_leading_while_valid_identifier(other) do
+    other
   end
 
   @doc """
@@ -159,7 +253,7 @@ defmodule Macro do
   end
 
   def pipe(expr, {call, _, [_, _]} = call_args, _integer)
-      when call in unquote(@binary_ops) do
+      when call in unquote(binary_ops) do
     raise ArgumentError, "cannot pipe #{to_string expr} into #{to_string call_args}, " <>
                          "the #{to_string call} operator can only take two arguments"
   end
@@ -192,7 +286,7 @@ defmodule Macro do
   end
 
   @doc false
-  def pipe_warning({call, _, _}) when call in unquote(@unary_ops) do
+  def pipe_warning({call, _, _}) when call in unquote(unary_ops) do
     "piping into a unary operator is deprecated. You could use e.g. Kernel.+(5) instead of +5"
   end
   def pipe_warning(_), do: nil
@@ -221,6 +315,21 @@ defmodule Macro do
 
   def update_meta(other, _fun) do
     other
+  end
+
+  @doc """
+  Generates AST nodes for a given number of required argument variables using
+  `Macro.var/2`.
+
+  ## Examples
+
+      iex> Macro.generate_arguments(2, __MODULE__)
+      [{:var1, [], __MODULE__}, {:var2, [], __MODULE__}]
+
+  """
+  def generate_arguments(0, _), do: []
+  def generate_arguments(amount, context) when is_integer(amount) and amount > 0 and is_atom(context) do
+    for id <- 1..amount, do: Macro.var(String.to_atom("var" <> Integer.to_string(id)), context)
   end
 
   @doc """
@@ -503,7 +612,7 @@ defmodule Macro do
       def unescape_map(?u), do: true
       def unescape_map(e),  do: e
 
-  If the `unescape_map/1` function returns `false`. The char is
+  If the `unescape_map/1` function returns `false`, the char is
   not escaped and the backslash is kept in the string.
 
   Hexadecimals and Unicode codepoints will be escaped if the map
@@ -667,7 +776,7 @@ defmodule Macro do
   end
 
   # Binary ops
-  def to_string({op, _, [left, right]} = ast, fun) when op in unquote(@binary_ops) do
+  def to_string({op, _, [left, right]} = ast, fun) when op in unquote(binary_ops) do
     fun.(ast, op_to_string(left, fun, op, :left) <> " #{op} " <> op_to_string(right, fun, op, :right))
   end
 
@@ -692,9 +801,14 @@ defmodule Macro do
     fun.(ast, "&(" <> to_string(arg, fun) <> ")")
   end
 
+  # left not in right
+  def to_string({:not, _, [{:in, _, [left, right]}]} = ast, fun)  do
+    fun.(ast, to_string(left, fun) <> " not in " <> to_string(right, fun))
+  end
+
   # Unary ops
   def to_string({unary, _, [{binary, _, [_, _]} = arg]} = ast, fun)
-      when unary in unquote(@unary_ops) and binary in unquote(@binary_ops) do
+      when unary in unquote(unary_ops) and binary in unquote(binary_ops) do
     fun.(ast, Atom.to_string(unary) <> "(" <> to_string(arg, fun) <> ")")
   end
 
@@ -702,13 +816,13 @@ defmodule Macro do
     fun.(ast, "not " <> to_string(arg, fun))
   end
 
-  def to_string({op, _, [arg]} = ast, fun) when op in unquote(@unary_ops) do
+  def to_string({op, _, [arg]} = ast, fun) when op in unquote(unary_ops) do
     fun.(ast, Atom.to_string(op) <> to_string(arg, fun))
   end
 
   # Access
   def to_string({{:., _, [Access, :get]}, _, [{op, _, _} = left, right]} = ast, fun)
-      when op in unquote(@binary_ops) do
+      when op in unquote(binary_ops) do
     fun.(ast, "(" <> to_string(left, fun) <> ")" <> to_string([right], fun))
   end
 
@@ -776,10 +890,10 @@ defmodule Macro do
   end
 
   # Block keywords
-  @kw_keywords [:do, :catch, :rescue, :after, :else]
+  kw_keywords = [:do, :catch, :rescue, :after, :else]
 
   defp kw_blocks?([{:do, _} | _] = kw) do
-    Enum.all?(kw, &match?({x, _} when x in unquote(@kw_keywords), &1))
+    Enum.all?(kw, &match?({x, _} when x in unquote(kw_keywords), &1))
   end
   defp kw_blocks?(_), do: false
 
@@ -840,6 +954,8 @@ defmodule Macro do
     do: "(" <> module_to_string(arg, fun) <> ")."
   defp call_to_string({:., _, [arg]}, fun),
     do: module_to_string(arg, fun) <> "."
+  defp call_to_string({:., _, [left, right]}, fun) when is_atom(right),
+    do: module_to_string(left, fun) <> "." <> call_to_string_for_atom(right)
   defp call_to_string({:., _, [left, right]}, fun),
     do: module_to_string(left, fun) <> "." <> call_to_string(right, fun)
   defp call_to_string(other, fun),
@@ -849,6 +965,10 @@ defmodule Macro do
     target = call_to_string(target, fun)
     args = args_to_string(args, fun)
     target <> "(" <> args <> ")"
+  end
+
+  defp call_to_string_for_atom(atom) do
+    Inspect.Function.escape_name(atom)
   end
 
   defp args_to_string(args, fun) do
@@ -867,7 +987,7 @@ defmodule Macro do
   end
 
   defp kw_blocks_to_string(kw, fun) do
-    Enum.reduce(@kw_keywords, " ", fn(x, acc) ->
+    Enum.reduce(unquote(kw_keywords), " ", fn(x, acc) ->
       case Keyword.has_key?(kw, x) do
         true  -> acc <> kw_block_to_string(x, Keyword.get(kw, x), fun)
         false -> acc
@@ -924,7 +1044,7 @@ defmodule Macro do
     "(" <> to_string(expr, fun) <> ")"
   end
 
-  defp op_to_string({op, _, [_, _]} = expr, fun, parent_op, side) when op in unquote(@binary_ops) do
+  defp op_to_string({op, _, [_, _]} = expr, fun, parent_op, side) when op in unquote(binary_ops) do
     {parent_assoc, parent_prec} = binary_op_props(parent_op)
     {_, prec}                   = binary_op_props(op)
     cond do
@@ -1210,12 +1330,12 @@ defmodule Macro do
   end
 
   defp do_underscore(<<h, t, rest::binary>>, _)
-      when (h >= ?A and h <= ?Z) and not (t >= ?A and t <= ?Z) and t != ?. do
+      when (h >= ?A and h <= ?Z) and not (t >= ?A and t <= ?Z) and t != ?. and t != ?_ do
     <<?_, to_lower_char(h), t>> <> do_underscore(rest, t)
   end
 
   defp do_underscore(<<h, t::binary>>, prev)
-      when (h >= ?A and h <= ?Z) and not (prev >= ?A and prev <= ?Z) do
+      when (h >= ?A and h <= ?Z) and not (prev >= ?A and prev <= ?Z) and prev != ?_ do
     <<?_, to_lower_char(h)>> <> do_underscore(t, h)
   end
 
@@ -1255,27 +1375,21 @@ defmodule Macro do
     do: camelize(t)
 
   def camelize(<<h, t::binary>>),
-    do: <<to_upper_char(h)>> <> do_camelize(t)
+    do: <<to_upper_char(h)>> <> do_camelize(t, h)
 
-  defp do_camelize(<<?_, ?_, t::binary>>),
-    do: do_camelize(<<?_, t::binary >>)
+  defp do_camelize(<<?_, t::binary>>, _),
+    do: camelize(t)
 
-  defp do_camelize(<<?_, h, t::binary>>) when h >= ?a and h <= ?z,
-    do: <<to_upper_char(h)>> <> do_camelize(t)
-
-  defp do_camelize(<<?_, h, t::binary>>) when h >= ?0 and h <= ?9,
-    do: <<h>> <> do_camelize(t)
-
-  defp do_camelize(<<?_>>),
-    do: <<>>
-
-  defp do_camelize(<<?/, t::binary>>),
+  defp do_camelize(<<?/, t::binary>>, _),
     do: <<?.>> <> camelize(t)
 
-  defp do_camelize(<<h, t::binary>>),
-    do: <<h>> <> do_camelize(t)
+  defp do_camelize(<<h, t::binary>>, prev) when prev >= ?a and prev <= ?z and h >= ?A and h <= ?Z,
+    do: <<h>> <> do_camelize(t, h)
 
-  defp do_camelize(<<>>),
+  defp do_camelize(<<h, t::binary>>, _),
+    do: <<to_lower_char(h)>> <> do_camelize(t, h)
+
+  defp do_camelize(<<>>, _),
     do: <<>>
 
   defp to_upper_char(char) when char >= ?a and char <= ?z, do: char - 32

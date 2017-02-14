@@ -55,7 +55,20 @@ defmodule RegistryTest do
         assert Registry.lookup(registry, "hello") == [{self(), :other}]
       end
 
-      test "compares using matches", %{registry: registry} do
+      test "supports match patterns", %{registry: registry} do
+        value = {1, :atom, 1}
+        {:ok, _} = Registry.register(registry, "hello", value)
+        assert Registry.match(registry, "hello", {1, :_, :_}) ==
+               [{self(), value}]
+        assert Registry.match(registry, "hello", {1.0, :_, :_}) ==
+               []
+        assert Registry.match(registry, "hello", {:_, :atom, :_}) ==
+               [{self(), value}]
+        assert Registry.match(registry, "hello", {:"$1", :_, :"$1"}) ==
+               [{self(), value}]
+      end
+
+      test "compares using ===", %{registry: registry} do
         {:ok, _} = Registry.register(registry, 1.0, :value)
         {:ok, _} = Registry.register(registry, 1, :value)
         assert Registry.keys(registry, self()) |> Enum.sort() == [1, 1.0]
@@ -70,26 +83,6 @@ defmodule RegistryTest do
         assert Registry.lookup(registry, "world") == [{self(), 1}]
         assert Registry.update_value(registry, "world", & &1 + 1) == {2, 1}
         assert Registry.lookup(registry, "world") == [{self(), 2}]
-      end
-
-      test "looks up process considering liveness", %{registry: registry} do
-        assert Registry.lookup(registry, "hello") == []
-        {owner, task} = register_task(registry, "hello", :value)
-        assert Registry.lookup(registry, "hello") == [{task, :value}]
-
-        :sys.suspend(owner)
-        kill_and_assert_down(task)
-        assert Registry.lookup(registry, "hello") == []
-      end
-
-      test "returns process keys considering liveness", %{registry: registry} do
-        assert Registry.keys(registry, self()) == []
-        {owner, task} = register_task(registry, "hello", :value)
-        assert Registry.keys(registry, task) == ["hello"]
-
-        :sys.suspend(owner)
-        kill_and_assert_down(task)
-        assert Registry.keys(registry, task) == []
       end
 
       test "dispatches to a single key", %{registry: registry} do
@@ -213,30 +206,6 @@ defmodule RegistryTest do
         assert Registry.keys(registry, self()) |> Enum.sort() == [1, 1.0]
       end
 
-      test "looks up process considering liveness", %{registry: registry} do
-        assert Registry.lookup(registry, "hello") == []
-        {owner, task} = register_task(registry, "hello", :value)
-        assert Registry.lookup(registry, "hello") == [{task, :value}]
-
-        Registry.register(registry, "hello", :local)
-        assert Registry.lookup(registry, "hello") |> Enum.sort ==
-               [{self(), :local}, {task, :value}]
-
-        :sys.suspend(owner)
-        kill_and_assert_down(task)
-        assert Registry.lookup(registry, "hello") == [{self(), :local}]
-      end
-
-      test "returns process keys considering liveness", %{registry: registry} do
-        assert Registry.keys(registry, self()) == []
-        {owner, task} = register_task(registry, "hello", :value)
-        assert Registry.keys(registry, task) == ["hello"]
-
-        :sys.suspend(owner)
-        kill_and_assert_down(task)
-        assert Registry.keys(registry, task) == []
-      end
-
       test "dispatches to multiple keys", %{registry: registry} do
         assert Registry.dispatch(registry, "hello", fn _ ->
           raise "will never be invoked"
@@ -278,6 +247,26 @@ defmodule RegistryTest do
 
       test "allows unregistering with no entries", %{registry: registry} do
         assert Registry.unregister(registry, "hello") == :ok
+      end
+
+      test "supports match patterns", %{registry: registry} do
+        value1 = {1, :atom, 1}
+        {:ok, _} = Registry.register(registry, "hello", value1)
+        value2 = {2, :atom, 2}
+        {:ok, _} = Registry.register(registry, "hello", value2)
+
+        assert Registry.match(registry, "hello", {1, :_, :_}) |> Enum.sort() ==
+               [{self(), value1}]
+        assert Registry.match(registry, "hello", {1.0, :_, :_}) |> Enum.sort() ==
+               []
+        assert Registry.match(registry, "hello", {:_, :atom, :_}) |> Enum.sort() ==
+               [{self(), value1}, {self(), value2}]
+        assert Registry.match(registry, "hello", {:"$1", :_, :"$1"}) |> Enum.sort() ==
+               [{self(), value1}, {self(), value2}]
+        assert Registry.match(registry, "hello", {2, :_, :_}) |> Enum.sort() ==
+               [{self(), value2}]
+        assert Registry.match(registry, "hello", {2.0, :_, :_}) |> Enum.sort() ==
+               []
       end
 
       @tag listener: :"duplicate_listener_#{partitions}"
@@ -340,9 +329,15 @@ defmodule RegistryTest do
         kill_and_assert_down(task1)
         kill_and_assert_down(task2)
 
+        # pid might be in different parition to key so need to sync with all
+        # paritions before checking ets tables are empty.
         for i <- 0..7 do
-          [{_, key, {partition, pid}}] = :ets.lookup(registry, i)
+          [{_, _, {partition, _}}] = :ets.lookup(registry, i)
           GenServer.call(partition, :sync)
+        end
+
+        for i <- 0..7 do
+          [{_, key, {_, pid}}] = :ets.lookup(registry, i)
           assert :ets.tab2list(key) == []
           assert :ets.tab2list(pid) == []
         end

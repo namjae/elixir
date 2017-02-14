@@ -358,7 +358,7 @@ defmodule Kernel.Typespec do
 
   defp get_doc_info(table, attr, caller) do
     case :ets.take(table, attr) do
-      [{^attr, {line, doc}}] -> {line, doc}
+      [{^attr, {line, doc}, _, _}] -> {line, doc}
       [] -> {caller.line, nil}
     end
   end
@@ -425,7 +425,7 @@ defmodule Kernel.Typespec do
   defp elixir_builtin_type?(:as_boolean, 1), do: true
   defp elixir_builtin_type?(:struct, 0), do: true
   defp elixir_builtin_type?(:charlist, 0), do: true
-  # TODO: Deprecate char_list type by v1.5
+  # TODO: Remove char_list type by 2.0
   defp elixir_builtin_type?(:char_list, 0), do: true
   defp elixir_builtin_type?(:keyword, 0), do: true
   defp elixir_builtin_type?(:keyword, 1), do: true
@@ -634,7 +634,7 @@ defmodule Kernel.Typespec do
   end
 
   defp typespec_to_ast({:type, line, :fun, []}) do
-    typespec_to_ast({:type, line, :fun, [{:type, line, :any}, {:type, line, :any, []} ]})
+    typespec_to_ast({:type, line, :fun, [{:type, line, :any}, {:type, line, :any, []}]})
   end
 
   defp typespec_to_ast({:type, line, :range, [left, right]}) do
@@ -659,7 +659,7 @@ defmodule Kernel.Typespec do
   end
 
   # Special shortcut(s)
-  # TODO: Deprecate char_list type by v1.5
+  # TODO: Remove char_list type by 2.0
   defp typespec_to_ast({:remote_type, line, [{:atom, _, :elixir}, {:atom, _, type}, []]})
       when type in [:charlist, :char_list] do
     typespec_to_ast({:type, line, :charlist, []})
@@ -940,8 +940,11 @@ defmodule Kernel.Typespec do
     {:type, line(meta), type, arguments}
   end
 
-  # TODO: Deprecate char_list type by v1.5
+  # TODO: Remove char_list type by 2.0
   defp typespec({type, _meta, []}, vars, caller) when type in [:charlist, :char_list] do
+    if type == :char_list do
+      :elixir_errors.warn caller.line, caller.file, "the char_list() type is deprecated, use charlist()"
+    end
     typespec((quote do: :elixir.charlist()), vars, caller)
   end
 
@@ -1014,7 +1017,7 @@ defmodule Kernel.Typespec do
 
   defp remote_type({remote, meta, name, arguments}, vars, caller) do
     arguments = for arg <- arguments, do: typespec(arg, vars, caller)
-    {:remote_type, line(meta), [ remote, name, arguments ]}
+    {:remote_type, line(meta), [remote, name, arguments]}
   end
 
   defp collect_union({:|, _, [a, b]}), do: [a | collect_union(b)]

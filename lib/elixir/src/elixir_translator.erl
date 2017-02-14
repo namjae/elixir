@@ -24,10 +24,10 @@ translate({'{}', Meta, Args}, S) when is_list(Args) ->
   {{tuple, ?ann(Meta), TArgs}, SE};
 
 translate({'%{}', Meta, Args}, S) when is_list(Args) ->
-  elixir_map:translate_map(Meta, Args, S);
+  translate_map(Meta, Args, S);
 
 translate({'%', Meta, [Left, Right]}, S) ->
-  elixir_map:translate_struct(Meta, Left, Right, S);
+  translate_struct(Meta, Left, Right, S);
 
 translate({'<<>>', Meta, Args}, S) when is_list(Args) ->
   elixir_bitstring:translate(Meta, Args, S);
@@ -37,21 +37,6 @@ translate({'<<>>', Meta, Args}, S) when is_list(Args) ->
 translate({'__block__', Meta, Args}, S) when is_list(Args) ->
   {TArgs, SA} = translate_block(Args, [], S),
   {{block, ?ann(Meta), TArgs}, SA};
-
-%% Erlang op
-
-translate({{'.', _, [erlang, 'andalso']}, Meta, [Left, Right]}, S) ->
-  {[TLeft, TRight], NS}  = translate_args([Left, Right], S),
-  {{op, ?ann(Meta), 'andalso', TLeft, TRight}, NS};
-
-translate({{'.', _, [erlang, 'orelse']}, Meta, [Left, Right]}, S) ->
-  {[TLeft, TRight], NS}  = translate_args([Left, Right], S),
-  {{op, ?ann(Meta), 'orelse', TLeft, TRight}, NS};
-
-%% Lexical
-
-translate({Lexical, _, [Module, _]}, S) when Lexical == import; Lexical == alias; Lexical == require ->
-  {{atom, 0, Module}, S};
 
 %% Compilation environment macros
 
@@ -67,7 +52,14 @@ translate({'&', Meta, [Arg]}, S) when is_integer(Arg) ->
   compile_error(Meta, S#elixir_scope.file, "unhandled &~B outside of a capture", [Arg]);
 
 translate({fn, Meta, Clauses}, S) ->
-  elixir_fn:translate(Meta, Clauses, S);
+  Transformer = fun({'->', CMeta, [ArgsWithGuards, Expr]}, Acc) ->
+    {Args, Guards} = elixir_clauses:extract_splat_guards(ArgsWithGuards),
+    {TClause, TS } = elixir_clauses:clause(CMeta, fun translate_fn_match/2,
+                                            Args, Expr, Guards, Acc),
+    {TClause, elixir_scope:mergec(S, TS)}
+  end,
+  {TClauses, NS} = lists:mapfoldl(Transformer, S, Clauses),
+  {{'fun', ?ann(Meta), {clauses, TClauses}}, NS};
 
 %% Cond
 
@@ -76,9 +68,6 @@ translate({'cond', CondMeta, [[{do, Pairs}]]}, S) ->
 
   Case =
     case Condition of
-      {'_', _, Atom} when is_atom(Atom) ->
-        compile_error(Meta, S#elixir_scope.file, "unbound variable _ inside cond. "
-          "If you want the last clause to always match, you probably meant to use: true ->");
       X when is_atom(X) and (X /= false) and (X /= nil) ->
         build_cond_clauses(T, Body, Meta);
       _ ->
@@ -144,33 +133,6 @@ translate({for, Meta, [_ | _] = Args}, S) ->
 translate({with, Meta, [_ | _] = Args}, S) ->
   elixir_with:translate(Meta, Args, S);
 
-%% Super
-
-translate({super, Meta, Args}, S) when is_list(Args) ->
-  Module = assert_module_scope(Meta, super, S),
-  Function = assert_function_scope(Meta, super, S),
-  elixir_def_overridable:ensure_defined(Meta, Module, Function, S),
-
-  {_, Arity} = Function,
-
-  {TArgs, TS} = if
-    length(Args) == Arity ->
-      translate_args(Args, S);
-    true ->
-      compile_error(Meta, S#elixir_scope.file, "super must be called with the same number of "
-                    "arguments as the current function")
-  end,
-
-  {FinalName, FinalArgs} =
-    case elixir_def_overridable:kind_and_name(Module, Function) of
-      {Kind, Name} when Kind == def; Kind == defp ->
-        {Name, TArgs};
-      {Kind, Name} when Kind == defmacro; Kind == defmacrop ->
-        {elixir_utils:macro_name(Name), [{var, ?ann(Meta), '_@CALLER'} | TArgs]}
-    end,
-
-  {{call, ?ann(Meta), {atom, ?ann(Meta), FinalName}, FinalArgs}, TS#elixir_scope{super=true}};
-
 %% Variables
 
 translate({'^', Meta, [{Name, VarMeta, Kind}]}, #elixir_scope{context=match, file=File} = S) when is_atom(Name), is_atom(Kind) ->
@@ -211,33 +173,15 @@ translate({Name, Meta, Kind}, S) when is_atom(Name), is_atom(Kind) ->
 
 %% Local calls
 
-translate({Name, Meta, Args} = Call, S) when is_atom(Name), is_list(Meta), is_list(Args) ->
-  if
-    S#elixir_scope.context == match ->
-      compile_error(Meta, S#elixir_scope.file,
-                    "cannot invoke local ~ts/~B inside match, called as: ~ts",
-                    [Name, length(Args), 'Elixir.Macro':to_string(Call)]);
-    S#elixir_scope.context == guard ->
-      Arity = length(Args),
-      File  = S#elixir_scope.file,
-      case Arity of
-        0 -> compile_error(Meta, File, "unknown variable ~ts or cannot invoke "
-                           "local ~ts/~B inside guard", [Name, Name, Arity]);
-        _ -> compile_error(Meta, File, "cannot invoke local ~ts/~B inside guard",
-                           [Name, Arity])
-      end;
-    true ->
-      Ann = ?ann(Meta),
-      {TArgs, NS} = translate_args(Args, S),
-      {{call, Ann, {atom, Ann, Name}, TArgs}, NS}
-  end;
+translate({Name, Meta, Args}, S) when is_atom(Name), is_list(Meta), is_list(Args) ->
+  Ann = ?ann(Meta),
+  {TArgs, NS} = translate_args(Args, S),
+  {{call, Ann, {atom, Ann, Name}, TArgs}, NS};
 
 %% Remote calls
 
 translate({{'.', _, [Left, Right]}, Meta, []}, S)
     when is_tuple(Left), is_atom(Right), is_list(Meta) ->
-  assert_allowed_in_context(Meta, Left, Right, 0, S),
-
   {TLeft, SL}  = translate(Left, S),
   {Var, _, SV} = elixir_scope:build_var('_', SL),
 
@@ -277,14 +221,13 @@ translate({{'.', _, [Left, Right]}, Meta, Args}, S)
 
   %% Rewrite Erlang function calls as operators so they
   %% work on guards, matches and so on.
-  case (Left == erlang) andalso guard_op(Right, Arity) of
+  case (Left == erlang) andalso elixir_utils:guard_op(Right, Arity) of
     true ->
       case TArgs of
         [TOne]       -> {{op, Ann, Right, TOne}, SC};
         [TOne, TTwo] -> {{op, Ann, Right, TOne, TTwo}, SC}
       end;
     false ->
-      assert_allowed_in_context(Meta, Left, Right, Arity, S),
       {{call, Ann, {remote, Ann, TLeft, TRight}, TArgs}, SC}
   end;
 
@@ -313,17 +256,6 @@ translate(Other, S) ->
 
 %% Helpers
 
-guard_op(Op, Arity) ->
-  try erl_internal:op_type(Op, Arity) of
-    arith -> true;
-    list  -> true;
-    comp  -> true;
-    bool  -> true;
-    send  -> false
-  catch
-    _:_ -> false
-  end.
-
 translate_list([{'|', _, [_, _]=Args}], Fun, Acc, List) ->
   {[TLeft, TRight], TAcc} = lists:mapfoldl(Fun, Acc, Args),
   {build_list([TLeft | List], TRight), TAcc};
@@ -347,6 +279,10 @@ var_kind(Meta, Kind) ->
 %% Pack a list of expressions from a block.
 unblock({'block', _, Exprs}) -> Exprs;
 unblock(Expr)                -> [Expr].
+
+translate_fn_match(Arg, S) ->
+  {TArg, TS} = elixir_translator:translate_args(Arg, S#elixir_scope{extra=pin_guard}),
+  {TArg, TS#elixir_scope{extra=S#elixir_scope.extra}}.
 
 %% Translate args
 
@@ -429,23 +365,61 @@ returns_boolean(Condition, Body) ->
     false -> false
   end.
 
-%% Assertions
+%% Maps and structs
 
-assert_module_scope(Meta, Kind, #elixir_scope{module=nil, file=File}) ->
-  compile_error(Meta, File, "cannot invoke ~ts outside module", [Kind]);
-assert_module_scope(_Meta, _Kind, #elixir_scope{module=Module}) -> Module.
+translate_map(Meta, [{'|', _Meta, [Update, Assocs]}], S) ->
+  {TUpdate, US} = translate_arg(Update, S, S),
+  translate_map(Meta, Assocs, {ok, TUpdate}, US);
+translate_map(Meta, Assocs, S) ->
+  translate_map(Meta, Assocs, none, S).
 
-assert_function_scope(Meta, Kind, #elixir_scope{function=nil, file=File}) ->
-  compile_error(Meta, File, "cannot invoke ~ts outside function", [Kind]);
-assert_function_scope(_Meta, _Kind, #elixir_scope{function=Function}) -> Function.
+translate_struct(Meta, Name, {'%{}', _, [{'|', _, [Update, Assocs]}]}, S) ->
+  Ann = ?ann(Meta),
+  Generated = ?generated(Meta),
+  {VarName, _, VS} = elixir_scope:build_var('_', S),
 
-assert_allowed_in_context(Meta, Left, Right, Arity, #elixir_scope{context=Context} = S)
-    when (Context == match) orelse (Context == guard) ->
-  case (Left == erlang) andalso erl_internal:guard_bif(Right, Arity) of
-    true  -> ok;
-    false ->
-      compile_error(Meta, S#elixir_scope.file, "cannot invoke remote function ~ts.~ts/~B inside ~ts",
-        ['Elixir.Macro':to_string(Left), Right, Arity, Context])
-  end;
-assert_allowed_in_context(_, _, _, _, _) ->
-  ok.
+  Var = {var, Ann, VarName},
+  Map = {map, Ann, [{map_field_exact, Ann, {atom, Ann, '__struct__'}, {atom, Ann, Name}}]},
+
+  Match = {match, Ann, Var, Map},
+  Error = {tuple, Ann, [{atom, Ann, badstruct}, {atom, Ann, Name}, Var]},
+
+  {TUpdate, US} = translate_arg(Update, VS, VS),
+  {TAssocs, TS} = translate_map(Meta, Assocs, {ok, Var}, US),
+
+  {{'case', Generated, TUpdate, [
+    {clause, Ann, [Match], [], [TAssocs]},
+    {clause, Generated, [Var], [], [elixir_utils:erl_call(Ann, erlang, error, [Error])]}
+  ]}, TS};
+translate_struct(Meta, Name, {'%{}', _, Assocs}, S) ->
+  translate_map(Meta, Assocs ++ [{'__struct__', Name}], none, S).
+
+translate_map(Meta, Assocs, TUpdate, #elixir_scope{extra=Extra} = S) ->
+  {Op, KeyFun, ValFun} = translate_key_val_op(TUpdate, S),
+  Ann = ?ann(Meta),
+
+  {TArgs, SA} = lists:mapfoldl(fun({Key, Value}, Acc) ->
+    {TKey, Acc1}   = KeyFun(Key, Acc),
+    {TValue, Acc2} = ValFun(Value, Acc1#elixir_scope{extra=Extra}),
+    {{Op, ?ann(Meta), TKey, TValue}, Acc2}
+  end, S, Assocs),
+
+  build_map(Ann, TUpdate, TArgs, SA).
+
+translate_key_val_op(_TUpdate, #elixir_scope{extra=map_key}) ->
+  {map_field_assoc,
+    fun(X, Acc) -> translate(X, Acc#elixir_scope{extra=map_key}) end,
+    fun translate/2};
+translate_key_val_op(_TUpdate, #elixir_scope{context=match}) ->
+  {map_field_exact,
+    fun(X, Acc) -> translate(X, Acc#elixir_scope{extra=map_key}) end,
+    fun translate/2};
+translate_key_val_op(TUpdate, S) ->
+  KS = S#elixir_scope{extra=map_key},
+  Op = if TUpdate == none -> map_field_assoc; true -> map_field_exact end,
+  {Op,
+    fun(X, Acc) -> translate_arg(X, Acc, KS) end,
+    fun(X, Acc) -> translate_arg(X, Acc, S) end}.
+
+build_map(Ann, {ok, TUpdate}, TArgs, SA) -> {{map, Ann, TUpdate, TArgs}, SA};
+build_map(Ann, none, TArgs, SA) -> {{map, Ann, TArgs}, SA}.

@@ -18,7 +18,7 @@ defmodule Mix.Tasks.Deps do
   Where:
 
     * app is an atom
-    * requirement is a version requirement or a regular expression
+    * requirement is a `Version` requirement or a regular expression
     * opts is a keyword list of options
 
   By default, dependencies are fetched using the [Hex package manager](https://hex.pm/):
@@ -42,9 +42,9 @@ defmodule Mix.Tasks.Deps do
   the parent project whenever they change. While fetchable dependencies
   like the ones using `:git` are recompiled only when fetched/updated.
 
-  The dependencies' versions are expected to follow Semantic Versioning
-  and the requirements must be specified as defined in the `Version`
-  module.
+  The dependencies' versions are expected to be formatted according to
+  Semantic Versioning and the requirements must be specified as defined
+  in the `Version` module.
 
   ## Options
 
@@ -81,6 +81,10 @@ defmodule Mix.Tasks.Deps do
       try to infer the type of project but it can be overridden with this
       option by setting it to `:mix`, `:rebar`, `:rebar3` or `:make`
 
+    * `:runtime` - whether the dependency is part of runtime applications.
+      Defaults to `true` which automatically adds the application to the list
+      of apps that are started automatically and included in releases
+
   ### Git options (`:git`)
 
     * `:git`        - the Git repository URI
@@ -89,7 +93,7 @@ defmodule Mix.Tasks.Deps do
     * `:branch`     - the Git branch to checkout
     * `:tag`        - the Git tag to checkout
     * `:submodules` - when `true`, initialize submodules for the repo
-    * `:sparse`     - checkout a single directory inside the git repository and use it
+    * `:sparse`     - checkout a single directory inside the Git repository and use it
       as your Mix dependency. Search "sparse git checkouts" for more information.
 
   ### Path options (`:path`)

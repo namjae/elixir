@@ -73,12 +73,12 @@ defmodule GenServer do
       using `Process.register/2`.
 
     * `{:global, term}`- the GenServer is registered globally with the given
-      term using the functions in the `:global` module.
+      term using the functions in the [`:global` module](http://www.erlang.org/doc/man/global.html).
 
     * `{:via, module, term}` - the GenServer is registered with the given
       mechanism and name. The `:via` option expects a module that exports
       `register_name/2`, `unregister_name/1`, `whereis_name/1` and `send/2`.
-      One such example is the `:global` module which uses these functions
+      One such example is the [`:global` module](http://www.erlang.org/doc/man/global.html) which uses these functions
       for keeping the list of names of processes and their associated PIDs
       that are available globally for a network of Elixir nodes. Elixir also
       ships with a local, decentralized and scalable registry called `Registry`
@@ -200,12 +200,12 @@ defmodule GenServer do
   ## Debugging with the :sys module
 
   GenServers, as [special processes](http://erlang.org/doc/design_principles/spec_proc.html),
-  can be debugged using the `:sys` module. Through various hooks, this module
+  can be debugged using the [`:sys` module](http://www.erlang.org/doc/man/sys.html). Through various hooks, this module
   allows developers to introspect the state of the process and trace
   system events that happen during its execution, such as received messages,
   sent replies and state changes.
 
-  Let's explore the basic functions from the `:sys` module used for debugging:
+  Let's explore the basic functions from the [`:sys` module](http://www.erlang.org/doc/man/sys.html) used for debugging:
 
     * [`:sys.get_state/2`](http://erlang.org/doc/man/sys.html#get_state-2) -
       allows retrieval of the state of the process. In the case of
@@ -430,12 +430,17 @@ defmodule GenServer do
   `reason` is exit reason and `state` is the current state of the `GenServer`.
   The return value is ignored.
 
-  `c:terminate/2` is called if a callback (except `c:init/1`) returns a `:stop`
-  tuple, raises, calls `Kernel.exit/1` or returns an invalid value. It may also
-  be called if the `GenServer` traps exits using `Process.flag/2` *and* the
-  parent process sends an exit signal.
+  `c:terminate/2` is called if a callback (except `c:init/1`) does one of the
+  following:
 
-  If part of a supervision tree a `GenServer`'s `Supervisor` will send an exit
+    * returns a `:stop` tuple
+    * raises
+    * calls `Kernel.exit/1`
+    * returns an invalid value
+    * the `GenServer` traps exits (using `Process.flag/2`) *and* the parent
+      process sends an exit signal
+
+  If part of a supervision tree, a `GenServer`'s `Supervisor` will send an exit
   signal when shutting it down. The exit signal is based on the shutdown
   strategy in the child's specification. If it is `:brutal_kill` the `GenServer`
   is killed and so `c:terminate/2` is not called. However if it is a timeout the
@@ -456,7 +461,7 @@ defmodule GenServer do
   `:gen_tcp.socket`) or `t:File.io_device/0`, they will be closed on receiving a
   `GenServer`'s exit signal and do not need to be closed in `c:terminate/2`.
 
-  If `reason` is not `:normal`, `:shutdown` nor `{:shutdown, term}` an error is
+  If `reason` is not `:normal`, `:shutdown`, nor `{:shutdown, term}` an error is
   logged.
   """
   @callback terminate(reason, state :: term) ::
@@ -548,11 +553,16 @@ defmodule GenServer do
 
       @doc false
       def handle_call(msg, _from, state) do
+        proc =
+          case Process.info(self(), :registered_name) do
+            {_, []}   -> self()
+            {_, name} -> name
+          end
+
         # We do this to trick Dialyzer to not complain about non-local returns.
-        reason = {:bad_call, msg}
         case :erlang.phash2(1, 1) do
-          0 -> exit(reason)
-          1 -> {:stop, reason, state}
+          0 -> raise "attempted to call GenServer #{inspect proc} but no handle_call/3 clause was provided"
+          1 -> {:stop, {:bad_call, msg}, state}
         end
       end
 
@@ -570,11 +580,16 @@ defmodule GenServer do
 
       @doc false
       def handle_cast(msg, state) do
+        proc =
+          case Process.info(self(), :registered_name) do
+            {_, []}   -> self()
+            {_, name} -> name
+          end
+
         # We do this to trick Dialyzer to not complain about non-local returns.
-        reason = {:bad_cast, msg}
         case :erlang.phash2(1, 1) do
-          0 -> exit(reason)
-          1 -> {:stop, reason, state}
+          0 -> raise "attempted to cast GenServer #{inspect proc} but no handle_cast/2 clause was provided"
+          1 -> {:stop, {:bad_cast, msg}, state}
         end
       end
 
@@ -617,8 +632,7 @@ defmodule GenServer do
       milliseconds initializing or it will be terminated and the start function
       will return `{:error, :timeout}`
 
-    * `:debug` - if present, the corresponding function in the [`:sys`
-      module](http://www.erlang.org/doc/man/sys.html) is invoked
+    * `:debug` - if present, the corresponding function in the [`:sys` module](http://www.erlang.org/doc/man/sys.html) is invoked
 
     * `:spawn_opt` - if present, its value is passed as options to the
       underlying process as in `Process.spawn/4`
@@ -675,7 +689,7 @@ defmodule GenServer do
   end
 
   @doc """
-  Stops the server with the given `reason`.
+  Synchronously stops the server with the given `reason`.
 
   The `c:terminate/2` callback of the given `server` will be invoked before
   exiting. This function returns `:ok` if the server terminates with the

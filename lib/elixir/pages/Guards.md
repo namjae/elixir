@@ -11,7 +11,7 @@ For reference, the following is a comprehensive list of all expressions allowed 
   * arithmetic binary operators (`+`, `-`, `*`, `/`)
   * arithmetic unary operators (`+`, `-`)
   * binary concatenation operator (`<>`)
-  * `in` operator (as long as the right-hand side is a list or a range)
+  * `in` and `not in` operators (as long as the right-hand side is a list or a range)
   * the following "type-check" functions (all documented in the `Kernel` module):
     * `is_atom/1`
     * `is_binary/1`
@@ -54,6 +54,8 @@ For reference, the following is a comprehensive list of all expressions allowed 
     * `bsl/1` or the `<<<` operator
     * `bsr/1` or the `>>>` operator
     * `bxor/2` or the `^^^` operator
+
+Macros constructed out of any combination of the above guards are also valid guards - for example, `Integer.is_even/1`. See the section "Defining custom guard expressions" below.
 
 ## Why guards
 
@@ -141,7 +143,7 @@ def my_function(number) when is_integer(number) and rem(number, 2) == 0 do
 end
 ```
 
-This would be repetitive to write everytime we need this check, so, as mentioned at the beginning of this section, we can abstract this away using a macro. Remember that defining a function that performs this check wouldn't work because we can't use custom functions in guards. Our macro would look like this:
+This would be repetitive to write every time we need this check, so, as mentioned at the beginning of this section, we can abstract this away using a macro. Remember that defining a function that performs this check wouldn't work because we can't use custom functions in guards. Our macro would look like this:
 
 ```elixir
 defmodule MyInteger do

@@ -20,8 +20,9 @@ defmodule Kernel do
   cannot be skipped. These are described in `Kernel.SpecialForms`.
 
   Some of the functions described in this module are inlined by
-  the Elixir compiler into their Erlang counterparts in the `:erlang`
-  module. Those functions are called BIFs (built-in internal functions)
+  the Elixir compiler into their Erlang counterparts in the
+  [`:erlang` module](http://www.erlang.org/doc/man/erlang.html).
+  Those functions are called BIFs (built-in internal functions)
   in Erlang-land and they exhibit interesting properties, as some of
   them are allowed in guards and others are used for compiler
   optimizations.
@@ -110,7 +111,7 @@ defmodule Kernel do
       "llo"
 
   """
-  @spec binary_part(binary, pos_integer, integer) :: binary
+  @spec binary_part(binary, non_neg_integer, integer) :: binary
   def binary_part(binary, start, length) do
     :erlang.binary_part(binary, start, length)
   end
@@ -173,12 +174,17 @@ defmodule Kernel do
 
   ## Examples
 
-      iex> div(5, 2)
-      2
-      iex> div(6, -4)
-      -1
-      iex> div(-99, 2)
-      -49
+      div(5, 2)
+      #=> 2
+
+      div(6, -4)
+      #=> -1
+
+      div(-99, 2)
+      #=> -49
+
+      div(100, 0)
+      #=> ** (ArithmeticError) bad argument in arithmetic expression
 
   """
   @spec div(integer, neg_integer | pos_integer) :: integer
@@ -259,8 +265,11 @@ defmodule Kernel do
 
   ## Examples
 
-      iex> hd([1, 2, 3, 4])
-      1
+      hd([1, 2, 3, 4])
+      #=> 1
+
+      hd([])
+      #=> ** (ArgumentError) argument error
 
   """
   @spec hd(nonempty_maybe_improper_list(elem, any)) :: elem when elem: term
@@ -647,8 +656,14 @@ defmodule Kernel do
   @doc """
   Spawns the given function and returns its PID.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
+
+  The anonymous function receives 0 arguments, and may return any value.
 
   Inlined by the compiler.
 
@@ -671,8 +686,12 @@ defmodule Kernel do
   Spawns the given module and function passing the given args
   and returns its PID.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
 
   Inlined by the compiler.
 
@@ -689,8 +708,14 @@ defmodule Kernel do
   @doc """
   Spawns the given function, links it to the current process and returns its PID.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
+
+  The anonymous function receives 0 arguments, and may return any value.
 
   Inlined by the compiler.
 
@@ -713,8 +738,12 @@ defmodule Kernel do
   Spawns the given module and function passing the given args,
   links it to the current process and returns its PID.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
 
   Inlined by the compiler.
 
@@ -732,8 +761,14 @@ defmodule Kernel do
   Spawns the given function, monitors it and returns its PID
   and monitoring reference.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
+
+  The anonymous function receives 0 arguments, and may return any value.
 
   Inlined by the compiler.
 
@@ -752,8 +787,12 @@ defmodule Kernel do
   Spawns the given module and function passing the given args,
   monitors it and returns its PID and monitoring reference.
 
-  Check the `Process` and `Node` modules for other functions
-  to handle processes, including spawning functions in nodes.
+  Typically developers do not use the `spawn` functions, instead they use
+  abstractions such as `Task`, `GenServer` and `Agent`, built on top of
+  `spawn`, that spawns processes with more conveniences in terms of
+  introspection and debugging.
+
+  Check the `Process` module for more process related functions,
 
   Inlined by the compiler.
 
@@ -786,8 +825,11 @@ defmodule Kernel do
 
   ## Examples
 
-      iex> tl([1, 2, 3, :go])
-      [2, 3, :go]
+      tl([1, 2, 3, :go])
+      #=> [2, 3, :go]
+
+      tl([])
+      #=> ** (ArgumentError) argument error
 
   """
   @spec tl(nonempty_maybe_improper_list(elem, tail)) ::
@@ -935,18 +977,23 @@ defmodule Kernel do
   The result is always a float. Use `div/2` and `rem/2` if you want
   an integer division or the remainder.
 
+  Raises `ArithmeticError` if `right` is 0 or 0.0.
+
   Allowed in guard tests. Inlined by the compiler.
 
   ## Examples
 
-      iex> 1 / 2
-      0.5
+      1 / 2
+      #=> 0.5
 
-      iex> -3.0 / 2.0
-      -1.5
+      -3.0 / 2.0
+      #=> -1.5
 
-      iex> 5 / 1
-      5.0
+      5 / 1
+      #=> 5.0
+
+      7 / 0
+      #=> ** (ArithmeticError) bad argument in arithmetic expression
 
   """
   @spec (number / number) :: float
@@ -1206,13 +1253,21 @@ defmodule Kernel do
   @doc """
   Gets the element at the zero-based `index` in `tuple`.
 
+  It raises `ArgumentError` when index is negative or it is out of range of the tuple elements.
+
   Allowed in guard tests. Inlined by the compiler.
 
   ## Examples
 
-      iex> tuple = {:foo, :bar, 3}
-      iex> elem(tuple, 1)
-      :bar
+      tuple = {:foo, :bar, 3}
+      elem(tuple, 1)
+      #=> :bar
+
+      elem({}, 0)
+      #=> ** (ArgumentError) argument error
+
+      elem({:foo, :bar}, 2)
+      #=> ** (ArgumentError) argument error
 
   """
   @spec elem(tuple, non_neg_integer) :: term
@@ -1826,8 +1881,13 @@ defmodule Kernel do
   @doc """
   Gets a value and updates a nested structure.
 
-  It expects a tuple to be returned, containing the value
-  retrieved and the update one. The `fun` may also
+  `data` is a nested structure (ie. a map, keyword
+  list, or struct that implements the `Access` behaviour).
+
+  The `fun` argument receives the value of `key` (or `nil` if `key`
+  is not present) and must return a two-element tuple: the "get" value
+  (the retrieved value, which can be operated on before being returned)
+  and the new value to be stored under `key`. The `fun` may also
   return `:pop`, implying the current value shall be removed
   from the structure and returned.
 
@@ -1873,19 +1933,21 @@ defmodule Kernel do
   like the `all` anonymous function defined above. See `Access.all/0`,
   `Access.key/2` and others as examples.
   """
-  @spec get_and_update_in(Access.t, nonempty_list(term), (term -> {get, term} | :pop)) ::
-                          {get, Access.t} when get: var
+  @spec get_and_update_in(structure :: Access.t, keys, (term -> {get_value, update_value} | :pop)) ::
+        {get_value, structure :: Access.t} when keys: nonempty_list(any), get_value: var, update_value: term
   def get_and_update_in(data, keys, fun)
 
-  def get_and_update_in(data, [h], fun) when is_function(h),
-    do: h.(:get_and_update, data, fun)
-  def get_and_update_in(data, [h | t], fun) when is_function(h),
-    do: h.(:get_and_update, data, &get_and_update_in(&1, t, fun))
+  def get_and_update_in(data, [head], fun) when is_function(head, 3),
+    do: head.(:get_and_update, data, fun)
 
-  def get_and_update_in(data, [h], fun),
-    do: Access.get_and_update(data, h, fun)
-  def get_and_update_in(data, [h | t], fun),
-    do: Access.get_and_update(data, h, &get_and_update_in(&1, t, fun))
+  def get_and_update_in(data, [head | tail], fun) when is_function(head, 3),
+    do: head.(:get_and_update, data, &get_and_update_in(&1, tail, fun))
+
+  def get_and_update_in(data, [head], fun) when is_function(fun, 1),
+    do: Access.get_and_update(data, head, fun)
+
+  def get_and_update_in(data, [head | tail], fun) when is_function(fun, 1),
+    do: Access.get_and_update(data, head, &get_and_update_in(&1, tail, fun))
 
   @doc """
   Pops a key from the given nested structure.
@@ -2282,18 +2344,10 @@ defmodule Kernel do
       []
 
   """
-  defmacro match?(pattern, expr)
-
-  # Special case where underscore, which always matches, is passed as the first
-  # argument.
-  defmacro match?({:_, _, atom}, _right) when is_atom(atom) do
-    true
-  end
-
-  defmacro match?(left, right) do
+  defmacro match?(pattern, expr) do
     quote do
-      case unquote(right) do
-        unquote(left) ->
+      case unquote(expr) do
+        unquote(pattern) ->
           true
         _ ->
           false
@@ -2305,10 +2359,10 @@ defmodule Kernel do
   Reads and writes attributes of the current module.
 
   The canonical example for attributes is annotating that a module
-  implements the OTP behaviour called `gen_server`:
+  implements an OTP behaviour, such as `GenServer`:
 
       defmodule MyServer do
-        @behaviour :gen_server
+        @behaviour GenServer
         # ... callbacks ...
       end
 
@@ -2344,63 +2398,69 @@ defmodule Kernel do
   """
   defmacro @(expr)
 
-  defmacro @({name, _, args}) do
-    # Check for Module as it is compiled later than Kernel
-    case bootstrapped?(Module) do
-      false -> nil
-      true  ->
-        assert_module_scope(__CALLER__, :@, 1)
-        function? = __CALLER__.function != nil
+  defmacro @({name, meta, args}) do
+    assert_module_scope(__CALLER__, :@, 1)
+    function? = __CALLER__.function != nil
 
-        case not function? and __CALLER__.context == :match do
+    cond do
+      # Check for Module as it is compiled later than Kernel
+      not bootstrapped?(Macro) ->
+        nil
+
+      not function? and __CALLER__.context == :match ->
+        raise ArgumentError, "invalid write attribute syntax, you probably meant to use: @#{name} expression"
+
+      # Typespecs attributes are currently special cased by the compiler
+      macro = is_list(args) and length(args) == 1 and typespec(name) ->
+        case bootstrapped?(Kernel.Typespec) do
           false -> nil
-          true  ->
-            raise ArgumentError, "invalid write attribute syntax, you probably meant to use: @#{name} expression"
+          true  -> quote do: Kernel.Typespec.unquote(macro)(unquote(hd(args)))
         end
 
-        # Typespecs attributes are special cased by the compiler so far
-        case is_list(args) and length(args) == 1 and typespec(name) do
-          false ->
-            do_at(args, name, function?, __CALLER__)
-          macro ->
-            case bootstrapped?(Kernel.Typespec) do
-              false -> nil
-              true  -> quote do: Kernel.Typespec.unquote(macro)(unquote(hd(args)))
-            end
-        end
+      true ->
+        do_at(args, meta, name, function?, __CALLER__)
     end
   end
 
   # @attribute(value)
-  defp do_at([arg], name, function?, env) do
-    case function? do
-      true ->
+  defp do_at([arg], meta, name, function?, env) do
+    line =
+      case :lists.keymember(:context, 1, meta) do
+        true -> nil
+        false -> env.line
+      end
+
+    cond do
+      function? ->
         raise ArgumentError, "cannot set attribute @#{name} inside function/macro"
-      false ->
-        cond do
-          name == :behavior ->
-            :elixir_errors.warn env.line, env.file,
-                                "@behavior attribute is not supported, please use @behaviour instead"
-          :lists.member(name, [:moduledoc, :typedoc, :doc]) ->
-            {stack, _} = :elixir_quote.escape(env_stacktrace(env), false)
-            arg = {env.line, arg}
-            quote do: Module.put_attribute(__MODULE__, unquote(name), unquote(arg), unquote(stack))
-          true ->
-            quote do: Module.put_attribute(__MODULE__, unquote(name), unquote(arg))
-        end
+
+      name == :behavior ->
+        :elixir_errors.warn env.line, env.file,
+                            "@behavior attribute is not supported, please use @behaviour instead"
+
+      :lists.member(name, [:moduledoc, :typedoc, :doc]) ->
+        {stack, _} = :elixir_quote.escape(env_stacktrace(env), false)
+        arg = {env.line, arg}
+        quote do: Module.put_attribute(__MODULE__, unquote(name), unquote(arg),
+                                       unquote(stack), unquote(line))
+
+      true ->
+        quote do: Module.put_attribute(__MODULE__, unquote(name), unquote(arg),
+                                       nil, unquote(line))
     end
   end
 
   # @attribute or @attribute()
-  defp do_at(args, name, function?, env) when is_atom(args) or args == [] do
+  defp do_at(args, _meta, name, function?, env) when is_atom(args) or args == [] do
     stack = env_stacktrace(env)
-
     doc_attr? = :lists.member(name, [:moduledoc, :typedoc, :doc])
+
     case function? do
       true ->
         value =
-          with {_, doc} when doc_attr? <- Module.get_attribute(env.module, name, stack),
-            do: doc
+          with {_, doc} when doc_attr? <-
+                 Module.get_attribute(env.module, name, stack),
+               do: doc
         try do
           :elixir_quote.escape(value, false)
         rescue
@@ -2409,17 +2469,19 @@ defmodule Kernel do
         else
           {val, _} -> val
         end
+
       false ->
         {escaped, _} = :elixir_quote.escape(stack, false)
         quote do
-          with {_, doc} when unquote(doc_attr?) <- Module.get_attribute(__MODULE__, unquote(name), unquote(escaped)),
-            do: doc
+          with {_, doc} when unquote(doc_attr?) <-
+                 Module.get_attribute(__MODULE__, unquote(name), unquote(escaped)),
+               do: doc
         end
     end
   end
 
   # All other cases
-  defp do_at(args, name, _function?, _env) do
+  defp do_at(args, _meta, name, _function?, _env) do
     raise ArgumentError, "expected 0 or 1 argument for @#{name}, got: #{length(args)}"
   end
 
@@ -2617,9 +2679,12 @@ defmodule Kernel do
   end
 
   @doc """
-  Returns a range with the specified start and end.
+  Returns a range with the specified `first` and `last` integers.
 
-  Both ends are included.
+  If last is larger than first, the range will be increasing from
+  first to last. If first is larger than last, the range will be
+  decreasing from first to last. If first is equal to last, the range
+  will contain one element, which is the number itself.
 
   ## Examples
 
@@ -2883,11 +2948,18 @@ defmodule Kernel do
 
       Enum.member?([1, 2, 3], x)
 
+  Elixir also supports `left not in right`, which evaluates to
+  `not(left in right)`:
+
+      iex> x = 1
+      iex> x not in [1, 2, 3]
+      false
+
   ## Guards
 
-  The `in/2` operator can be used in guard clauses as long as the
-  right-hand side is a range or a list. In such cases, Elixir will expand the
-  operator to a valid guard expression. For example:
+  The `in/2` operator (as well as `not in`) can be used in guard clauses as
+  long as the right-hand side is a range or a list. In such cases, Elixir will
+  expand the operator to a valid guard expression. For example:
 
       when x in [1, 2, 3]
 
@@ -2901,8 +2973,20 @@ defmodule Kernel do
 
   translates to:
 
-      when x >= 1 and x <= 3
+      when is_integer(x) and x >= 1 and x <= 3
 
+  Note that only integers can be considered inside a range by `in`.
+
+  ### AST considerations
+
+  `left not in right` is parsed by the compiler into the AST:
+
+      {:not, _, [{:in, _, [left, right]}]}
+
+  This is the same AST as `not(left in right)`.
+
+  Additionally, `Macro.to_string/2` will translate all occurrences of
+  this AST to `left not in right`.
   """
   defmacro left in right do
     in_module? = (__CALLER__.context == nil)
@@ -3211,14 +3295,14 @@ defmodule Kernel do
 
     under = String.to_atom(<<"_@", :erlang.integer_to_binary(counter)::binary>>)
     args  = [key, kind, under, var]
-    [{:{}, [], args} | module_vars(vars, counter+1)]
+    [{:{}, [], args} | module_vars(vars, counter + 1)]
   end
 
   defp module_vars([], _counter) do
     []
   end
 
-  # Gets two modules names and return an alias
+  # Gets two modules' names and returns an alias
   # which can be passed down to the alias directive
   # and it will create a proper shortcut representing
   # the given nesting.
@@ -3305,6 +3389,25 @@ defmodule Kernel do
       end
       #=> warning: the underscored variable "_bar" is used after being set
 
+  ## rescue/catch/after
+
+  Function bodies support `rescue`, `catch` and `after` as `SpecialForms.try/1`
+  does. The following two functions are equivalent:
+
+      def format(value) do
+        try do
+          format!(value)
+        catch
+          :exit, reason -> {:error, reason}
+        end
+      end
+
+      def format(value) do
+        format!(value)
+      catch
+        :exit, reason -> {:error, reason}
+      end
+
   """
   defmacro def(call, expr \\ nil) do
     define(:def, call, expr, __CALLER__)
@@ -3378,11 +3481,11 @@ defmodule Kernel do
     assert_no_function_scope(env, kind, 2)
     line = env.line
 
-    {call, uc} = :elixir_quote.escape(call, true)
-    {expr, ue} = :elixir_quote.escape(expr, true)
+    {call, unquoted_call} = :elixir_quote.escape(call, true)
+    {expr, unquoted_expr} = :elixir_quote.escape(expr, true)
 
     # Do not check clauses if any expression was unquoted
-    check_clauses = not(ue or uc)
+    check_clauses = not(unquoted_expr or unquoted_call)
     pos = :elixir_locals.cache_env(env)
 
     quote do
@@ -3477,7 +3580,7 @@ defmodule Kernel do
       %User{age: 21}
       ** (ArgumentError) the following keys must also be given when building struct User: [:name]
 
-  Keep in mind `@enforce_keys` is a simply a compile-time guarantee
+  Keep in mind `@enforce_keys` is a simple compile-time guarantee
   to aid developers when building structs. It is not enforced on
   updates and it does not provide any sort of value-validation.
 
@@ -3523,6 +3626,7 @@ defmodule Kernel do
           end
         false ->
           quote do
+            _ = @enforce_keys
             def __struct__(kv) do
               :lists.foldl(fn {key, val}, acc ->
                 :maps.update(key, val, acc)
@@ -3537,8 +3641,8 @@ defmodule Kernel do
           "#{Kernel.inspect(__MODULE__)}, defstruct can only be called once per module"
       end
 
-      {fields, keys, derive} = Kernel.Utils.defstruct(__MODULE__, unquote(fields))
-      @struct fields
+      {struct, keys, derive} = Kernel.Utils.defstruct(__MODULE__, unquote(fields))
+      @struct struct
       @enforce_keys keys
 
       case derive do
@@ -3552,7 +3656,7 @@ defmodule Kernel do
 
       unquote(builder)
       Kernel.Utils.announce_struct(__MODULE__)
-      fields
+      struct
     end
   end
 
@@ -3651,7 +3755,7 @@ defmodule Kernel do
     end
   end
 
-  @doc """
+  @doc ~S"""
   Defines a protocol.
 
   A protocol specifies an API that should be defined by its
@@ -3659,43 +3763,46 @@ defmodule Kernel do
 
   ## Examples
 
-  In Elixir, only `false` and `nil` are considered falsy values.
-  Everything else evaluates to `true` in `if/2` clauses. Depending
-  on the application, it may be important to specify a `blank?`
-  protocol that returns a boolean for other data types that should
-  be considered "blank". For instance, an empty list or an empty
-  binary could be considered blank.
+  In Elixir, we have two verbs for checking how many items there
+  are in a data structure: `length` and `size`.  `length` means the
+  information must be computed. For example, `length(list)` needs to
+  traverse the whole list to calculate its length. On the other hand,
+  `tuple_size(tuple)` and `byte_size(binary)` do not depend on the
+  tuple and binary size as the size information is precomputed in
+  the data structure.
 
-  Such protocol could be implemented as follows:
+  Although Elixir includes specific functions such as `tuple_size`,
+  `binary_size` and `map_size`, sometimes we want to be able to
+  retrieve the size of a data structure regardless of its type.
+  In Elixir we can write polymorphic code, i.e. code that works
+  with different shapes/types, by using protocols. A size protocol
+  could be implemented as follows:
 
-      defprotocol Blank do
-        @doc "Returns `true` if `data` is considered blank/empty"
-        def blank?(data)
+      defprotocol Size do
+        @doc "Calculates the size (and not the length!) of a data structure"
+        def size(data)
       end
 
-  Now that the protocol is defined it can be implemented. It needs to be
-  implemented for each Elixir type; for example:
+  Now that the protocol can be implemented for every data structure
+  the protocol may have a compliant implementation for:
 
-      # Integers are never blank
-      defimpl Blank, for: Integer do
-        def blank?(number), do: false
+      defimpl Size, for: BitString do
+        def size(binary), do: byte_size(binary)
       end
 
-      # The only blank list is the empty one
-      defimpl Blank, for: List do
-        def blank?([]), do: true
-        def blank?(_),  do: false
+      defimpl Size, for: Map do
+        def size(map), do: map_size(map)
       end
 
-      # The only blank atoms are "false" and "nil"
-      defimpl Blank, for: Atom do
-        def blank?(false), do: true
-        def blank?(nil),   do: true
-        def blank?(_),     do: false
+      defimpl Size, for: Tuple do
+        def size(tuple), do: tuple_size(tuple)
       end
 
-  The implementation of the `Blank` protocol would need to be defined for all
-  Elixir types. The available types are:
+  Notice we didn't implement it for lists as we don't have the
+  `size` information on lists, rather its value needs to be
+  computed with `length`.
+
+  It is possible to implement protocols for all Elixir types:
 
     * Structs (see below)
     * `Tuple`
@@ -3715,11 +3822,11 @@ defmodule Kernel do
 
   The real benefit of protocols comes when mixed with structs.
   For instance, Elixir ships with many data types implemented as
-  structs, like `MapSet`. We can implement the `Blank` protocol
+  structs, like `MapSet`. We can implement the `Size` protocol
   for those types as well:
 
-      defimpl Blank, for: MapSet do
-        def blank?(enum_like), do: Enum.empty?(enum_like)
+      defimpl Size, for: MapSet do
+        def size(map_set), do: MapSet.size(map_set)
       end
 
   When implementing a protocol for a struct, the `:for` option can
@@ -3729,54 +3836,54 @@ defmodule Kernel do
       defmodule User do
         defstruct [:email, :name]
 
-        defimpl Blank do
-          def blank?(%User{}), do: false
+        defimpl Size do
+          def size(%User{}), do: 2 # two fields
         end
       end
 
-  If a protocol is not found for a given type, it will fallback to
-  `Any`. Protocols that are implemented for maps don't work by default
-  on structs; look at `defstruct/1` for more information about deriving
+  If a protocol implementation is not found for a given type,
+  invoking the protocol will raise unless it is configured to
+  fallback to `Any`. Conveniences for building implementations
+  on top of existing ones are also available, look at `defstruct/1`
+  for more information about deriving
   protocols.
 
   ## Fallback to any
 
   In some cases, it may be convenient to provide a default
-  implementation for all types. This can be achieved by
-  setting the `@fallback_to_any` attribute to `true` in the protocol
+  implementation for all types. This can be achieved by setting
+  the `@fallback_to_any` attribute to `true` in the protocol
   definition:
 
-      defprotocol Blank do
+      defprotocol Size do
         @fallback_to_any true
-        def blank?(data)
+        def size(data)
       end
 
-  The `Blank` protocol can now be implemented for `Any`:
+  The `Size` protocol can now be implemented for `Any`:
 
-      defimpl Blank, for: Any do
-        def blank?(_), do: true
+      defimpl Size, for: Any do
+        def size(_), do: 0
       end
 
-  One may wonder why such behaviour (fallback to any) is not the default one.
-
-  It is two-fold: first, the majority of protocols cannot
-  implement an action in a generic way for all types; in fact,
-  providing a default implementation may be harmful, because users
-  may rely on the default implementation instead of providing a
-  specialized one.
-
-  Second, falling back to `Any` adds an extra lookup to all types,
-  which is unnecessary overhead unless an implementation for `Any` is
-  required.
+  Although the implementation above is arguably not a reasonable
+  one. For example, it makes no sense to say a PID or an Integer
+  have a size of 0. That's one of the reasons why `@fallback_to_any`
+  is an opt-in behaviour. For the majority of protocols, raising
+  an error when a protocol is not implemented is the proper behaviour.
 
   ## Types
 
   Defining a protocol automatically defines a type named `t`, which
   can be used as follows:
 
-      @spec present?(Blank.t) :: boolean
-      def present?(blank) do
-        not Blank.blank?(blank)
+      @spec print_size(Size.t) :: :ok
+      def print_size(data) do
+        IO.puts(case Size.size(data) do
+          0 -> "data has no items"
+          1 -> "data has one item"
+          n -> "data has #{n} items"
+        end)
       end
 
   The `@spec` above expresses that all types allowed to implement the
@@ -3815,12 +3922,12 @@ defmodule Kernel do
   all implementations are known up-front, Elixir provides a feature
   called protocol consolidation. For this reason, all protocols are
   compiled with `debug_info` set to `true`, regardless of the option
-  set by `elixirc` compiler. The debug info though may be removed
-  after consolidation.
+  set by `elixirc` compiler. The debug info though may be removed after
+  consolidation.
 
-  For more information on how to apply protocol consolidation to
-  a given project, please check the functions in the `Protocol`
-  module or the `mix compile.protocols` task.
+  Protocol consolidation is applied by default to all Mix projects.
+  For applying consolidation manually, please check the functions in
+  the `Protocol` module or the `mix compile.protocols` task.
   """
   defmacro defprotocol(name, do_block)
 
@@ -4016,28 +4123,17 @@ defmodule Kernel do
 
   ## Options
 
-    * `:to` - the expression to delegate to. Any expression
-      is allowed and its results will be evaluated at runtime. Usually
-      evaluates to the name of a module.
+    * `:to` - the module to dispatch to.
 
     * `:as` - the function to call on the target given in `:to`.
       This parameter is optional and defaults to the name being
       delegated (`funs`).
-
-    * `:append_first` - if `true`, when delegated, the first argument
-      passed to the delegated function will be relocated to the end of the
-      arguments when dispatched to the target.
-
-      The motivation behind this is because Elixir normalizes
-      the "handle" as the first argument while some Erlang modules
-      expect it as the last argument.
 
   ## Examples
 
       defmodule MyList do
         defdelegate reverse(list), to: :lists
         defdelegate other_reverse(list), to: :lists, as: :reverse
-        defdelegate [reverse(list), map(list, callback)], to: :lists, append_first: true
       end
 
       MyList.reverse([1, 2, 3])
@@ -4045,9 +4141,6 @@ defmodule Kernel do
 
       MyList.other_reverse([1, 2, 3])
       #=> [3, 2, 1]
-
-      MyList.map([1, 2, 3], &(&1 * 2))
-      #=> [2, 4, 6]
 
   """
   defmacro defdelegate(funs, opts) do
@@ -4406,8 +4499,9 @@ defmodule Kernel do
     end
   end
 
-  # TODO: Deprecate by v1.5
   @doc false
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
   defmacro to_char_list(arg) do
     quote do: Kernel.to_charlist(unquote(arg))
   end

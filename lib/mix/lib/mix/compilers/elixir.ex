@@ -18,10 +18,9 @@ defmodule Mix.Compilers.Elixir do
   @doc """
   Compiles stale Elixir files.
 
-  It expects a `manifest` file, the source directories, the source directories to skip,
-  the extensions to read in sources, the destination directory, a flag to know if
-  compilation is being forced or not and a callback to be invoked
-  once (and only if) compilation starts.
+  It expects a `manifest` file, the source directories, the destination
+  directory, a flag to know if compilation is being forced or not, and a
+  list of any additional compiler options.
 
   The `manifest` is written down with information including dependencies
   between modules, which helps it recompile only the modules that
@@ -32,33 +31,36 @@ defmodule Mix.Compilers.Elixir do
     # change to files are still picked up by the compiler. This
     # timestamp is used when writing BEAM files and the manifest.
     timestamp = :calendar.universal_time()
-    all = Mix.Utils.extract_files(srcs, [:ex])
+    all_paths = MapSet.new(Mix.Utils.extract_files(srcs, [:ex]))
 
     {all_modules, all_sources} = parse_manifest(manifest, dest)
     modified = Mix.Utils.last_modified(manifest)
+    prev_paths =
+      for source(source: source) <- all_sources, into: MapSet.new(), do: source
 
     removed =
-      for source(source: source) <- all_sources,
-          not(source in all),
-          do: source
+      prev_paths
+      |> MapSet.difference(all_paths)
+      |> MapSet.to_list
 
     changed =
       if force do
         # A config, path dependency or manifest has
         # changed, let's just compile everything
-        all
+        MapSet.to_list(all_paths)
       else
         sources_mtimes = mtimes(all_sources)
 
         # Otherwise let's start with the new sources
-        for(source <- all,
-            not List.keymember?(all_sources, source, source(:source)),
-            do: source)
-          ++
+        new_paths =
+          all_paths
+          |> MapSet.difference(prev_paths)
+          |> MapSet.to_list
         # Plus the sources that have changed in disk
         for(source(source: source, external: external) <- all_sources,
             times = Enum.map([source | external], &Map.fetch!(sources_mtimes, &1)),
             Mix.Utils.stale?(times, [modified]),
+            into: new_paths,
             do: source)
       end
 

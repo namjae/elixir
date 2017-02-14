@@ -557,7 +557,7 @@ handle_dot([$., T1, T2 | Rest], Line, Column, DotColumn, Scope, Tokens) when
 % ## Single Token Operators
 handle_dot([$., T | Rest], Line, Column, DotColumn, Scope, Tokens) when
     ?at_op(T); ?unary_op(T); ?capture_op(T); ?dual_op(T); ?mult_op(T);
-    ?rel_op(T); ?match_op(T); ?pipe_op(T); T == $% ->
+    ?rel_op(T); ?match_op(T); ?pipe_op(T) ->
   handle_call_identifier(Rest, Line, Column + 1, DotColumn, 1, list_to_atom([T]), Scope, Tokens);
 
 % ## Exception for .( as it needs to be treated specially in the parser
@@ -868,6 +868,8 @@ tokenize_kw_or_other(Rest, Kind, Line, Column, Length, Atom, Tokens) ->
   case check_keyword(Line, Column, Length, Atom, Tokens) of
     nomatch ->
       {identifier, Rest, check_call_identifier(Kind, Line, Column, Length, Atom, Rest)};
+    {ok, [{in_op, {_, _, InEndColumn}, in} | [{unary_op, {NotLine, NotColumn, _}, 'not'} | T]]} ->
+      {keyword, Rest, {in_op, {NotLine, NotColumn, InEndColumn}, 'not in'}, T};
     {ok, [Check | T]} ->
       {keyword, Rest, Check, T};
     {error, Message, Token} ->
@@ -972,6 +974,8 @@ check_keyword(_Line, _Column, _Length, Atom, [{capture_op, _, _} | _]) when ?ope
 check_keyword(DoLine, DoColumn, _Length, do, [{Identifier, {Line, Column, EndColumn}, Atom} | T]) when Identifier == identifier ->
   {ok, add_token_with_nl({do, {DoLine, DoColumn, DoColumn + 2}},
        [{do_identifier, {Line, Column, EndColumn}, Atom} | T])};
+check_keyword(_Line, _Column, _Length, do, [{'fn', _} | _]) ->
+  {error, do_with_fn_error("unexpected token \"do\""), "do"};
 check_keyword(Line, Column, _Length, do, Tokens) ->
   case do_keyword_valid(Tokens) of
     true  -> {ok, add_token_with_nl({do, {Line, Column, Column + 2}}, Tokens)};
@@ -1024,7 +1028,7 @@ keyword('catch')  -> block;
 keyword(_) -> false.
 
 invalid_character_error(Char) ->
-  "invalid character '" ++ [Char] ++ "' in identifier: ".
+  io_lib:format("invalid character \"~ts\" (codepoint U+~4.16.0B) in token: ", [[Char], Char]).
 
 invalid_do_error(Prefix) ->
   Prefix ++ ". In case you wanted to write a \"do\" expression, "
@@ -1038,4 +1042,9 @@ invalid_do_error(Prefix) ->
   "is syntactic sugar for the Elixir construct:\n\n"
   "    if(some_condition?, do: :this, else: :that)\n\n"
   "where \"some_condition?\" is the first argument and the second argument is a keyword list.\n\n"
+  "Syntax error before: ".
+
+do_with_fn_error(Prefix) ->
+  Prefix ++ ". Anonymous functions are written as:\n\n"
+  "    fn pattern -> expression end\n\n"
   "Syntax error before: ".

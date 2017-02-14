@@ -3,7 +3,7 @@ defmodule Base do
 
   @moduledoc """
   This module provides data encoding and decoding functions
-  according to [RFC 4648](http://tools.ietf.org/html/rfc4648).
+  according to [RFC 4648](https://tools.ietf.org/html/rfc4648).
 
   This document defines the commonly used base 16, base 32, and base
   64 encoding schemes.
@@ -128,7 +128,7 @@ defmodule Base do
 
   defp from_lower(char) when char in ?a..?z,
     do: char - (?a - ?A)
-  defp from_lower(char) when not char in ?A..?Z,
+  defp from_lower(char) when char not in ?A..?Z,
     do: char
   defp from_lower(char),
     do: raise(ArgumentError, "non-alphabet digit found: \"#{<<char>>}\" (byte #{char})")
@@ -698,7 +698,7 @@ defmodule Base do
 
   defp remove_ignored(string, nil), do: string
   defp remove_ignored(string, :whitespace) do
-    for <<c::8 <- string>>, not c in '\s\t\r\n', into: <<>>, do: <<c::8>>
+    for <<char::8 <- string>>, char not in '\s\t\r\n', into: <<>>, do: <<char::8>>
   end
 
   defp do_encode16(_, <<>>), do: <<>>

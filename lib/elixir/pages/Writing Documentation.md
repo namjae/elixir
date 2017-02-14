@@ -6,8 +6,8 @@ Elixir treats documentation as a first-class citizen. This means documentation s
 
 Elixir documentation is written using Markdown. There are plenty of guides on Markdown online, we recommend the ones available at GitHub as a getting started point:
 
-  * https://help.github.com/articles/markdown-basics/
-  * https://help.github.com/articles/github-flavored-markdown/
+  * [Basic writing and formatting syntax](https://help.github.com/articles/basic-writing-and-formatting-syntax/)
+  * [Mastering Markdown](https://guides.github.com/features/mastering-markdown/)
 
 ## Module Attributes
 
@@ -44,7 +44,7 @@ When documenting a function, argument names are inferred by the compiler. For ex
       size
     end
 
-The compiler will infer this argument as `map`. Sometimes the inference will be suboptimal, especially if the function contains multiple clauses with the argument matching on different values each time. You can specify the proper names for documentation by declaring before a bodyless clause:
+The compiler will infer this argument as `map`. Sometimes the inference will be suboptimal, especially if the function contains multiple clauses with the argument matching on different values each time. You can specify the proper names for documentation by declaring only the function head at any moment before the implementation:
 
     def size(map)
     def size(%{size: size}) do

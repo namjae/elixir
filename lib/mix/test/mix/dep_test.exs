@@ -247,7 +247,8 @@ defmodule Mix.DepTest do
   defmodule IdentityRemoteConverger do
     @behaviour Mix.RemoteConverger
 
-    def remote?(_app), do: true
+    def remote?(%Mix.Dep{app: :deps_repo}), do: false
+    def remote?(%Mix.Dep{}), do: true
     def deps(_dep, _lock), do: []
     def post_converge, do: :ok
 
@@ -280,10 +281,11 @@ defmodule Mix.DepTest do
 
   test "pass dependencies to remote converger in defined order" do
     deps = [
-      {:ok,         "0.1.0", path: "deps/ok"},
+      {:ok, "0.1.0", path: "deps/ok"},
       {:invalidvsn, "0.2.0", path: "deps/invalidvsn"},
+      {:deps_repo, "0.1.0", path: "custom/deps_repo"},
       {:invalidapp, "0.1.0", path: "deps/invalidapp"},
-      {:noappfile,  "0.1.0", path: "deps/noappfile"}
+      {:noappfile, "0.1.0", path: "deps/noappfile"}
     ]
 
     with_deps deps, fn ->
@@ -293,7 +295,7 @@ defmodule Mix.DepTest do
         Mix.Tasks.Deps.Get.run([])
 
         deps = Process.get(:remote_converger) |> Enum.map(& &1.app)
-        assert deps == [:ok, :invalidvsn, :invalidapp, :noappfile]
+        assert deps == [:ok, :invalidvsn, :deps_repo, :invalidapp, :noappfile, :git_repo]
       end
     end
   after
@@ -326,6 +328,25 @@ defmodule Mix.DepTest do
         end
 
         assert_received {:mix_shell, :error, ["Dependencies have diverged:"]}
+        refute Process.get(:remote_converger)
+      end
+    end
+  after
+    Mix.RemoteConverger.register(nil)
+  end
+
+  test "remote converger is not invoked if deps graph has cycles" do
+    deps = [{:app1, "0.1.0", path: "app1"},
+            {:app2, "0.1.0", path: "app2"}]
+
+    with_deps deps, fn ->
+      Mix.RemoteConverger.register(RaiseRemoteConverger)
+
+      in_fixture "deps_cycle", fn ->
+        assert_raise Mix.Error, ~r/cycles in the dependency graph/, fn ->
+          Mix.Tasks.Deps.Get.run([])
+        end
+
         refute Process.get(:remote_converger)
       end
     end

@@ -36,6 +36,10 @@ defmodule Mix.Compilers.Test do
         Mix.shell.info "No stale tests."
         :noop
 
+      [] when test_patterns == [] ->
+        Mix.shell.info "There are no tests to run"
+        :noop
+
       [] ->
         Mix.shell.error "Test patterns did not match any file: " <> Enum.join(test_patterns, ", ")
         :noop
@@ -218,7 +222,7 @@ defmodule Mix.Compilers.Test do
   defp find_all_dependant_on(modules, sources, all_modules, resolved \\ MapSet.new()) do
     new_modules =
       for module <- modules,
-          not module in resolved,
+          module not in resolved,
           dependant_module <- dependant_modules(module, all_modules, sources),
           do: dependant_module,
           into: modules

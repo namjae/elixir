@@ -45,6 +45,10 @@ defmodule Mix.Tasks.EscriptTest do
        escript: [main_module: :escripttest],
        deps: [{:ok, path: fixture_path("deps_status/deps/ok")}]]
     end
+
+    def application do
+      [applications: [], extra_applications: [:crypto]]
+    end
   end
 
   defmodule EscriptWithUnknownMainModule do
@@ -127,6 +131,18 @@ defmodule Mix.Tasks.EscriptTest do
     purge [Ok.Mixfile]
   end
 
+  test "generating escript for umbrella projects fails with a nice error" do
+    message = "Building escripts for umbrella projects is unsupported"
+
+    in_fixture "umbrella_dep/deps/umbrella", fn ->
+      Mix.Project.in_project(:umbrella, ".", fn _ ->
+        assert_raise Mix.Error, message, fn ->
+          Mix.Tasks.Escript.Build.run []
+        end
+      end)
+    end
+  end
+
   test "generate escript with consolidated protocols" do
     Mix.Project.push EscriptConsolidated
 
@@ -196,7 +212,7 @@ defmodule Mix.Tasks.EscriptTest do
     end
   end
 
-  test "escript.install from git" do
+  test "escript.install from Git" do
     in_fixture "git_repo", fn ->
       File.write! "lib/git_repo.ex", """
       defmodule GitRepo do

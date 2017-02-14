@@ -28,6 +28,31 @@ defmodule Kernel.WarningTest do
     purge Sample
   end
 
+  test "unused variable in redefined function in different file" do
+    output = capture_err(fn ->
+      Code.eval_string """
+      defmodule Sample do
+        defmacro __using__(_) do
+          quote location: :keep do
+            def function(arg)
+          end
+        end
+      end
+      """
+      Code.eval_string("""
+      defmodule RedefineSample do
+        use Sample
+        def function(var123), do: nil
+      end
+      """, [], file: "redefine_sample.ex")
+    end)
+    assert output =~ "redefine_sample.ex:3"
+    assert output =~ "variable \"var123\" is unused"
+  after
+    purge Sample
+    purge RedefineSample
+  end
+
   test "useless literal" do
     message = "code block contains unused literal \"oops\""
 
@@ -391,7 +416,7 @@ defmodule Kernel.WarningTest do
         def hello
       end
       """
-    end) =~ "bodyless clause provided for nonexistent def hello/0"
+    end) =~ "implementation not provided for predefined def hello/0"
   after
     purge Sample1
   end
@@ -438,7 +463,7 @@ defmodule Kernel.WarningTest do
         def hello(arg \\ 0), do: nil
       end
       """
-    end) =~ "definitions with multiple clauses and default values require a function head"
+    end) =~ "definitions with multiple clauses and default values require a header"
   after
     purge Sample
   end
@@ -451,7 +476,7 @@ defmodule Kernel.WarningTest do
         def hello(arg), do: nil
       end
       """
-    end) =~ "definitions with multiple clauses and default values require a function head"
+    end) =~ "definitions with multiple clauses and default values require a header"
   after
     purge Sample
   end
@@ -680,6 +705,20 @@ defmodule Kernel.WarningTest do
     purge Sample
   end
 
+  test "attribute with no use" do
+    content = capture_err(fn ->
+      Code.eval_string """
+      defmodule Sample do
+        @at "Something"
+      end
+      """
+    end)
+    assert content =~ "module attribute @at was set but never used"
+    assert content =~ "nofile:2"
+  after
+    purge Sample
+  end
+
   test "typedoc with no type" do
     assert capture_err(fn ->
       Code.eval_string """
@@ -687,7 +726,7 @@ defmodule Kernel.WarningTest do
         @typedoc "Something"
       end
       """
-    end) =~ "@typedoc provided but no type follows it"
+    end) =~ "module attribute @typedoc was set but no type follows it"
   after
     purge Sample
   end
@@ -699,7 +738,7 @@ defmodule Kernel.WarningTest do
         @doc "Something"
       end
       """
-    end) =~ "@doc provided but no definition follows it"
+    end) =~ "module attribute @doc was set but no definition follows it"
   after
     purge Sample
   end

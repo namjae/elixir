@@ -29,17 +29,12 @@
 %% number and order of arguments and show up on captures.
 
 inline(?atom, to_charlist, 1) -> {erlang, atom_to_list};
-%% TODO: Deprecate to_char_list function by v1.5
-inline(?atom, to_char_list, 1) -> {erlang, atom_to_list};
 inline(?io, iodata_length, 1) -> {erlang, iolist_size};
 inline(?io, iodata_to_binary, 1) -> {erlang, iolist_to_binary};
 inline(?integer, to_string, 1) -> {erlang, integer_to_binary};
 inline(?integer, to_string, 2) -> {erlang, integer_to_binary};
 inline(?integer, to_charlist, 1) -> {erlang, integer_to_list};
 inline(?integer, to_charlist, 2) -> {erlang, integer_to_list};
-%% TODO: Deprecate to_char_list function by v1.5
-inline(?integer, to_char_list, 1) -> {erlang, integer_to_list};
-inline(?integer, to_char_list, 2) -> {erlang, integer_to_list};
 inline(?list, to_atom, 1) -> {erlang, list_to_atom};
 inline(?list, to_existing_atom, 1) -> {erlang, list_to_existing_atom};
 inline(?list, to_float, 1) -> {erlang, list_to_float};
@@ -141,12 +136,10 @@ inline(?process, spawn, 4) -> {erlang, spawn_opt};
 inline(?process, unlink, 1) -> {erlang, unlink};
 
 inline(?port, open, 2) -> {erlang, open_port};
-inline(?port, call, 3) -> {erlang, port_call};
 inline(?port, close, 1) -> {erlang, port_close};
 inline(?port, command, 2) -> {erlang, port_command};
 inline(?port, command, 3) -> {erlang, port_command};
 inline(?port, connect, 2) -> {erlang, port_connect};
-inline(?port, control, 3) -> {erlang, port_control};
 inline(?port, list, 0) -> {erlang, ports};
 
 inline(?string, to_float, 1) -> {erlang, binary_to_float};
@@ -178,6 +171,10 @@ inline(_, _, _) -> false.
 
 %% Complex rewrite rules
 
+%% TODO: Move rewrite rules to Erlang pass as those are
+%% optimizations specific to the Erlang backend. They also
+%% affect code such as guard validation.
+
 rewrite(?access, _DotMeta, 'get', _Meta, [nil, Arg], _Env)
     when ?is_literal(Arg) orelse (is_atom(element(1, Arg)) andalso element(3, Arg) == nil) ->
   nil;
@@ -187,9 +184,6 @@ rewrite(?access, _DotMeta, 'get', Meta, [Arg, _], Env)
     "the Access syntax and calls to Access.get/2 are not available for the value: ~ts",
     ['Elixir.Macro':to_string(Arg)]);
 rewrite(?list_chars, _DotMeta, 'to_charlist', _Meta, [List], _Env) when is_list(List) ->
-  List;
-%% TODO: Deprecate to_char_list function by v1.5
-rewrite(?list_chars, _DotMeta, 'to_char_list', _Meta, [List], _Env) when is_list(List) ->
   List;
 rewrite(?string_chars, _DotMeta, 'to_string', _Meta, [String], _Env) when is_binary(String) ->
   String;

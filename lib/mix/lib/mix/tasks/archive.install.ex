@@ -6,14 +6,15 @@ defmodule Mix.Tasks.Archive.Install do
   @moduledoc """
   Installs an archive locally.
 
-  If no argument is supplied but there is an archive in the project's root directory
-  (created with `mix archive.build`), then the archive will be installed
-  locally. For example:
+  If no argument is supplied but there is an archive in the project's
+  root directory (created with `mix archive.build`), then the archive
+  will be installed locally. For example:
 
       mix do archive.build, archive.install
 
-  If an argument is provided, it should be a local path or a URL to a prebuilt archive,
-  a git repository, a github repository, or a hex package.
+  If an argument is provided, it should be a local path or a URL to a
+  prebuilt archive, a Git repository, a GitHub repository, or a Hex
+  package.
 
       mix archive.install archive.ez
       mix archive.install path/to/archive.ez
@@ -104,8 +105,9 @@ defmodule Mix.Tasks.Archive.Install do
   ### Private helpers
 
   defp archives(name) do
+    # TODO: We can remove the .ez extension on Elixir 2.0 since we always unzip since 1.3
     Mix.Local.path_for(:archive)
-    |> Path.join(name)
+    |> Path.join(name <> "{,*.ez}")
     |> Path.wildcard
   end
 

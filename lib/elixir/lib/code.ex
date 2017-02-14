@@ -104,7 +104,9 @@ defmodule Code do
   The `binding` argument is a keyword list of variable bindings.
   The `opts` argument is a keyword list of environment options.
 
-  Those options can be:
+  ## Options
+
+  Options can be:
 
     * `:file` - the file to be considered in the evaluation
     * `:line` - the line on which the script starts
@@ -172,7 +174,12 @@ defmodule Code do
   @doc """
   Evaluates the quoted contents.
 
-  See `eval_string/3` for a description of arguments and return values.
+  **Warning**: Calling this function inside a macro is considered bad
+  practice as it will attempt to evaluate runtime values at compile time.
+  Macro arguments are typically transformed by unquoting them into the
+  returned quoted expressions (instead of evaluated).
+
+  See `eval_string/3` for a description of bindings and options.
 
   ## Examples
 
@@ -433,9 +440,16 @@ defmodule Code do
   def compiler_options(opts) do
     available = available_compiler_options()
 
-    for {k, _} <- opts,
-        not k in available,
-        do: raise "unknown compiler options: #{k}"
+    Enum.each(opts, fn({key, value}) ->
+      cond do
+        key not in available ->
+          raise "unknown compiler option: #{inspect(key)}"
+        not is_boolean(value) ->
+          raise "compiler option #{inspect(key)} should be a boolean, got: #{inspect(value)}"
+        true ->
+          :ok
+      end
+    end)
 
     :elixir_config.update :compiler_options, &Enum.into(opts, &1)
   end

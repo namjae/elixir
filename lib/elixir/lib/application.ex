@@ -88,12 +88,18 @@ defmodule Application do
   by `use Application`) which does any application cleanup. It receives the
   application state and can return any value. Note that shutting down the
   supervisor is automatically handled by the VM.
+
+  An application without a supervision tree doesn't define an application
+  module callback in the application definition in `mix.exs` file. Even though
+  there is no module with application callbacks such as `start/2` and
+  `stop/1`, the application can be started and stopped the same way as an
+  application with a supervision tree.
   """
 
   @doc """
   Called when an application is started.
 
-  This function is called when an the application is started using
+  This function is called when an application is started using
   `Application.start/2` (and functions on top of that, such as
   `Application.ensure_started/2`). This function should start the top-level
   process of the application (which should be the top supervisor of the
@@ -104,7 +110,7 @@ defmodule Application do
 
     * `:normal` - used if the startup is a normal startup or if the application
       is distributed and is started on the current node because of a failover
-      from another mode and the application specification key `:start_phases`
+      from another node and the application specification key `:start_phases`
       is `:undefined`.
     * `{:takeover, node}` - used if the application is distributed and is
       started on the current node because of a failover on the node `node`.
@@ -144,6 +150,20 @@ defmodule Application do
   nothing and just returns `:ok`.
   """
   @callback stop(state) :: term
+
+  @doc """
+  Start an application in synchronous phases.
+
+  This function is called after `start/2` finishes but before
+  `Application.start/2` returns. It will be called once for every start phase
+  defined in the application's (and any included applications') specification,
+  in the order they are listed in.
+  """
+  @callback start_phase(phase :: term, start_type, phase_args :: term) ::
+    :ok |
+    {:error, reason :: term}
+
+  @optional_callbacks start_phase: 3
 
   @doc false
   defmacro __using__(_) do
@@ -334,7 +354,7 @@ defmodule Application do
   started before this application is. If not, `{:error, {:not_started, app}}` is
   returned, where `app` is the name of the missing application.
 
-  In case you want to automatically  load **and start** all of `app`'s dependencies,
+  In case you want to automatically load **and start** all of `app`'s dependencies,
   see `ensure_all_started/2`.
 
   The `type` argument specifies the type of the application:
@@ -419,7 +439,7 @@ defmodule Application do
       #=> "bar-123"
 
   For more information on code paths, check the `Code` module in
-  Elixir and also Erlang's `:code` module.
+  Elixir and also Erlang's [`:code` module](http://www.erlang.org/doc/man/code.html).
   """
   @spec app_dir(app) :: String.t
   def app_dir(app) when is_atom(app) do

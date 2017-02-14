@@ -163,8 +163,14 @@ defmodule Mix.Tasks.Deps.Compile do
     cmd = "#{rebar_cmd(dep)} bare compile --paths #{inspect lib_path}"
 
     File.mkdir_p!(dep_path)
-    File.write!(config_path, Mix.Rebar.serialize_config(dep.extra))
+    File.write!(config_path, rebar_config(dep))
     do_command dep, config, cmd, false, env
+  end
+
+  defp rebar_config(dep) do
+    dep.extra
+    |> Mix.Rebar.dependency_config
+    |> Mix.Rebar.serialize_config
   end
 
   defp rebar_cmd(%Mix.Dep{manager: manager} = dep) do
@@ -185,19 +191,29 @@ defmodule Mix.Tasks.Deps.Compile do
       Mix.raise "\"#{manager}\" installation failed"
   end
 
-  defp do_make(%{opts: opts} = dep, config) do
-    os_type = :os.type
+  defp do_make(dep, config) do
+    command = make_command(dep)
+    do_command(dep, config, command, true, [{"IS_DEP", "1"}])
+  end
+
+  defp make_command(dep) do
+    makefile_win? = makefile_win?(dep)
 
     command =
-      cond do
-        match?({:win32, _}, os_type) and File.regular?(Path.join(opts[:dest], "Makefile.win")) ->
+      case :os.type do
+        {:win32, _} when makefile_win? ->
           "nmake /F Makefile.win"
-        match?({:unix, type} when type in [:freebsd, :openbsd], os_type) ->
+        {:unix, type} when type in [:freebsd, :openbsd] ->
           "gmake"
-        true ->
+        _ ->
           "make"
       end
-    do_command(dep, config, command, true, [{"IS_DEP", "1"}])
+
+    if erlang_mk?(dep) do
+      "#{command} clean && #{command}"
+    else
+      command
+    end
   end
 
   defp do_compile(%Mix.Dep{opts: opts} = dep, config) do
@@ -241,5 +257,13 @@ defmodule Mix.Tasks.Deps.Compile do
     if req && not Version.match?(System.version, req) do
       req
     end
+  end
+
+  defp erlang_mk?(%Mix.Dep{opts: opts}) do
+    File.regular?(Path.join(opts[:dest], "erlang.mk"))
+  end
+
+  defp makefile_win?(%Mix.Dep{opts: opts}) do
+    File.regular?(Path.join(opts[:dest], "Makefile.win"))
   end
 end

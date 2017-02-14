@@ -18,12 +18,15 @@ defmodule Mix.Tasks.Compile.App do
   function in your `mix.exs` with the following options:
 
     * `:applications` - all applications your application depends
-      on at runtime. For example, if your application depends on
-      Erlang's `:crypto`, it needs to be added to this list. Most
-      of your dependencies must be added as well (unless they're
-      a development or test dependency). Mix and other tools use this
-      list in order to properly boot your application dependencies
+      on at runtime. By default, this list is automatically inferred
+      from your dependencies. Any extra Erlang/Elixir dependency
+      must be specified in `:extra_applications`. Mix and other tools
+      use the application list in order to start your dependencies
       before starting the application itself.
+
+    * `:extra_applications` - a list of Erlang/Elixir applications
+      that you want started before your application. For example,
+      Elixir's `:logger` or Erlang's `:crypto`.
 
     * `:registered` - the name of all registered processes in the
       application. If your application defines a local GenServer
@@ -41,13 +44,43 @@ defmodule Mix.Tasks.Compile.App do
       The application environment is one of the most common ways
       to configure applications.
 
-  Let's see an example `application/0` function:
+    * `:start_phases` - specifies a list of phases and their arguments
+      to be called after the application is started. Phases will be called, in
+      order, for the application and all included applications. If a phase is
+      not defined for an included application, that application is skipped.
+
+    * `:included_applications` - specifies a list of applications
+      that will be included in the application. It is the responsibility of
+      the primary application to start the supervision tree of all included
+      applications, as only the primary application will be started. A process
+      in an included application considers itself belonging to the
+      primary application.
+
+  Let's see an example `MyApp.application/0` function:
 
       def application do
         [mod: {MyApp, []},
+         start_phases: [init: [], go: [], finish: []],
          env: [default: :value],
-         applications: [:crypto]]
+         applications: [:crypto],
+         included_applications: [MyIncludedApp]]
       end
+
+  And an example `MyIncludedApp.application/0` function:
+
+      def application do
+        [mod: {MyIncludedApp, []},
+         start_phases: [go: []]]
+      end
+
+  In this example, the order that the application callbacks are called in is:
+
+      Application.start(MyApp)
+      MyApp.start(:normal, [])
+      MyApp.start_phase(:init, :normal, [])
+      MyApp.start_phase(:go, :normal, [])
+      MyIncludedApp.start_phase(:go, :normal, [])
+      MyApp.start_phase(:finish, :normal, [])
 
   Besides the options above, `.app` files also expect other
   options like `:modules` and `:vsn`, but these are automatically
@@ -79,28 +112,27 @@ defmodule Mix.Tasks.Compile.App do
 
     if opts[:force] || Mix.Utils.stale?(sources, [target]) || modules_changed?(mods, target) do
       best_guess = [
-        vsn: to_charlist(version),
+        description: to_charlist(config[:description] || app),
         modules: mods,
-        applications: []
+        registered: [],
+        vsn: to_charlist(version),
       ]
 
       properties = if function_exported?(project, :application, 0) do
-        Keyword.merge(best_guess, project.application)
+        project_application = project.application()
+        unless Keyword.keyword?(project_application) do
+          Mix.raise "Application configuration returned from application/0 should be a keyword list"
+        end
+        Keyword.merge(best_guess, project_application)
       else
         best_guess
       end
 
-      properties = ensure_correct_properties(app, config, properties)
-
-      # Ensure we always prepend the standard application dependencies
-      properties = Keyword.update!(properties, :applications, fn apps ->
-        [:kernel, :stdlib] ++ language_app(config) ++ apps
-      end)
-
-      contents = {:application, app, properties}
+      properties = ensure_correct_properties(properties, config)
+      contents = :io_lib.format("~p.~n", [{:application, app, properties}])
 
       Mix.Project.ensure_structure()
-      File.write!(target, :io_lib.format("~p.", [contents]), [:utf8])
+      File.write!(target, IO.chardata_to_string(contents))
       Mix.shell.info "Generated #{app} app"
       :ok
     else
@@ -147,14 +179,14 @@ defmodule Mix.Tasks.Compile.App do
     end
   end
 
-  defp ensure_correct_properties(app, config, properties) do
+  defp ensure_correct_properties(properties, config) do
     properties
-    |> Keyword.put_new(:description, to_charlist(config[:description] || app))
-    |> Keyword.put_new(:registered, [])
-    |> validate_properties
+    |> validate_properties!
+    |> Keyword.put_new_lazy(:applications, fn -> apps_from_prod_non_optional_deps(properties) end)
+    |> Keyword.update!(:applications, fn apps -> normalize_apps(apps, properties, config) end)
   end
 
-  defp validate_properties(properties) do
+  defp validate_properties!(properties) do
     Enum.each properties, fn
       {:description, value} ->
         unless is_list(value) do
@@ -184,13 +216,17 @@ defmodule Mix.Tasks.Compile.App do
         unless is_list(value) and Enum.all?(value, &is_atom(&1)) do
           Mix.raise "Application included applications (:included_applications) should be a list of atoms, got: #{inspect value}"
         end
+      {:extra_applications, value} ->
+        unless is_list(value) and Enum.all?(value, &is_atom(&1)) do
+          Mix.raise "Application extra applications (:extra_applications) should be a list of atoms, got: #{inspect value}"
+        end
       {:applications, value} ->
         unless is_list(value) and Enum.all?(value, &is_atom(&1)) do
-          Mix.raise "Application dependencies (:applications) should be a list of atoms, got: #{inspect value}"
+          Mix.raise "Application applications (:applications) should be a list of atoms, got: #{inspect value}"
         end
       {:env, value} ->
         unless Keyword.keyword?(value) do
-          Mix.raise "Application dependencies (:env) should be a keyword list, got: #{inspect value}"
+          Mix.raise "Application environment (:env) should be a keyword list, got: #{inspect value}"
         end
       {:start_phases, value} ->
         unless Keyword.keyword?(value) do
@@ -207,5 +243,21 @@ defmodule Mix.Tasks.Compile.App do
     end
 
     properties
+  end
+
+  defp apps_from_prod_non_optional_deps(properties) do
+    included_applications = Keyword.get(properties, :included_applications, [])
+
+    for %{app: app, opts: opts, top_level: true} <- Mix.Dep.cached,
+        Keyword.get(opts, :app, true),
+        Keyword.get(opts, :runtime, true),
+        not Keyword.get(opts, :optional, false),
+        app not in included_applications,
+        do: app
+  end
+
+  defp normalize_apps(apps, properties, config) do
+    extra = Keyword.get(properties, :extra_applications, [])
+    Enum.uniq([:kernel, :stdlib] ++ language_app(config) ++ extra ++ apps)
   end
 end

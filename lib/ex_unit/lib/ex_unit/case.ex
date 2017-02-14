@@ -11,7 +11,7 @@ defmodule ExUnit.Case do
 
   When used, it accepts the following options:
 
-    * `:async` - configure this specific test case to able to run in parallel
+    * `:async` - configure this specific test case to run in parallel
       with other test cases. May be used for performance when this test case
       does not change any global state. Defaults to `false`.
 
@@ -264,11 +264,10 @@ defmodule ExUnit.Case do
   @doc """
   Defines a not implemented test with a string.
 
-  Provides a convenient macro that allows a test to be
-  defined with a string, but not yet implemented. The
-  resulting test will always fail and print "Not yet
-  implemented" error message. The resulting test case is
-  also tagged with :not_implemented.
+  Provides a convenient macro that allows a test to be defined
+  with a string, but not yet implemented. The resulting test will
+  always fail and print "Not implemented" error message. The
+  resulting test case is also tagged with `:not_implemented`.
 
   ## Examples
 
@@ -278,7 +277,7 @@ defmodule ExUnit.Case do
   defmacro test(message) do
     quote bind_quoted: binding() do
       name = ExUnit.Case.register_test(__ENV__, :test, message, [:not_implemented])
-      def unquote(name)(_), do: flunk("Not yet implemented")
+      def unquote(name)(_), do: flunk("Not implemented")
     end
   end
 
@@ -402,7 +401,7 @@ defmodule ExUnit.Case do
     registered_attributes = Module.get_attribute(mod, :ex_unit_registered)
     registered = Map.new(registered_attributes, &{&1, Module.get_attribute(mod, &1)})
 
-    tag = Module.get_attribute(mod, :tag)
+    tag = Module.delete_attribute(mod, :tag)
     async = Module.get_attribute(mod, :ex_unit_async)
 
     {name, describe, describetag} =
@@ -426,7 +425,7 @@ defmodule ExUnit.Case do
     test = %ExUnit.Test{name: name, case: mod, tags: tags}
     Module.put_attribute(mod, :ex_unit_tests, test)
 
-    Enum.each [:tag | registered_attributes], fn(attribute) ->
+    Enum.each registered_attributes, fn(attribute) ->
       Module.delete_attribute(mod, attribute)
     end
 
@@ -473,7 +472,7 @@ defmodule ExUnit.Case do
     end
 
     unless is_atom(tags[:type]),
-      do: raise "value for tag `:type` must be an atom"
+      do: raise "value for tag \":type\" must be an atom"
 
     tags
   end

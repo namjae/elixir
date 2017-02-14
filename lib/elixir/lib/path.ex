@@ -12,14 +12,15 @@ defmodule Path do
   that require it (like `wildcard/2` and `expand/1`).
   """
 
-  alias :filename, as: FN
   @type t :: :unicode.chardata()
 
   @doc """
   Converts the given path to an absolute one. Unlike
   `expand/1`, no attempt is made to resolve `..`, `.` or `~`.
 
-  ## Unix examples
+  ## Examples
+
+  ### Unix
 
       Path.absname("foo")
       #=> "/usr/local/foo"
@@ -27,12 +28,12 @@ defmodule Path do
       Path.absname("../x")
       #=> "/usr/local/../x"
 
-  ## Windows
+  ### Windows
 
       Path.absname("foo").
-      "D:/usr/local/foo"
+      #=> "D:/usr/local/foo"
       Path.absname("../x").
-      "D:/usr/local/../x"
+      #=> "D:/usr/local/../x"
 
   """
   @spec absname(t) :: binary
@@ -41,8 +42,10 @@ defmodule Path do
   end
 
   @doc """
-  Builds a path from `relative_to` to `path`. If `path` is already
-  an absolute path, `relative_to` is ignored. See also `relative_to/2`.
+  Builds a path from `relative_to` to `path`.
+
+  If `path` is already an absolute path, `relative_to` is ignored. See also
+  `relative_to/2`.
 
   Unlike `expand/2`, no attempt is made to
   resolve `..`, `.` or `~`.
@@ -97,7 +100,7 @@ defmodule Path do
     do: do_absname_join(IO.chardata_to_string(left), relative(right), [], major_os_type())
 
   defp do_absname_join(<<uc_letter, ?:, rest::binary>>, relativename, [], :win32) when uc_letter in ?A..?Z, do:
-    do_absname_join(rest, relativename, [?:, uc_letter+?a-?A], :win32)
+    do_absname_join(rest, relativename, [?:, uc_letter + ?a - ?A], :win32)
   defp do_absname_join(<<?\\, rest::binary>>, relativename, result, :win32), do:
     do_absname_join(<<?/, rest::binary>>, relativename, result, :win32)
   defp do_absname_join(<<?/, rest::binary>>, relativename, [?., ?/ | result], os_type), do:
@@ -141,10 +144,11 @@ defmodule Path do
 
   @doc """
   Expands the path relative to the path given as the second argument
-  expanding any `.` and `..` characters. If the path is already an
-  absolute path, `relative_to` is ignored.
+  expanding any `.` and `..` characters.
 
-  Note, that this function treats `path` with a leading `~` as
+  If the path is already an absolute path, `relative_to` is ignored.
+
+  Note that this function treats a `path` with a leading `~` as
   an absolute one.
 
   The second argument is first expanded to an absolute path.
@@ -169,7 +173,9 @@ defmodule Path do
   @doc """
   Returns the path type.
 
-  ## Unix examples
+  ## Examples
+
+  ### Unix
 
       Path.type("/")                #=> :absolute
       Path.type("/usr/local/bin")   #=> :absolute
@@ -177,7 +183,7 @@ defmodule Path do
       Path.type("../usr/local/bin") #=> :relative
       Path.type("~/file")           #=> :relative
 
-  ## Windows examples
+  ### Windows
 
       Path.type("D:/usr/local/bin") #=> :absolute
       Path.type("usr/local/bin")    #=> :relative
@@ -193,13 +199,15 @@ defmodule Path do
   @doc """
   Forces the path to be a relative path.
 
-  ## Unix examples
+  ## Examples
+
+  ### Unix
 
       Path.relative("/usr/local/bin")   #=> "usr/local/bin"
       Path.relative("usr/local/bin")    #=> "usr/local/bin"
       Path.relative("../usr/local/bin") #=> "../usr/local/bin"
 
-  ## Windows examples
+  ### Windows
 
       Path.relative("D:/usr/local/bin") #=> "usr/local/bin"
       Path.relative("usr/local/bin")    #=> "usr/local/bin"
@@ -225,46 +233,49 @@ defmodule Path do
     end
   end
 
-  defp unix_pathtype(<<?/, relative::binary>>), do:
-    {:absolute, relative}
-  defp unix_pathtype([?/ | relative]), do:
-    {:absolute, relative}
-  defp unix_pathtype([list | rest]) when is_list(list), do:
-    unix_pathtype(list ++ rest)
-  defp unix_pathtype(relative), do:
-    {:relative, relative}
+  defp unix_pathtype(path) when path in ["/", '/'],
+    do: {:absolute, "."}
+  defp unix_pathtype(<<?/, relative::binary>>),
+    do: {:absolute, relative}
+  defp unix_pathtype([?/ | relative]),
+    do: {:absolute, relative}
+  defp unix_pathtype([list | rest]) when is_list(list),
+    do: unix_pathtype(list ++ rest)
+  defp unix_pathtype(relative),
+    do: {:relative, relative}
 
   @slash [?/, ?\\]
 
-  defp win32_pathtype([list | rest]) when is_list(list), do:
-    win32_pathtype(list++rest)
-  defp win32_pathtype([char, list | rest]) when is_list(list), do:
-    win32_pathtype([char | list++rest])
-  defp win32_pathtype(<<c1, c2, relative::binary>>) when c1 in @slash and c2 in @slash, do:
-    {:absolute, relative}
-  defp win32_pathtype(<<c, relative::binary>>) when c in @slash, do:
-    {:volumerelative, relative}
-  defp win32_pathtype(<<_letter, ?:, c, relative::binary>>) when c in @slash, do:
-    {:absolute, relative}
-  defp win32_pathtype(<<_letter, ?:, relative::binary>>), do:
-    {:volumerelative, relative}
+  defp win32_pathtype([list | rest]) when is_list(list),
+    do: win32_pathtype(list ++ rest)
+  defp win32_pathtype([char, list | rest]) when is_list(list),
+    do: win32_pathtype([char | list ++ rest])
+  defp win32_pathtype(<<c1, c2, relative::binary>>) when c1 in @slash and c2 in @slash,
+    do: {:absolute, relative}
+  defp win32_pathtype(<<char, relative::binary>>) when char in @slash,
+    do: {:volumerelative, relative}
+  defp win32_pathtype(<<_letter, ?:, char, relative::binary>>) when char in @slash,
+    do: {:absolute, relative}
+  defp win32_pathtype(<<_letter, ?:, relative::binary>>),
+    do: {:volumerelative, relative}
 
-  defp win32_pathtype([c1, c2 | relative]) when c1 in @slash and c2 in @slash, do:
-    {:absolute, relative}
-  defp win32_pathtype([c | relative]) when c in @slash, do:
-    {:volumerelative, relative}
-  defp win32_pathtype([c1, c2, list | rest]) when is_list(list), do:
-    win32_pathtype([c1, c2 | list++rest])
-  defp win32_pathtype([_letter, ?:, c | relative]) when c in @slash, do:
-    {:absolute, relative}
-  defp win32_pathtype([_letter, ?: | relative]), do:
-    {:volumerelative, relative}
-  defp win32_pathtype(relative), do:
-    {:relative, relative}
+  defp win32_pathtype([c1, c2 | relative]) when c1 in @slash and c2 in @slash,
+    do: {:absolute, relative}
+  defp win32_pathtype([char | relative]) when char in @slash,
+    do: {:volumerelative, relative}
+  defp win32_pathtype([c1, c2, list | rest]) when is_list(list),
+    do: win32_pathtype([c1, c2 | list ++ rest])
+  defp win32_pathtype([_letter, ?:, char | relative]) when char in @slash,
+    do: {:absolute, relative}
+  defp win32_pathtype([_letter, ?: | relative]),
+    do: {:volumerelative, relative}
+  defp win32_pathtype(relative),
+    do: {:relative, relative}
 
   @doc """
   Returns the given `path` relative to the given `from` path.
-  In other words, it tries to strip the `from` prefix from `path`.
+
+  In other words, this function tries to strip the `from` prefix from `path`.
 
   This function does not query the file system, so it assumes
   no symlinks between the paths.
@@ -304,8 +315,10 @@ defmodule Path do
 
   @doc """
   Convenience to get the path relative to the current working
-  directory. If, for some reason, the current working directory
-  cannot be retrieved, returns the full path.
+  directory.
+
+  If, for some reason, the current working directory
+  cannot be retrieved, this function returns the given `path`.
   """
   @spec relative_to_cwd(t) :: binary
   def relative_to_cwd(path) do
@@ -333,13 +346,15 @@ defmodule Path do
   """
   @spec basename(t) :: binary
   def basename(path) do
-    FN.basename(IO.chardata_to_string(path))
+    :filename.basename(IO.chardata_to_string(path))
   end
 
   @doc """
   Returns the last component of `path` with the `extension`
-  stripped. This function should be used to remove a specific
-  extension which may, or may not, be there.
+  stripped.
+
+  This function should be used to remove a specific
+  extension which may or may not be there.
 
   ## Examples
 
@@ -355,7 +370,7 @@ defmodule Path do
   """
   @spec basename(t, t) :: binary
   def basename(path, extension) do
-    FN.basename(IO.chardata_to_string(path), IO.chardata_to_string(extension))
+    :filename.basename(IO.chardata_to_string(path), IO.chardata_to_string(extension))
   end
 
   @doc """
@@ -369,10 +384,13 @@ defmodule Path do
       iex> Path.dirname("/foo/bar/baz.ex")
       "/foo/bar"
 
+      iex> Path.dirname("/foo/bar/")
+      "/foo/bar"
+
   """
   @spec dirname(t) :: binary
   def dirname(path) do
-    FN.dirname(IO.chardata_to_string(path))
+    :filename.dirname(IO.chardata_to_string(path))
   end
 
   @doc """
@@ -389,7 +407,7 @@ defmodule Path do
   """
   @spec extname(t) :: binary
   def extname(path) do
-    FN.extension(IO.chardata_to_string(path))
+    :filename.extension(IO.chardata_to_string(path))
   end
 
   @doc """
@@ -406,12 +424,14 @@ defmodule Path do
   """
   @spec rootname(t) :: binary
   def rootname(path) do
-    FN.rootname(IO.chardata_to_string(path))
+    :filename.rootname(IO.chardata_to_string(path))
   end
 
   @doc """
-  Returns the `path` with the `extension` stripped. This function should be used to
-  remove a specific extension which might, or might not, be there.
+  Returns the `path` with the `extension` stripped.
+
+  This function should be used to remove a specific extension which may
+  or may not be there.
 
   ## Examples
 
@@ -424,14 +444,14 @@ defmodule Path do
   """
   @spec rootname(t, t) :: binary
   def rootname(path, extension) do
-    FN.rootname(IO.chardata_to_string(path), IO.chardata_to_string(extension))
+    :filename.rootname(IO.chardata_to_string(path), IO.chardata_to_string(extension))
   end
 
   @doc """
-  Joins a list of strings.
+  Joins a list of paths.
 
-  This function should be used to convert a list of strings to a path.
-  Note that any trailing slash is removed on join.
+  This function should be used to convert a list of paths to a path.
+  Note that any trailing slash is removed when joining.
 
   ## Examples
 
@@ -445,22 +465,25 @@ defmodule Path do
       "/foo/bar"
 
   """
-  @spec join([t]) :: binary
+  @spec join(nonempty_list(t)) :: binary
   def join([name1, name2 | rest]), do:
     join([join(name1, name2) | rest])
   def join([name]), do:
-    name
+    IO.chardata_to_string(name)
 
   @doc """
   Joins two paths.
 
   The right path will always be expanded to its relative format
-  and any trailing slash is removed on join.
+  and any trailing slash will be removed when joining.
 
   ## Examples
 
       iex> Path.join("foo", "bar")
       "foo/bar"
+
+      iex> Path.join("/foo", "/bar/")
+      "/foo/bar"
 
   """
   @spec join(t, t) :: binary
@@ -512,7 +535,7 @@ defmodule Path do
   def split(""), do: []
 
   def split(path) do
-    FN.split(IO.chardata_to_string(path))
+    :filename.split(IO.chardata_to_string(path))
   end
 
   defmodule Wildcard do
@@ -523,7 +546,7 @@ defmodule Path do
     end
 
     def list_dir(dir) do
-      case call({:list_dir, dir})  do
+      case call({:list_dir, dir}) do
         {:ok, files} ->
           {:ok, for(file <- files, hd(file) != ?., do: file)}
         other ->
@@ -542,7 +565,7 @@ defmodule Path do
   end
 
   @doc """
-  Traverses paths according to the given `glob` expression, and returns a
+  Traverses paths according to the given `glob` expression and returns a
   list of matches.
 
   The wildcard looks like an ordinary path, except that certain
@@ -568,7 +591,7 @@ defmodule Path do
 
   Other characters represent themselves. Only paths that have
   exactly the same character in the same position will match. Note
-  that matching is case-sensitive; i.e. "a" will not match "A".
+  that matching is case-sensitive: `"a"` will not match `"A"`.
 
   By default, the patterns `*` and `?` do not match files starting
   with a dot `.` unless `match_dot: true` is given in `opts`.
@@ -576,7 +599,7 @@ defmodule Path do
   ## Examples
 
   Imagine you have a directory called `projects` with three Elixir projects
-  inside of it: `elixir`, `ex_doc` and `dynamo`. You can find all `.beam` files
+  inside of it: `elixir`, `ex_doc`, and `plug`. You can find all `.beam` files
   inside the `ebin` directory of each project as follows:
 
       Path.wildcard("projects/*/ebin/**/*.beam")

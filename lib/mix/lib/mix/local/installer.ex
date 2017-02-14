@@ -5,7 +5,7 @@ defmodule Mix.Local.Installer do
   # tasks.
 
   @typedoc """
-  Install types supported by `Mix.Local.Installer`.
+  Installs types supported by `Mix.Local.Installer`.
 
     * `:project` - installs the current Mix project's artifact
     * `:local` - installs the artifact located at `path`
@@ -212,7 +212,7 @@ defmodule Mix.Local.Installer do
   end
 
   def parse_args(["hex" | [_package_name | rest]], _opts) do
-    {:error, "received invalid hex package spec: #{Enum.join(rest, " ")}"}
+    {:error, "received invalid Hex package spec: #{Enum.join(rest, " ")}"}
   end
 
   defp ref_to_config("branch", branch), do: [branch: branch]
@@ -255,7 +255,7 @@ defmodule Mix.Local.Installer do
       path = Path.join(root, name)
       cond do
         not File.exists?(path) ->
-          Mix.shell.error "Could not find a local #{item_name} named #{inspect name}. "<>
+          Mix.shell.error "Could not find a local #{item_name} named #{inspect name}. " <>
                           "Existing #{item_plural} are:"
           Mix.Task.run item_name
           nil

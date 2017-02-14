@@ -122,6 +122,14 @@ defmodule LoggerTest do
     end) =~ msg("application= module=LoggerTest [info]  ok")
   end
 
+  test "metadata merge when the argument function returns metadata" do
+    assert Logger.metadata([module: Sample]) == :ok
+
+    assert capture_log(fn ->
+      assert Logger.bare_log(:info, fn -> {"ok", [module: "Function"]} end, [application: nil, module: LoggerTest]) == :ok
+    end) =~ msg("application= module=Function [info]  ok")
+  end
+
   test "enable/1 and disable/1" do
     assert Logger.metadata([]) == :ok
 
@@ -233,7 +241,7 @@ defmodule LoggerTest do
   test "unused variable warnings suppressed when we remove macros from the AST" do
     Logger.configure(compile_time_purge_level: :info)
 
-    # This should not warn, even if the logger call is purged from the AST.
+    # This should not warn, even if the Logger call is purged from the AST.
     assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
       Code.eval_string """
       defmodule Unused do
@@ -297,7 +305,7 @@ defmodule LoggerTest do
     Logger.configure(truncate: 8096)
   end
 
-  test "log/2 does not fails when the Logger is off" do
+  test "log/2 does not fails when the logger is off" do
     logger = Process.whereis(Logger)
     Process.unregister(Logger)
 

@@ -45,7 +45,7 @@ rewrite_clause({call, Ann1, {atom, Ann2, RawName}, Args}, Module) ->
   Remote = {remote, Ann1,
     {atom, Ann2, ?MODULE},
     {atom, Ann2, local_for}
- },
+  },
 
   %% If we have a macro, its arity in the table is
   %% actually one less than in the function call
@@ -57,7 +57,7 @@ rewrite_clause({call, Ann1, {atom, Ann2, RawName}, Args}, Module) ->
   FunCall = {call, Ann1, Remote, [
     {atom, Ann2, Module}, {atom, Ann2, Name}, {integer, Ann2, Arity}
   ]},
-  {call, Ann1, FunCall, Args};
+  {call, Ann1, FunCall, rewrite_clause(Args, Module)};
 
 rewrite_clause(Tuple, Module) when is_tuple(Tuple) ->
   list_to_tuple(rewrite_clause(tuple_to_list(Tuple), Module));

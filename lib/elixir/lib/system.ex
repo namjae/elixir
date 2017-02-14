@@ -220,7 +220,7 @@ defmodule System do
 
   defp fix_drive_letter([l, ?:, ?/ | rest] = original) when l in ?A..?Z do
     case :os.type() do
-      {:win32, _} -> [l+?a-?A, ?:, ?/ | rest]
+      {:win32, _} -> [l + ?a - ?A, ?:, ?/ | rest]
       _ -> original
     end
   end
@@ -346,10 +346,10 @@ defmodule System do
   end
 
   @doc """
-  System environment variables.
+  Returns all system environment variables.
 
-  Returns a list of all environment variables. Each variable is given as a
-  `{name, value}` tuple where both `name` and `value` are strings.
+  The returned value is a map containing name-value pairs.
+  Variable names and their values are strings.
   """
   @spec get_env() :: %{optional(String.t) => String.t}
   def get_env do
@@ -361,13 +361,13 @@ defmodule System do
   end
 
   @doc """
-  Environment variable value.
+  Returns the value of the given environment variable.
 
-  Returns the value of the environment variable
-  `varname` as a binary, or `nil` if the environment
+  The returned value of the environment variable
+  `varname` is a string, or `nil` if the environment
   variable is undefined.
   """
-  @spec get_env(binary) :: binary | nil
+  @spec get_env(String.t) :: String.t | nil
   def get_env(varname) when is_binary(varname) do
     case :os.getenv(String.to_charlist(varname)) do
       false -> nil
@@ -433,10 +433,13 @@ defmodule System do
   end
 
   @doc """
-  Halts the Erlang runtime system.
+  Immediately halts the Erlang runtime system.
 
-  Halts the Erlang runtime system where the argument `status` must be a
-  non-negative integer, the atom `:abort` or a binary.
+  Terminates the Erlang runtime system without properly shutting down
+  applications and ports. Please see `stop/1` for a careful shutdown of the
+  system.
+
+  `status` must be a non-negative integer, the atom `:abort` or a binary.
 
     * If an integer, the runtime system exits with the integer value which
       is returned to the operating system.
@@ -471,6 +474,38 @@ defmodule System do
     :erlang.halt(String.to_charlist(status))
   end
 
+  @doc """
+  Carefully stops the Erlang runtime system.
+
+  All applications are taken down smoothly, all code is unloaded, and all ports
+  are closed before the system terminates by calling `halt/1`.
+
+  `status` must be a non-negative integer value which is returned by the
+  runtime system to the operating system.
+
+  Note that on many platforms, only the status codes 0-255 are supported
+  by the operating system.
+
+  For more information, see [`:init.stop/1`](http://erlang.org/doc/man/init.html#stop-1).
+
+  ## Examples
+
+      System.stop(0)
+      System.stop(1)
+
+  """
+  @spec stop() :: no_return
+  @spec stop(non_neg_integer | binary) :: no_return
+  def stop(status \\ 0)
+
+  def stop(status) when is_integer(status) do
+    :init.stop(status)
+  end
+
+  def stop(status) when is_binary(status) do
+    :init.stop(String.to_charlist(status))
+  end
+
   @doc ~S"""
   Executes the given `command` with `args`.
 
@@ -487,6 +522,13 @@ defmodule System do
 
   This function returns a tuple containing the collected result
   and the command exit status.
+
+  Internally, this function uses a `Port` for interacting with the
+  outside world. However, if you plan to run a long-running program,
+  ports guarantee stdin/stdout devices will be closed but it does not
+  automatically terminate the program. The documentation for the
+  `Port` module describes this problem and possible solutions under
+  the "Zombie processes" section.
 
   ## Examples
 

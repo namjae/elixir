@@ -61,89 +61,48 @@ end
 defimpl Inspect, for: Atom do
   require Macro
 
-  def inspect(atom, _opts) do
-    inspect(atom)
+  def inspect(atom, opts) do
+    color(inspect(atom), color_key(atom), opts)
   end
 
-  def inspect(false),  do: "false"
-  def inspect(true),   do: "true"
-  def inspect(nil),    do: "nil"
-  def inspect(:""),    do: ":\"\""
+  defp color_key(atom) when is_boolean(atom), do: :boolean
+  defp color_key(nil), do: :nil
+  defp color_key(_), do: :atom
+
+  def inspect(atom) when is_nil(atom) or is_boolean(atom) do
+    Atom.to_string(atom)
+  end
 
   def inspect(atom) do
     binary = Atom.to_string(atom)
 
-    cond do
-      valid_ref_identifier?(binary) ->
-        if only_elixir?(binary) do
-          binary
-        else
-          "Elixir." <> rest = binary
-          rest
+    case Macro.classify_identifier(binary) do
+      :alias ->
+        case binary do
+          binary when binary in ["Elixir", "Elixir.Elixir"] ->
+            binary
+          "Elixir.Elixir." <> _rest ->
+            binary
+          "Elixir." <> rest ->
+            rest
         end
-      valid_atom_identifier?(binary) ->
+      type when type in [:callable, :not_callable] ->
         ":" <> binary
-      atom in [:%{}, :{}, :<<>>, :..., :%] ->
-        ":" <> binary
-      atom in Macro.binary_ops or atom in Macro.unary_ops ->
-        ":" <> binary
-      true ->
-        IO.iodata_to_binary [?:, ?", Inspect.BitString.escape(binary, ?"), ?"]
+      :other ->
+        ":" <> escape(binary)
     end
   end
 
-  defp only_elixir?("Elixir." <> rest), do: only_elixir?(rest)
-  defp only_elixir?("Elixir"), do: true
-  defp only_elixir?(_), do: false
-
-  # Detect if atom is an atom alias (Elixir.Foo.Bar.Baz)
-
-  defp valid_ref_identifier?("Elixir" <> rest) do
-    valid_ref_piece?(rest)
+  def escape(binary) do
+    IO.iodata_to_binary [?", Inspect.BitString.escape(binary, ?"), ?"]
   end
-
-  defp valid_ref_identifier?(_), do: false
-
-  defp valid_ref_piece?(<<?., h, t::binary>>) when h in ?A..?Z do
-    valid_ref_piece? valid_identifier?(t)
-  end
-
-  defp valid_ref_piece?(<<>>), do: true
-  defp valid_ref_piece?(_),    do: false
-
-  # Detect if atom
-
-  defp valid_atom_identifier?(<<h, t::binary>>) when h in ?a..?z or h in ?A..?Z or h == ?_ do
-    valid_atom_piece?(t)
-  end
-
-  defp valid_atom_identifier?(_), do: false
-
-  defp valid_atom_piece?(t) do
-    case valid_identifier?(t) do
-      <<>>              -> true
-      <<??>>            -> true
-      <<?!>>            -> true
-      <<?@, t::binary>> -> valid_atom_piece?(t)
-      _                 -> false
-    end
-  end
-
-  defp valid_identifier?(<<h, t::binary>>)
-      when h in ?a..?z
-      when h in ?A..?Z
-      when h in ?0..?9
-      when h == ?_ do
-    valid_identifier? t
-  end
-
-  defp valid_identifier?(other), do: other
 end
 
 defimpl Inspect, for: BitString do
   def inspect(term, %Inspect.Opts{binaries: bins, base: base} = opts) when is_binary(term) do
     if base == :decimal and (bins == :as_strings or (bins == :infer and String.printable?(term))) do
-      IO.iodata_to_binary([?", escape(term, ?"), ?"])
+      inspected = IO.iodata_to_binary([?", escape(term, ?"), ?"])
+      color(inspected, :string, opts)
     else
       inspect_bitstring(term, opts)
     end
@@ -230,17 +189,19 @@ defimpl Inspect, for: BitString do
              to_hex(d), to_hex(e), to_hex(f), ?}]
   end
 
-  defp to_hex(c) when c in 0..9, do: ?0+c
-  defp to_hex(c) when c in 10..15, do: ?A+c-10
+  defp to_hex(c) when c in 0..9, do: ?0 + c
+  defp to_hex(c) when c in 10..15, do: ?A + c - 10
 
   ## Bitstrings
 
-  defp inspect_bitstring("", _opts) do
-    "<<>>"
+  defp inspect_bitstring("", opts) do
+    color("<<>>", :binary, opts)
   end
 
   defp inspect_bitstring(bitstring, opts) do
-    nest surround("<<", each_bit(bitstring, opts.limit, opts), ">>"), 1
+    left = color("<<", :binary, opts)
+    right = color(">>", :binary, opts)
+    nest surround(left, each_bit(bitstring, opts.limit, opts), right), 1
   end
 
   defp each_bit(_, 0, _) do
@@ -271,38 +232,46 @@ defimpl Inspect, for: BitString do
 end
 
 defimpl Inspect, for: List do
-  def inspect([], _opts), do: "[]"
+  def inspect([], opts) do
+    color("[]", :list, opts)
+  end
 
-  # TODO: Deprecate :char_lists and :as_char_lists keys in v1.5
+  # TODO: Remove :char_list and :as_char_lists handling in 2.0
   def inspect(term, %Inspect.Opts{charlists: lists, char_lists: lists_deprecated} = opts) do
     lists =
       if lists == :infer and lists_deprecated != :infer do
         case lists_deprecated do
           :as_char_lists ->
+            IO.warn "the :char_lists inspect option and its :as_char_lists " <>
+              "value are deprecated, use the :charlists option and its " <>
+              ":as_charlists value instead"
             :as_charlists
           _ ->
+            IO.warn "the :char_lists inspect option is deprecated, use :charlists instead"
             lists_deprecated
         end
       else
         lists
       end
 
+    open = color("[", :list, opts)
+    sep = color(",", :list, opts)
+    close = color("]", :list, opts)
+
     cond do
       lists == :as_charlists or (lists == :infer and printable?(term)) ->
         IO.iodata_to_binary [?', Inspect.BitString.escape(IO.chardata_to_string(term), ?'), ?']
       keyword?(term) ->
-        surround_many("[", term, "]", opts, &keyword/2)
+        surround_many(open, term, close, opts, &keyword/2, sep)
       true ->
-        surround_many("[", term, "]", opts, &to_doc/2)
+        surround_many(open, term, close, opts, &to_doc/2, sep)
     end
   end
 
   @doc false
   def keyword({key, value}, opts) do
-    concat(
-      key_to_binary(key) <> ": ",
-      to_doc(value, opts)
-    )
+    key = color(key_to_binary(key) <> ": ", :atom, opts)
+    concat(key, to_doc(value, opts))
   end
 
   @doc false
@@ -340,10 +309,11 @@ defimpl Inspect, for: List do
 end
 
 defimpl Inspect, for: Tuple do
-  def inspect({}, _opts), do: "{}"
-
   def inspect(tuple, opts) do
-    surround_many("{", Tuple.to_list(tuple), "}", opts, &to_doc/2)
+    open = color("{", :tuple, opts)
+    sep = color(",", :tuple, opts)
+    close = color("}", :tuple, opts)
+    surround_many(open, Tuple.to_list(tuple), close, opts, &to_doc/2, sep)
   end
 end
 
@@ -354,7 +324,10 @@ defimpl Inspect, for: Map do
 
   def inspect(map, name, opts) do
     map = :maps.to_list(map)
-    surround_many("%" <> name <> "{", map, "}", opts, traverse_fun(map))
+    open = color("%" <> name <> "{", :map, opts)
+    sep = color(",", :map, opts)
+    close = color("}", :map, opts)
+    surround_many(open, map, close, opts, traverse_fun(map), sep)
   end
 
   defp traverse_fun(list) do
@@ -374,9 +347,9 @@ defimpl Inspect, for: Map do
 end
 
 defimpl Inspect, for: Integer do
-  def inspect(term, %Inspect.Opts{base: base}) do
-    Integer.to_string(term, base_to_value(base))
-    |> prepend_prefix(base)
+  def inspect(term, %Inspect.Opts{base: base} = opts) do
+    inspected = Integer.to_string(term, base_to_value(base)) |> prepend_prefix(base)
+    color(inspected, :number, opts)
   end
 
   defp base_to_value(base) do
@@ -400,14 +373,16 @@ defimpl Inspect, for: Integer do
 end
 
 defimpl Inspect, for: Float do
-  def inspect(term, _opts) do
-    IO.iodata_to_binary(:io_lib_format.fwrite_g(term))
+  def inspect(term, opts) do
+    inspected = IO.iodata_to_binary(:io_lib_format.fwrite_g(term))
+    color(inspected, :number, opts)
   end
 end
 
 defimpl Inspect, for: Regex do
-  def inspect(regex, _opts) do
-    IO.iodata_to_binary ['~r/', escape(regex.source, ?/), ?/, regex.opts]
+  def inspect(regex, opts) do
+    source = IO.iodata_to_binary(['~r/', escape(regex.source, ?/), ?/, regex.opts])
+    color(source, :regex, opts)
   end
 
   defp escape(bin, term),
@@ -457,9 +432,10 @@ defimpl Inspect, for: Function do
   def inspect(function, _opts) do
     fun_info = :erlang.fun_info(function)
     mod = fun_info[:module]
+    name = fun_info[:name]
 
     if fun_info[:type] == :external and fun_info[:env] == [] do
-      "&#{Inspect.Atom.inspect(mod)}.#{fun_info[:name]}/#{fun_info[:arity]}"
+      "&#{Inspect.Atom.inspect(mod)}.#{escape_name(name)}/#{fun_info[:arity]}"
     else
       case Atom.to_charlist(mod) do
         'elixir_compiler_' ++ _ ->
@@ -474,6 +450,43 @@ defimpl Inspect, for: Function do
     end
   end
 
+  def escape_name(name) when is_atom(name) do
+    escape_name(Atom.to_string(name))
+  end
+
+  def escape_name(name) when is_binary(name) do
+    case Macro.classify_identifier(name) do
+      :callable ->
+        name
+      type when type in [:not_callable, :alias] ->
+        "\"" <> name <> "\""
+      :other ->
+        Inspect.Atom.escape(name)
+    end
+  end
+
+  # Example of this format: -func/arity-fun-count-
+  def extract_anonymous_fun_parent("-" <> rest) do
+    # We use :re instead of String.split/3 because we want to keep the "/"s and
+    # "-"s (this is what the "(" and ")" in the regex do). We want to keep them
+    # because we want to rebuild part of this split list (the function name)
+    # later on.
+    result =
+      rest
+      |> :re.split("([/-])")
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.reverse()
+
+    case result do
+      ["-", _count, "-", _inner, "-", arity, "/" | reversed_function] ->
+        {Enum.join(Enum.reverse(reversed_function)), arity}
+      _other ->
+        :error
+    end
+  end
+
+  def extract_anonymous_fun_parent(other) when is_binary(other), do: :error
+
   defp default_inspect(mod, fun_info) do
     "#Function<#{uniq(fun_info)}/#{fun_info[:arity]} in " <>
       "#{Inspect.Atom.inspect(mod)}#{extract_name(fun_info[:name])}>"
@@ -485,9 +498,11 @@ defimpl Inspect, for: Function do
 
   defp extract_name(name) do
     name = Atom.to_string(name)
-    case :binary.split(name, "-", [:global]) do
-      ["", name | _] -> "." <> name
-      _ -> "." <> name
+    case extract_anonymous_fun_parent(name) do
+      {name, arity} ->
+        "." <> escape_name(name) <> "/" <> arity
+      :error ->
+        "." <> escape_name(name)
     end
   end
 
@@ -505,7 +520,7 @@ end
 
 defimpl Inspect, for: Port do
   def inspect(port, _opts) do
-    IO.iodata_to_binary :erlang.port_to_list(port)
+    IO.iodata_to_binary(:erlang.port_to_list(port))
   end
 end
 
@@ -526,7 +541,8 @@ defimpl Inspect, for: Any do
       dunder ->
         if :maps.keys(dunder) == :maps.keys(map) do
           pruned = :maps.remove(:__exception__, :maps.remove(:__struct__, map))
-          Inspect.Map.inspect(pruned, Inspect.Atom.inspect(struct, opts), opts)
+          colorless_opts = %{opts | syntax_colors: []}
+          Inspect.Map.inspect(pruned, Inspect.Atom.inspect(struct, colorless_opts), opts)
         else
           Inspect.Map.inspect(map, opts)
         end

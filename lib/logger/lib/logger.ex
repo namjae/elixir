@@ -19,6 +19,30 @@ defmodule Logger do
     * Wraps OTP's `error_logger` to prevent it from
       overflowing.
 
+  Logging is useful for tracking when an event of interest happens in your
+  system. For example, it may be helpful to log whenever a user is deleted.
+
+      def delete_user(user) do
+        Logger.info fn ->
+          "Deleting user from the system: #{inspect(user)}"
+        end
+        # ...
+      end
+
+  The `Logger.info/2` macro emits the provided message at the `:info`
+  level. There are additional macros for other levels. Notice the argument
+  passed to `Logger.info` in the above example is a zero argument function.
+
+  Although the Logger macros accept messages as strings as well as functions,
+  it's recommended to use functions whenever the message is expensive to
+  compute. In the example above, the message will be evaluated (and thus the
+  interpolation inside it) whatever the level is, even if the message will not
+  be actually logged at runtime; the only way of avoiding evaluation of such
+  message is purging the log call at compile-time through the
+  `:compile_time_purge_level` option (see below), or using a function that is
+  evaluated to generate the message only if the message needs to be logged
+  according to the runtime level.
+
   ## Levels
 
   The supported levels are:
@@ -88,7 +112,10 @@ defmodule Logger do
       cause the message to be ignored. Keep in mind that each backend
       may have its specific level, too. Note that, unlike what happens with the
       `:compile_time_purge_level` option, the argument passed to `Logger` calls
-      is evaluated even if the level of the call is lower than `:level`.
+      is evaluated even if the level of the call is lower than
+      `:level`. For this reason, messages that are expensive to
+      compute should be wrapped in 0-arity anonymous functions that are
+      evaluated only when the `:label` option demands it.
 
     * `:utc_log` - when `true`, uses UTC in logs. By default it uses
       local time (i.e., it defaults to `false`).
@@ -117,7 +144,7 @@ defmodule Logger do
         level: :warn,
         truncate: 4096
 
-  ### Error Logger configuration
+  ### Error logger configuration
 
   The following configuration applies to `Logger`'s wrapper around
   Erlang's `error_logger`. All the configurations below must be set
@@ -177,11 +204,17 @@ defmodule Logger do
 
     * `:format` - the format message used to print logs.
       Defaults to: `"$time $metadata[$level] $levelpad$message\n"`.
+      It may also be a `{module, function}` tuple that is invoked
+      with the log level, the message, the current timestamp and
+      the metadata.
 
     * `:metadata` - the metadata to be printed by `$metadata`.
       Defaults to an empty list (no metadata).
 
     * `:colors` - a keyword list of coloring options.
+
+    * `:device` - the device to log error messages to. Defaults to
+      `:user` but can be changed to something else such as `:standard_error`.
 
     * `:max_buffer` - maximum events to buffer while waiting
       for a confirmation from the IO device (default: 32).
@@ -204,7 +237,7 @@ defmodule Logger do
   The supported keys in the `:colors` keyword list are:
 
     * `:enabled` - boolean value that allows for switching the
-      coloring on and off. Defaults to: `IO.ANSI.enabled?`
+      coloring on and off. Defaults to: `IO.ANSI.enabled?/0`
 
     * `:debug` - color for debug messages. Defaults to: `:cyan`
 
@@ -222,6 +255,31 @@ defmodule Logger do
       config :logger, :console,
         format: "\n$time $metadata[$level] $levelpad$message\n"
         metadata: [:user_id]
+
+  #### Custom Formatting
+
+  The console backend allows you to customize the format of your log messages
+  with the `:format` option.
+
+  You may set `:format` to either a string or a `{module, function}` tuple if
+  you wish to provide your own format function. The `{module, function}` will be
+  invoked with the log level, the message, the current timestamp and the
+  metadata.
+
+  Here is an example of how to configure the `:console` backend in a
+  `config/config.exs` file:
+
+      config :logger, :console,
+        format: {MyConsoleLogger, :format}
+
+  And here is an example of how you can define `MyConsoleLogger.format/4` from the
+  above configuration.
+
+      defmodule MyConsoleLogger do
+        def format(level, message, timestamp, metadata) do
+          # Custom formatting logic...
+        end
+      end
 
   You can read more about formatting in `Logger.Formatter`.
 
@@ -295,6 +353,7 @@ defmodule Logger do
   @type backend :: :gen_event.handler
   @type message :: IO.chardata | String.Chars.t
   @type level :: :error | :info | :warn | :debug
+  @type metadata :: Keyword.t(String.Chars.t)
   @levels [:error, :info, :warn, :debug]
 
   @metadata :logger_metadata
@@ -310,6 +369,7 @@ defmodule Logger do
   This will merge the given keyword list into the existing metadata. With
   the exception of setting a key to nil will remove a key from the metadata.
   """
+  @spec metadata(metadata) :: :ok
   def metadata(keywords) do
     {enabled?, metadata} = __metadata__()
     metadata =
@@ -324,6 +384,7 @@ defmodule Logger do
   @doc """
   Reads the current process metadata.
   """
+  @spec metadata() :: metadata
   def metadata() do
     __metadata__() |> elem(1)
   end
@@ -331,6 +392,7 @@ defmodule Logger do
   @doc """
   Resets the current process metadata to the given keyword list.
   """
+  @spec reset_metadata(metadata) :: :ok
   def reset_metadata(keywords \\ []) do
     {enabled?, _metadata} = __metadata__()
     Process.put(@metadata, {enabled?, []})
@@ -342,6 +404,7 @@ defmodule Logger do
 
   Currently the only accepted process is self().
   """
+  @spec enable(pid) :: :ok
   def enable(pid) when pid == self() do
     Process.put(@metadata, {true, metadata()})
     :ok
@@ -352,6 +415,7 @@ defmodule Logger do
 
   Currently the only accepted process is self().
   """
+  @spec disable(pid) :: :ok
   def disable(pid) when pid == self() do
     Process.put(@metadata, {false, metadata()})
     :ok
@@ -392,16 +456,16 @@ defmodule Logger do
   documentation for the available options.
   """
   @valid_options [:compile_time_purge_level, :compile_time_application, :sync_threshold, :truncate, :level, :utc_log]
-
+  @spec configure(Keyword.t) :: :ok
   def configure(options) do
     Logger.Config.configure(Keyword.take(options, @valid_options))
   end
 
   @doc """
-  Flushes the Logger.
+  Flushes the logger.
 
-  This basically guarantees all messages sent to the
-  Logger prior to this call will be processed. This is useful
+  This basically guarantees all messages sent to
+  `Logger` prior to this call will be processed. This is useful
   for testing and it should not be called in production code.
   """
   @spec flush :: :ok
@@ -420,6 +484,7 @@ defmodule Logger do
       the backend is added
 
   """
+  @spec add_backend(atom, Keyword.t) :: Supervisor.on_start_child
   def add_backend(backend, opts \\ []) do
     _ = if opts[:flush], do: flush()
     case Logger.Watcher.watch(Logger, Logger.Config.translate_backend(backend), backend) do
@@ -442,6 +507,7 @@ defmodule Logger do
       to both Logger and Erlang's `error_logger` are processed before
       the backend is removed
   """
+  @spec remove_backend(atom, Keyword.t) :: :ok | {:error, term}
   def remove_backend(backend, opts \\ []) do
     _ = if opts[:flush], do: flush()
     Logger.Config.remove_backend(backend)
@@ -451,6 +517,7 @@ defmodule Logger do
   @doc """
   Adds a new translator.
   """
+  @spec add_translator({module, function :: atom}) :: :ok
   def add_translator({mod, fun} = translator) when is_atom(mod) and is_atom(fun) do
     Logger.Config.add_translator(translator)
   end
@@ -458,6 +525,7 @@ defmodule Logger do
   @doc """
   Removes a translator.
   """
+  @spec remove_translator({module, function :: atom}) :: :ok
   def remove_translator({mod, fun} = translator) when is_atom(mod) and is_atom(fun) do
     Logger.Config.remove_translator(translator)
   end
@@ -479,9 +547,9 @@ defmodule Logger do
   Use this function only when there is a need to
   explicitly avoid embedding metadata.
   """
-  @spec bare_log(level, message | (() -> message), Keyword.t) ::
+  @spec bare_log(level, message | (() -> message | {message, Keyword.t}), Keyword.t) ::
         :ok | {:error, :noproc} | {:error, term}
-  def bare_log(level, chardata_or_fn, metadata \\ [])
+  def bare_log(level, chardata_or_fun, metadata \\ [])
       when level in @levels and is_list(metadata) do
     case __metadata__() do
       {true, pdict} ->
@@ -489,8 +557,9 @@ defmodule Logger do
           level: min_level, utc_log: utc_log?} = Logger.Config.__data__
 
         if compare_levels(level, min_level) != :lt do
-          truncated = truncate(chardata_or_fn, truncate)
           metadata = [pid: self()] ++ Keyword.merge(pdict, metadata)
+          {message, metadata} = normalize_message(chardata_or_fun, metadata)
+          truncated = truncate(message, truncate)
 
           tuple = {Logger, truncated, Logger.Utils.timestamp(utc_log?), metadata}
 
@@ -519,10 +588,11 @@ defmodule Logger do
 
       Logger.warn "knob turned too far to the right"
       Logger.warn fn -> "expensive to calculate warning" end
+      Logger.warn fn -> {"expensive to calculate warning", [additional: :metadata]} end
 
   """
-  defmacro warn(chardata_or_fn, metadata \\ []) do
-    maybe_log(:warn, chardata_or_fn, metadata, __CALLER__)
+  defmacro warn(chardata_or_fun, metadata \\ []) do
+    maybe_log(:warn, chardata_or_fun, metadata, __CALLER__)
   end
 
   @doc """
@@ -534,10 +604,11 @@ defmodule Logger do
 
       Logger.info "mission accomplished"
       Logger.info fn -> "expensive to calculate info" end
+      Logger.info fn -> {"expensive to calculate info", [additional: :metadata]} end
 
   """
-  defmacro info(chardata_or_fn, metadata \\ []) do
-    maybe_log(:info, chardata_or_fn, metadata, __CALLER__)
+  defmacro info(chardata_or_fun, metadata \\ []) do
+    maybe_log(:info, chardata_or_fun, metadata, __CALLER__)
   end
 
   @doc """
@@ -549,10 +620,11 @@ defmodule Logger do
 
       Logger.error "oops"
       Logger.error fn -> "expensive to calculate error" end
+      Logger.error fn -> {"expensive to calculate error", [additional: :metadata]} end
 
   """
-  defmacro error(chardata_or_fn, metadata \\ []) do
-    maybe_log(:error, chardata_or_fn, metadata, __CALLER__)
+  defmacro error(chardata_or_fun, metadata \\ []) do
+    maybe_log(:error, chardata_or_fun, metadata, __CALLER__)
   end
 
   @doc """
@@ -564,10 +636,11 @@ defmodule Logger do
 
       Logger.debug "hello?"
       Logger.debug fn -> "expensive to calculate debug" end
+      Logger.debug fn -> {"expensive to calculate debug", [additional: :metadata]} end
 
   """
-  defmacro debug(chardata_or_fn, metadata \\ []) do
-    maybe_log(:debug, chardata_or_fn, metadata, __CALLER__)
+  defmacro debug(chardata_or_fun, metadata \\ []) do
+    maybe_log(:debug, chardata_or_fun, metadata, __CALLER__)
   end
 
   @doc """
@@ -580,8 +653,8 @@ defmodule Logger do
   of this macro as they can automatically eliminate
   the Logger call altogether at compile time if desired.
   """
-  defmacro log(level, chardata_or_fn, metadata \\ []) do
-    macro_log(level, chardata_or_fn, metadata, __CALLER__)
+  defmacro log(level, chardata_or_fun, metadata \\ []) do
+    macro_log(level, chardata_or_fun, metadata, __CALLER__)
   end
 
   defp macro_log(level, data, metadata, caller) do
@@ -613,8 +686,13 @@ defmodule Logger do
     end
   end
 
-  defp truncate(data, n) when is_function(data, 0),
-    do: truncate(data.(), n)
+  defp normalize_message(fun, metadata) when is_function(fun, 0),
+    do: normalize_message(fun.(), metadata)
+  defp normalize_message({message, fun_metadata}, metadata) when is_list(fun_metadata),
+    do: {message, Keyword.merge(metadata, fun_metadata)}
+  defp normalize_message(message, metadata),
+    do: {message, metadata}
+
   defp truncate(data, n) when is_list(data) or is_binary(data),
     do: Logger.Utils.truncate(data, n)
   defp truncate(data, n),

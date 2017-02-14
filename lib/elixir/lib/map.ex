@@ -14,7 +14,7 @@ defmodule Map do
   in the example above has a different order than the map that was created).
 
   Maps do not impose any restriction on the key type: anything can be a key in a
-  map. As a key-value structure, maps do not allow duplicated keys; keys are
+  map. As a key-value structure, maps do not allow duplicated keys. Keys are
   compared using the exact-equality operator (`===`). If colliding keys are defined
   in a map literal, the last one prevails.
 
@@ -263,7 +263,7 @@ defmodule Map do
   ## Examples
 
       iex> Map.put_new(%{a: 1}, :b, 2)
-      %{b: 2, a: 1}
+      %{a: 1, b: 2}
       iex> Map.put_new(%{a: 1, b: 2}, :a, 3)
       %{a: 1, b: 2}
 
@@ -585,7 +585,7 @@ defmodule Map do
   end
 
   @doc """
-  Takes all entries corresponding to the given `keys` in `maps` and extracts
+  Takes all entries corresponding to the given `keys` in `map` and extracts
   them into a separate map.
 
   Returns a tuple with the new map and the old map with removed keys.
@@ -794,8 +794,8 @@ defmodule Map do
 
   @doc false
   # TODO: Remove on 2.0
+  # (hard-deprecated in elixir_dispatch)
   def size(map) do
-    IO.warn "Map.size/1 is deprecated, please use Kernel.map_size/1"
     map_size(map)
   end
 end

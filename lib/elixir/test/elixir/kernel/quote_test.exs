@@ -367,6 +367,14 @@ end
 defmodule Kernel.QuoteTest.ImportsHygieneTest do
   use ExUnit.Case, async: true
 
+  # We are redefining |> and using it inside the quote
+  # and only inside the quote. This code should still compile.
+  defmacro x |> f do
+    quote do
+      unquote(x) |> unquote(f)
+    end
+  end
+
   defmacrop get_list_length do
     quote do
       length('hello')
@@ -426,12 +434,18 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
   test "explicitly overridden imports" do
     assert with_length() == 5
   end
-end
 
-defmodule Kernel.QuoteTest.NoQuoteConflictTest do
-  defmacro x |> f do
-    quote do
-      unquote(x) |> unquote(f)
+  defmodule BinaryUtils do
+    defmacro int32 do
+      quote do
+        integer-size(32)
+      end
     end
+  end
+
+  test "checks the context also for variables to zero-arity functions" do
+    import BinaryUtils
+    {:int32, meta, __MODULE__} =  quote do: int32
+    assert meta[:import] == BinaryUtils
   end
 end

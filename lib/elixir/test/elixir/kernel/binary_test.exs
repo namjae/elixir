@@ -155,8 +155,14 @@ bar \"""
     end
 
     assert_raise ArgumentError, fn ->
-      Code.eval_string(~s[<<1::size(4)>> <> "foo"])
+      Code.eval_string(~s[<<1::4>> <> "foo"])
     end
+  end
+
+  @bitstring <<"foo", 16::4>>
+
+  test "bitstring attribute" do
+    assert @bitstring == <<"foo", 16::4>>
   end
 
   @binary "new "

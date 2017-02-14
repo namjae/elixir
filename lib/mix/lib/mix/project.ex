@@ -62,11 +62,11 @@ defmodule Mix.Project do
     * `:lockfile` - the name of the lockfile used by the `mix deps.*` family of
       tasks. Defaults to `"mix.lock"`.
 
-    * `:preferred_cli_env` - a keyword list of `{task, env}` tuples here `task`
+    * `:preferred_cli_env` - a keyword list of `{task, env}` tuples where `task`
       is the task name as an atom (for example, `:"deps.get"`) and `env` is the
       preferred environment (for example, `:test`). This option overrides what
-      specified by the single tasks with the `@preferred_cli_env` attribute (see
-      `Mix.Task`). Defaults to `[]`.
+      specified by the tasks with the `@preferred_cli_env` attribute (see the
+      docs for `Mix.Task`). Defaults to `[]`.
 
   For more options, keep an eye on the documentation for single Mix tasks; good
   examples are the `Mix.Tasks.Compile` task and all the specific compiler tasks
@@ -138,10 +138,11 @@ defmodule Mix.Project do
   @doc """
   Retrieves the current project if there is one.
 
-  Otherwise `nil` is returned. It may happen in cases
-  there is no mixfile in the current directory.
+  If there is no current project, `nil` is returned. This
+  may happen in casesthere is no mixfile in the current
+  directory.
 
-  If you expect a project to be defined, i.e. it is a
+  If you expect a project to be defined, i.e., it is a
   requirement of the current task, you should call
   `get!/0` instead.
   """
@@ -159,8 +160,8 @@ defmodule Mix.Project do
   This is usually called by tasks that need additional
   functions on the project to be defined. Since such
   tasks usually depend on a project being defined, this
-  function raises `Mix.NoProjectError` in case no project
-  is available.
+  function raises a `Mix.NoProjectError` exception in
+  case no project is available.
   """
   @spec get!() :: module | no_return
   def get! do
@@ -196,8 +197,9 @@ defmodule Mix.Project do
   This function is usually used in compilation tasks to trigger
   a full recompilation whenever such configuration files change.
 
-  By default it includes the mix.exs file, the lock manifest and
-  all config files in the `config` directory.
+  It returns the `mix.exs` file, the lock manifest, and all config
+  files in the `config` directory that do not start with a trailing
+  period (for example, `.my_config.exs`).
   """
   @spec config_files() :: [Path.t]
   def config_files do
@@ -217,7 +219,10 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns `true` if project is an umbrella project.
+  Returns `true` if `config` is the configuration for an umbrella project.
+
+  When called with no arguments, tells whether the current project is
+  an umbrella project.
   """
   @spec umbrella?() :: boolean
   def umbrella?(config \\ config()) do
@@ -225,34 +230,67 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns a map with the umbrella child applications
-  paths based on `:apps_path` and `:apps` configurations.
+  Returns a map with the umbrella child applications paths.
 
-  Returns `nil` if not an umbrella project.
+  These paths are based on the `:apps_path` and `:apps` configurations.
+
+  If the given project configuration identifies an umbrella project, the return
+  value is a map of `app => path` where `app` is a child app of the umbrella and
+  `path` is its path relative to the root of the umbrella project.
+
+  If the given project configuration does not identify an umbrella project,
+  `nil` is returned.
+
+  ## Examples
+
+      Mix.Project.apps_path()
+      #=> %{my_app1: "apps/my_app1", my_app2: "apps/my_app2"}
+
   """
   @spec apps_paths() :: %{atom => Path.t} | nil
   def apps_paths(config \\ config()) do
     if apps_path = config[:apps_path] do
-      apps_path
-      |> Path.join("*/mix.exs")
-      |> Path.wildcard()
-      |> Enum.map(&Path.dirname/1)
-      |> extract_umbrella
-      |> filter_umbrella(config[:apps])
-      |> Map.new
+      key = {:apps_paths, Mix.Project.get!}
+      Mix.ProjectStack.read_cache(key) ||
+        Mix.ProjectStack.write_cache(key,
+          config[:apps] |> umbrella_apps(apps_path) |> to_apps_paths(apps_path))
     end
   end
 
-  defp extract_umbrella(paths) do
-    for path <- paths do
-      app = path |> Path.basename |> String.downcase |> String.to_atom
-      {app, path}
+  defp umbrella_apps(nil, apps_path) do
+    case File.ls(apps_path) do
+      {:ok, apps} -> Enum.map(apps, &String.to_atom/1)
+      {:error, _} -> []
     end
   end
+  defp umbrella_apps(apps, _apps_path) when is_list(apps) do
+    apps
+  end
 
-  defp filter_umbrella(pairs, nil), do: pairs
-  defp filter_umbrella(pairs, apps) when is_list(apps) do
-    for {app, _} = pair <- pairs, app in apps, do: pair
+  defp to_apps_paths(apps, apps_path) do
+    for app <- apps,
+        path = path_with_mix_exs_otherwise_warn(app, apps_path),
+        do: {app, path},
+        into: %{}
+  end
+
+  defp path_with_mix_exs_otherwise_warn(app, apps_path) do
+    path = Path.join(apps_path, Atom.to_string(app))
+    cond do
+      File.regular?(Path.join(path, "mix.exs")) ->
+        path
+
+      File.dir?(path) ->
+        Mix.shell.error "warning: path #{inspect Path.relative_to_cwd(path)} is a directory but " <>
+                        "it has no mix.exs. Mix won't consider this directory as part of your " <>
+                        "umbrella application. Please add a \"mix.exs\" or set the \":apps\" key " <>
+                        "in your umbrella configuration with all relevant apps names as atoms"
+        nil
+
+      true ->
+        # If it is a stray file, we just ignore it.
+        nil
+    end
   end
 
   @doc ~S"""
@@ -302,7 +340,9 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns the path where dependencies are stored for this project.
+  Returns the path where dependencies are stored for the given project.
+
+  If no configuration is given, the one for the current project is used.
 
   The returned path will be expanded.
 
@@ -334,7 +374,9 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns the build path for this project.
+  Returns the build path for the given project.
+
+  If no configuration is given, the one for the current project is used.
 
   The returned path will be expanded.
 
@@ -360,10 +402,13 @@ defmodule Mix.Project do
   defp env_path(config) do
     build = config[:build_path] || "_build"
 
-    if config[:build_per_environment] do
-      Path.expand("#{build}/#{Mix.env}")
-    else
-      Path.expand("#{build}/shared")
+    case config[:build_per_environment] do
+      true ->
+        Path.expand("#{build}/#{Mix.env}")
+      false ->
+        Path.expand("#{build}/shared")
+      other ->
+        Mix.raise "The :build_per_environment option should be a boolean, got: #{inspect(other)}"
     end
   end
 
@@ -419,7 +464,9 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns the paths this project compiles to.
+  Returns the paths the given project compiles to.
+
+  If no configuration is given, the one for the current project will be used.
 
   The returned path will be expanded.
 
@@ -436,6 +483,14 @@ defmodule Mix.Project do
 
   @doc """
   Returns the path where protocol consolidations are stored.
+
+  The returned path will be expanded.
+
+  ## Examples
+
+      Mix.Project.consolidation_path
+      #=> "/path/to/project/_build/dev/consolidated"
+
   """
   def consolidation_path(config \\ config()) do
     Path.join(build_path(config), "consolidated")
@@ -446,7 +501,7 @@ defmodule Mix.Project do
 
   It will run the compile task unless the project
   is in build embedded mode, which may fail as an
-  explicit command to `mix compile` is required.
+  explicit execution of `mix compile` is required.
   """
   @spec compile([term], Keyword.t) :: term
   def compile(args, config \\ config()) do
@@ -466,7 +521,7 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Builds the project structure for the current application.
+  Builds the project structure for the given application.
 
   ## Options
 
@@ -508,7 +563,7 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Ensures the project structure exists.
+  Ensures the project structure for the given project exists.
 
   In case it does exist, it is a no-op. Otherwise, it is built.
   """
@@ -522,7 +577,7 @@ defmodule Mix.Project do
   end
 
   @doc """
-  Returns all load paths for this project.
+  Returns all load paths for the given project.
   """
   @spec load_paths(Keyword.t) :: [Path.t]
   def load_paths(config \\ config()) do
