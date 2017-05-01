@@ -179,7 +179,7 @@ defmodule Protocol do
     prefix = Atom.to_charlist(protocol) ++ '.'
     extract_matching_by_attribute paths, prefix, fn
       _mod, attributes ->
-        case attributes[:impl] do
+        case attributes[:protocol_metadata] do
           [protocol: ^protocol, for: for] -> for
           _ -> nil
         end
@@ -382,9 +382,9 @@ defmodule Protocol do
           [{:var, line, :x}]}]}
   end
 
-  defp each_struct_clause_for(other, protocol, line) do
-    {:clause, line, [{:atom, line, other}], [],
-      [{:atom, line, load_impl(protocol, other)}]}
+  defp each_struct_clause_for(struct, protocol, line) do
+    {:clause, line, [{:atom, line, struct}], [],
+      [{:atom, line, load_impl(protocol, struct)}]}
   end
 
   defp fallback_clause_for(value, _protocol, line) do
@@ -403,7 +403,7 @@ defmodule Protocol do
     {:ok,
       case docs do
         :missing_chunk -> binary
-        _ -> :elixir_module.add_beam_chunk(binary, @docs_chunk, docs)
+        _ -> :elixir_erl.add_beam_chunk(binary, @docs_chunk, docs)
       end}
   end
 
@@ -569,8 +569,8 @@ defmodule Protocol do
 
         unquote(block)
 
-        Module.register_attribute(__MODULE__, :impl, persist: true)
-        @impl [protocol: @protocol, for: @for]
+        Module.register_attribute(__MODULE__, :protocol_metadata, persist: true)
+        @protocol_metadata [protocol: @protocol, for: @for]
 
         unquote(impl)
       end
@@ -614,8 +614,8 @@ defmodule Protocol do
           apply(mod, fun, args)
         else
           Module.create(Module.concat(protocol, for), quote do
-            Module.register_attribute(__MODULE__, :impl, persist: true)
-            @impl [protocol: unquote(protocol), for: unquote(for)]
+            Module.register_attribute(__MODULE__, :protocol_metadata, persist: true)
+            @protocol_metadata [protocol: unquote(protocol), for: unquote(for)]
 
             @doc false
             @spec __impl__(:target) :: unquote(impl)
@@ -648,7 +648,7 @@ defmodule Protocol do
     found =
       :lists.map(fn {:spec, expr, caller} ->
         if Kernel.Typespec.spec_to_signature(expr) == signature do
-          Kernel.Typespec.define_spec(:callback, expr, caller)
+          Kernel.Typespec.defspec(:callback, expr, caller)
           true
         end
       end, specs)

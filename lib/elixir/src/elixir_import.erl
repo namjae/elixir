@@ -10,10 +10,10 @@ import(Meta, Ref, Opts, E) ->
     case keyfind(only, Opts) of
       {only, functions} ->
         {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
-        {Funs, keydelete(Ref, ?m(E, macros)), Added1};
+        {Funs, keydelete(Ref, ?key(E, macros)), Added1};
       {only, macros} ->
         {Added2, Macs} = import_macros(true, Meta, Ref, Opts, E),
-        {keydelete(Ref, ?m(E, functions)), Macs, Added2};
+        {keydelete(Ref, ?key(E, functions)), Macs, Added2};
       {only, List} when is_list(List) ->
         {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
         {Added2, Macs} = import_macros(false, Meta, Ref, Opts, E),
@@ -28,18 +28,17 @@ import(Meta, Ref, Opts, E) ->
   {Functions, Macros}.
 
 import_functions(Meta, Ref, Opts, E) ->
-  calculate(Meta, Ref, Opts, ?m(E, functions), ?m(E, file), fun() ->
+  calculate(Meta, Ref, Opts, ?key(E, functions), ?key(E, file), fun() ->
     get_functions(Ref)
   end).
 
 import_macros(Force, Meta, Ref, Opts, E) ->
-  calculate(Meta, Ref, Opts, ?m(E, macros), ?m(E, file), fun() ->
+  calculate(Meta, Ref, Opts, ?key(E, macros), ?key(E, file), fun() ->
     case fetch_macros(Ref) of
       {ok, Macros} ->
         Macros;
       error when Force ->
-        Tuple = {no_macros, Ref},
-        elixir_errors:form_error(Meta, ?m(E, file), ?MODULE, Tuple);
+        elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {no_macros, Ref});
       error ->
         []
     end
@@ -59,7 +58,7 @@ record_warn(Meta, Ref, Opts, Added, E) ->
       _ -> []
     end,
 
-  elixir_lexical:record_import(Ref, Only, ?line(Meta), Added and Warn, ?m(E, lexical_tracker)).
+  elixir_lexical:record_import(Ref, Only, ?line(Meta), Added and Warn, ?key(E, lexical_tracker)).
 
 %% Calculates the imports based on only and except
 
@@ -71,14 +70,11 @@ calculate(Meta, Key, Opts, Old, File, Existing) ->
         false ->
           ok;
         _ ->
-          elixir_errors:compile_error(Meta, File,
-            ":only and :except can only be given together to import"
-            " when :only is either :functions or :macros")
+          elixir_errors:form_error(Meta, File, ?MODULE, only_and_except_given)
       end,
       case Only -- get_exports(Key) of
         [{Name, Arity} | _] ->
-          Tuple = {invalid_import, {Key, Name, Arity}},
-          elixir_errors:form_error(Meta, File, ?MODULE, Tuple);
+          elixir_errors:form_error(Meta, File, ?MODULE, {invalid_import, {Key, Name, Arity}});
         _ ->
           intersection(Only, Existing())
       end;
@@ -143,8 +139,7 @@ fetch_macros(Module) ->
 ensure_no_special_form_conflict(Meta, File, Key, [{Name, Arity} | T]) ->
   case special_form(Name, Arity) of
     true  ->
-      Tuple = {special_form_conflict, {Key, Name, Arity}},
-      elixir_errors:form_error(Meta, File, ?MODULE, Tuple);
+      elixir_errors:form_error(Meta, File, ?MODULE, {special_form_conflict, {Key, Name, Arity}});
     false ->
       ensure_no_special_form_conflict(Meta, File, Key, T)
   end;
@@ -157,16 +152,21 @@ ensure_keyword_list(Meta, File, [{Key, Value} | Rest], Kind) when is_atom(Key), 
   ensure_keyword_list(Meta, File, Rest, Kind);
 
 ensure_keyword_list(Meta, File, _Other, Kind) ->
-  Message =
-    "invalid :~s option for import, "
-    "expected a keyword list with integer values",
-  elixir_errors:compile_error(Meta, File, Message, [Kind]).
+  elixir_errors:form_error(Meta, File, ?MODULE, {invalid_option, Kind}).
 
 %% ERROR HANDLING
+
+format_error(only_and_except_given) ->
+  ":only and :except can only be given together to import "
+  "when :only is either :functions or :macros";
 
 format_error({invalid_import, {Receiver, Name, Arity}}) ->
   io_lib:format("cannot import ~ts.~ts/~B because it is undefined or private",
     [elixir_aliases:inspect(Receiver), Name, Arity]);
+
+format_error({invalid_option, Option}) ->
+  Message = "invalid :~s option for import, expected a keyword list with integer values",
+  io_lib:format(Message, [Option]);
 
 format_error({special_form_conflict, {Receiver, Name, Arity}}) ->
   io_lib:format("cannot import ~ts.~ts/~B because it conflicts with Elixir special forms",

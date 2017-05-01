@@ -85,7 +85,7 @@ defmodule Stream do
   Note the functions in this module are guaranteed to return enumerables.
   Since enumerables can have different shapes (structs, anonymous functions,
   and so on), the functions in this module may return any of those shapes
-  and that this may change at any time. For example, a function that today
+  and this may change at any time. For example, a function that today
   returns an anonymous function may return a struct in future releases.
   """
 
@@ -235,7 +235,7 @@ defmodule Stream do
 
   """
   @spec dedup_by(Enumerable.t, (element -> term)) :: Enumerable.t
-  def dedup_by(enum, fun) when is_function(fun, 1) do
+  def dedup_by(enum, fun) do
     lazy enum, nil, fn f1 -> R.dedup(fun, f1) end
   end
 
@@ -352,7 +352,7 @@ defmodule Stream do
 
   """
   @spec each(Enumerable.t, (element -> term)) :: Enumerable.t
-  def each(enum, fun) when is_function(fun, 1) do
+  def each(enum, fun) do
     lazy enum, fn(f1) ->
       fn(x, acc) ->
         fun.(x)
@@ -450,7 +450,7 @@ defmodule Stream do
   is delayed until the stream is executed. See `run/1` for an example.
   """
   @spec into(Enumerable.t, Collectable.t, (term -> term)) :: Enumerable.t
-  def into(enum, collectable, transform \\ fn x -> x end) when is_function(transform, 1) do
+  def into(enum, collectable, transform \\ fn x -> x end) do
     &do_into(enum, collectable, transform, &1, &2)
   end
 
@@ -576,7 +576,8 @@ defmodule Stream do
   @doc """
   Creates a stream that applies the given function to each
   element, emits the result and uses the same result as the accumulator
-  for the next computation.
+  for the next computation. Uses the first element in the enumerable
+  as the starting value.
 
   ## Examples
 
@@ -738,7 +739,7 @@ defmodule Stream do
   @spec transform(Enumerable.t, acc, fun) :: Enumerable.t
         when fun: (element, acc -> {Enumerable.t, acc} | {:halt, acc}),
              acc: any
-  def transform(enum, acc, reducer) when is_function(reducer, 2) do
+  def transform(enum, acc, reducer) do
     &do_transform(enum, fn -> acc end, reducer, &1, &2, nil)
   end
 
@@ -755,8 +756,7 @@ defmodule Stream do
   @spec transform(Enumerable.t, (() -> acc), fun, (acc -> term)) :: Enumerable.t
         when fun: (element, acc -> {Enumerable.t, acc} | {:halt, acc}),
              acc: any
-  def transform(enum, start_fun, reducer, after_fun)
-      when is_function(start_fun, 0) and is_function(reducer, 2) and is_function(after_fun, 1) do
+  def transform(enum, start_fun, reducer, after_fun) do
     &do_transform(enum, start_fun, reducer, &1, &2, after_fun)
   end
 
@@ -791,16 +791,18 @@ defmodule Stream do
         do_after(after_fun, user_acc)
         :erlang.raise(kind, reason, stacktrace)
     else
-      {:suspended, [val], next} ->
-        do_transform_user(val, user_acc, user, fun, :cont, next, inner_acc, inner, after_fun)
-      {_, [val]} ->
-        do_transform_user(val, user_acc, user, fun, :halt, next, inner_acc, inner, after_fun)
-      {_, []} ->
-        do_transform(user_acc, user, fun, :halt, next, inner_acc, inner, after_fun)
+      {:suspended, vals, next} ->
+        do_transform_user(:lists.reverse(vals), user_acc, user, fun, :cont, next, inner_acc, inner, after_fun)
+      {_, vals} ->
+        do_transform_user(:lists.reverse(vals), user_acc, user, fun, :halt, next, inner_acc, inner, after_fun)
     end
   end
 
-  defp do_transform_user(val, user_acc, user, fun, next_op, next, inner_acc, inner, after_fun) do
+  defp do_transform_user([], user_acc, user, fun, next_op, next, inner_acc, inner, after_fun) do
+    do_transform(user_acc, user, fun, next_op, next, inner_acc, inner, after_fun)
+  end
+
+  defp do_transform_user([val | vals], user_acc, user, fun, next_op, next, inner_acc, inner, after_fun) do
     user.(val, user_acc)
   catch
     kind, reason ->
@@ -810,20 +812,20 @@ defmodule Stream do
       :erlang.raise(kind, reason, stacktrace)
   else
     {[], user_acc} ->
-      do_transform(user_acc, user, fun, next_op, next, inner_acc, inner, after_fun)
+      do_transform_user(vals, user_acc, user, fun, next_op, next, inner_acc, inner, after_fun)
     {list, user_acc} when is_list(list) ->
-      do_list_transform(user_acc, user, fun, next_op, next, inner_acc, inner,
+      do_list_transform(vals, user_acc, user, fun, next_op, next, inner_acc, inner,
                         &Enumerable.List.reduce(list, &1, fun), after_fun)
     {:halt, user_acc} ->
       next.({:halt, []})
       do_after(after_fun, user_acc)
       {:halted, elem(inner_acc, 1)}
     {other, user_acc} ->
-      do_enum_transform(user_acc, user, fun, next_op, next, inner_acc, inner,
+      do_enum_transform(vals, user_acc, user, fun, next_op, next, inner_acc, inner,
                         &Enumerable.reduce(other, &1, inner), after_fun)
   end
 
-  defp do_list_transform(user_acc, user, fun, next_op, next, inner_acc, inner, reduce, after_fun) do
+  defp do_list_transform(vals, user_acc, user, fun, next_op, next, inner_acc, inner, reduce, after_fun) do
     try do
       reduce.(inner_acc)
     catch
@@ -834,17 +836,17 @@ defmodule Stream do
         :erlang.raise(kind, reason, stacktrace)
     else
       {:done, acc} ->
-        do_transform(user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
+        do_transform_user(vals, user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
       {:halted, acc} ->
         next.({:halt, []})
         do_after(after_fun, user_acc)
         {:halted, acc}
       {:suspended, acc, c} ->
-        {:suspended, acc, &do_list_transform(user_acc, user, fun, next_op, next, &1, inner, c, after_fun)}
+        {:suspended, acc, &do_list_transform(vals, user_acc, user, fun, next_op, next, &1, inner, c, after_fun)}
     end
   end
 
-  defp do_enum_transform(user_acc, user, fun, next_op, next, {op, inner_acc}, inner, reduce, after_fun) do
+  defp do_enum_transform(vals, user_acc, user, fun, next_op, next, {op, inner_acc}, inner, reduce, after_fun) do
     try do
       reduce.({op, [:outer | inner_acc]})
     catch
@@ -857,15 +859,15 @@ defmodule Stream do
       # Only take into account outer halts when the op is not halt itself.
       # Otherwise, we were the ones wishing to halt, so we should just stop.
       {:halted, [:outer | acc]} when op != :halt ->
-        do_transform(user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
+        do_transform_user(vals, user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
       {:halted, [_ | acc]} ->
         next.({:halt, []})
         do_after(after_fun, user_acc)
         {:halted, acc}
       {:done, [_ | acc]} ->
-        do_transform(user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
+        do_transform_user(vals, user_acc, user, fun, next_op, next, {:cont, acc}, inner, after_fun)
       {:suspended, [_ | acc], c} ->
-        {:suspended, acc, &do_enum_transform(user_acc, user, fun, next_op, next, &1, inner, c, after_fun)}
+        {:suspended, acc, &do_enum_transform(vals, user_acc, user, fun, next_op, next, &1, inner, c, after_fun)}
     end
   end
 
@@ -1195,7 +1197,7 @@ defmodule Stream do
 
   """
   @spec repeatedly((() -> element)) :: Enumerable.t
-  def repeatedly(generator_fun) when is_function(generator_fun, 0) do
+  def repeatedly(generator_fun) do
     &do_repeatedly(generator_fun, &1, &2)
   end
 

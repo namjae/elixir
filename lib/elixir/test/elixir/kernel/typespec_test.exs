@@ -3,6 +3,8 @@ Code.require_file "../test_helper.exs", __DIR__
 defmodule Kernel.TypespecTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureIO
+
   alias Kernel.TypespecTest.TestTypespec
 
   defstruct [:hello]
@@ -250,7 +252,7 @@ defmodule Kernel.TypespecTest do
   end
 
   test "@type when overriding Elixir built-in" do
-    assert_raise CompileError, ~r"type struct\(\) is a builtin type; it cannot be redefined", fn ->
+    assert_raise CompileError, ~r"type struct/0 is a builtin type", fn ->
       test_module do
         @type struct :: :oops
       end
@@ -258,7 +260,7 @@ defmodule Kernel.TypespecTest do
   end
 
   test "@type when overriding Erlang built-in" do
-    assert_raise CompileError, ~r"type list\(\) is a builtin type; it cannot be redefined", fn ->
+    assert_raise CompileError, ~r"type list/0 is a builtin type", fn ->
       test_module do
         @type list :: :oops
       end
@@ -705,7 +707,9 @@ defmodule Kernel.TypespecTest do
       quote(do: @type builtin_byte() :: byte()),
       quote(do: @type builtin_char() :: char()),
       quote(do: @type builtin_charlist() :: charlist()),
+      quote(do: @type builtin_nonempty_charlist() :: nonempty_charlist()),
       quote(do: @type builtin_fun() :: fun()),
+      quote(do: @type builtin_function() :: function()),
       quote(do: @type builtin_identifier() :: identifier()),
       quote(do: @type builtin_iodata() :: iodata()),
       quote(do: @type builtin_iolist() :: iolist()),
@@ -830,13 +834,13 @@ defmodule Kernel.TypespecTest do
   end
 
   test "callbacks" do
-    assert SampleCallbacks.behaviour_info(:callbacks) ==
-           ["MACRO-last": 1, first: 1, guarded: 1, "MACRO-last": 2, literal: 5, orr: 1, foo: 2, bar: 2]
+    assert SampleCallbacks.behaviour_info(:callbacks) |> Enum.sort() ==
+           ["MACRO-last": 1, "MACRO-last": 2, bar: 2, first: 1, foo: 2, guarded: 1, literal: 5, orr: 1]
   end
 
   test "optional callbacks" do
-    assert SampleCallbacks.behaviour_info(:optional_callbacks) ==
-           [bar: 2, "MACRO-last": 1]
+    assert SampleCallbacks.behaviour_info(:optional_callbacks) |> Enum.sort() ==
+           ["MACRO-last": 1, bar: 2]
   end
 
   test "default is not supported" do
@@ -883,5 +887,25 @@ defmodule Kernel.TypespecTest do
         @spec my_fun(integer)
       end
     end
+  end
+
+  test "warns on discouraged types" do
+    message = capture_io(:stderr, fn ->
+      test_module do
+        @type foo :: string()
+        @type bar :: nonempty_string()
+      end
+    end)
+
+    string_discouraged =
+      "string() type use is discouraged. " <>
+      "For character lists, use charlist() type, for strings, String.t()\n"
+
+    nonempty_string_discouraged =
+      "nonempty_string() type use is discouraged. " <>
+      "For non-empty character lists, use nonempty_charlist() type, for strings, String.t()\n"
+
+    assert message =~ string_discouraged
+    assert message =~ nonempty_string_discouraged
   end
 end

@@ -27,7 +27,7 @@ defmodule IEx.Helpers do
     * `c/2`         - compiles a file to the given path
     * `cd/1`        - changes the current directory
     * `clear/0`     - clears the screen
-    * `e/1`         - show all exports (functions + macros) in a module
+    * `e/1`         - shows all exports (functions + macros) in a module
     * `flush/0`     - flushes all messages sent to the shell
     * `h/0`         - prints this help message
     * `h/1`         - prints help for the given module, function or macro
@@ -65,10 +65,9 @@ defmodule IEx.Helpers do
   This helper only works when IEx is started with a Mix
   project, for example, `iex -S mix`. The application is
   not restarted after compilation, which means any long
-  running process may crash as the code is updated but the
-  state does not go through the proper code changes callback.
-  In any case, the supervision tree should notice the failure
-  and restart such servers.
+  running process may crash as any changed module will be
+  temporarily removed and recompiled, without going through
+  the proper code changes callback.
 
   If you want to reload a single module, consider using
   `r(ModuleName)` instead.
@@ -160,7 +159,7 @@ defmodule IEx.Helpers do
 
     {erls, exs} = Enum.split_with(found, &String.ends_with?(&1, ".erl"))
 
-    modules = Enum.map(erls, fn(source) ->
+    erl_modules = Enum.map(erls, fn(source) ->
       {module, binary} = compile_erlang(source)
       unless path == :in_memory do
         base = source |> Path.basename |> Path.rootname
@@ -169,7 +168,13 @@ defmodule IEx.Helpers do
       module
     end)
 
-    modules ++ compile_elixir(exs, path)
+    ex_modules = try do
+      compile_elixir(exs, path)
+    catch
+      _, _ -> raise CompileError
+    end
+
+    erl_modules ++ ex_modules
   end
 
   @doc """

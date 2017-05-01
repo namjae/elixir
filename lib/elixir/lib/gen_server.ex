@@ -227,6 +227,10 @@ defmodule GenServer do
       to switch off debugging once we're done. Excessive debug handlers or
       those that should be turned off, but weren't, can seriously damage
       the performance of the system.
+    * [`:sys.suspend/2`](http://erlang.org/doc/man/sys.html#suspend-2) - allows
+      to suspend a process so that it only replies to system messages but no
+      other messages. A suspended process can be reactivated via
+      [`:sys.resume/2`](http://erlang.org/doc/man/sys.html#resume-2).
 
   Let's see how we could use those functions for debugging the stack server
   we defined earlier.
@@ -895,7 +899,7 @@ defmodule GenServer do
 
   @doc """
   Returns the `pid` or `{name, node}` of a GenServer process, or `nil` if
-  no process is associated with the given name.
+  no process is associated with the given `server`.
 
   ## Examples
 
@@ -907,25 +911,32 @@ defmodule GenServer do
 
   """
   @spec whereis(server) :: pid | {atom, node} | nil
+  def whereis(server)
+
   def whereis(pid) when is_pid(pid), do: pid
+
   def whereis(name) when is_atom(name) do
     Process.whereis(name)
   end
+
   def whereis({:global, name}) do
     case :global.whereis_name(name) do
       pid when is_pid(pid) -> pid
       :undefined           -> nil
     end
   end
+
   def whereis({:via, mod, name}) do
     case apply(mod, :whereis_name, [name]) do
       pid when is_pid(pid) -> pid
       :undefined           -> nil
     end
   end
+
   def whereis({name, local}) when is_atom(name) and local == node() do
     Process.whereis(name)
   end
+
   def whereis({name, node} = server) when is_atom(name) and is_atom(node) do
     server
   end

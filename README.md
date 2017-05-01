@@ -3,6 +3,8 @@
 [![Build Status](https://secure.travis-ci.org/elixir-lang/elixir.svg?branch=master
 "Build Status")](https://travis-ci.org/elixir-lang/elixir)
 
+Elixir is a dynamic, functional language designed for building scalable and maintainable applications.
+
 For more about Elixir, installation and documentation,
 [check Elixir's website](http://elixir-lang.org/).
 
@@ -74,6 +76,28 @@ are changing the String module, you can compile it and run its tests as:
 bin/elixirc lib/elixir/lib/string.ex -o lib/elixir/ebin
 bin/elixir lib/elixir/test/elixir/string_test.exs
 ```
+
+To recompile (including Erlang modules):
+
+```sh
+make compile
+```
+
+If your contribution fails the build during the bootstrapping of the language,
+you can reproduce it locally by deleting all of Elixir beam files and compiling
+again:
+
+```sh
+make clean_exbeam compile
+```
+
+Or to rebuild everything from scratch without running tests:
+
+```sh
+make clean compile
+```
+
+More tasks can be found by reading the [Makefile](./Makefile).
 
 After your changes are done, please remember to run the full suite with
 `make test`.

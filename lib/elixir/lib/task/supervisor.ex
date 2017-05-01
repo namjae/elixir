@@ -17,6 +17,10 @@ defmodule Task.Supervisor do
   `GenServer`. Read more about them in the `GenServer` docs.
   """
 
+  @typedoc "Option values used by `start_link`"
+  @type option :: Supervisor.option | {:restart, Supervisor.Spec.restart} |
+                  {:shutdown, Supervisor.Spec.shutdown}
+
   @doc """
   Starts a new supervisor.
 
@@ -37,7 +41,7 @@ defmodule Task.Supervisor do
   * `:max_restarts` and `:max_seconds` - as specified in `Supervisor.Spec.supervise/2`;
 
   """
-  @spec start_link(Supervisor.options) :: Supervisor.on_start
+  @spec start_link([option]) :: Supervisor.on_start
   def start_link(opts \\ []) do
     import Supervisor.Spec
     {restart, opts}  = Keyword.pop(opts, :restart, :temporary)
@@ -53,7 +57,7 @@ defmodule Task.Supervisor do
   The task will still be linked to the caller, see `Task.async/3` for
   more information and `async_nolink/2` for a non-linked variant.
   """
-  @spec async(Supervisor.supervisor, fun) :: Task.t
+  @spec async(Supervisor.supervisor, (() -> any)) :: Task.t
   def async(supervisor, fun) do
     async(supervisor, :erlang, :apply, [fun, []])
   end
@@ -81,7 +85,7 @@ defmodule Task.Supervisor do
 
   If you create a task using `async_nolink` inside an OTP behaviour
   like `GenServer`, you should match on the message coming from the
-  task inside your `GenServer.handle_info/2` callback.
+  task inside your `c:GenServer.handle_info/2` callback.
 
   The reply sent by the task will be in the format `{ref, result}`,
   where `ref` is the monitor reference held by the task struct
@@ -92,7 +96,7 @@ defmodule Task.Supervisor do
   with the same `ref` value that is held by the task struct. If the task
   terminates normally, the reason in the `:DOWN` message will be `:normal`.
   """
-  @spec async_nolink(Supervisor.supervisor, fun) :: Task.t
+  @spec async_nolink(Supervisor.supervisor, (() -> any)) :: Task.t
   def async_nolink(supervisor, fun) do
     async_nolink(supervisor, :erlang, :apply, [fun, []])
   end
@@ -226,7 +230,7 @@ defmodule Task.Supervisor do
   task needs to perform side-effects (like I/O) and does not need
   to report back to the caller.
   """
-  @spec start_child(Supervisor.supervisor, fun) :: {:ok, pid}
+  @spec start_child(Supervisor.supervisor, (() -> any)) :: {:ok, pid}
   def start_child(supervisor, fun) do
     start_child(supervisor, :erlang, :apply, [fun, []])
   end
@@ -238,7 +242,7 @@ defmodule Task.Supervisor do
   by the given `module`, `fun` and `args`.
   """
   @spec start_child(Supervisor.supervisor, module, atom, [term]) :: {:ok, pid}
-  def start_child(supervisor, module, fun, args) do
+  def start_child(supervisor, module, fun, args) when is_atom(fun) and is_list(args) do
     Supervisor.start_child(supervisor, [get_info(self()), {module, fun, args}])
   end
 

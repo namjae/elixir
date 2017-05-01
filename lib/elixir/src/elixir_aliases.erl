@@ -10,10 +10,10 @@ inspect(Atom) when is_atom(Atom) ->
   end.
 
 %% Store an alias in the given scope
-store(Meta, New, New, _TKV, Aliases, MacroAliases, _Lexical) ->
+store(Meta, New, New, _TOpts, Aliases, MacroAliases, _Lexical) ->
   {remove_alias(New, Aliases), remove_macro_alias(Meta, New, MacroAliases)};
-store(Meta, New, Old, TKV, Aliases, MacroAliases, Lexical) ->
-  record_warn(Meta, New, TKV, Lexical),
+store(Meta, New, Old, TOpts, Aliases, MacroAliases, Lexical) ->
+  record_warn(Meta, New, TOpts, Lexical),
   {store_alias(New, Old, Aliases),
     store_macro_alias(Meta, New, Old, MacroAliases)}.
 
@@ -91,15 +91,15 @@ ensure_loaded(Meta, Ref, E) ->
     Ref:module_info(compile)
   catch
     error:undef ->
-      Kind = case lists:member(Ref, ?m(E, context_modules)) of
+      Kind = case lists:member(Ref, ?key(E, context_modules)) of
         true  ->
-          case ?m(E, module) of
+          case ?key(E, module) of
             Ref -> circular_module;
             _ -> scheduled_module
           end;
         false -> unloaded_module
       end,
-      elixir_errors:form_error(Meta, ?m(E, file), ?MODULE, {Kind, Ref})
+      elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {Kind, Ref})
   end.
 
 %% Receives an atom and returns the last bit as an alias.

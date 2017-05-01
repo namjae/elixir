@@ -1,5 +1,5 @@
 ExUnit.start [trace: "--trace" in System.argv,
-              assert_receive_timeout: 200]
+              assert_receive_timeout: 500]
 
 # Beam files compiled on demand
 path = Path.expand("../../tmp/beams", __DIR__)
@@ -65,42 +65,5 @@ defmodule PathHelpers do
     def windows?, do: false
     def executable_extension, do: ""
     def redirect_std_err_on_win, do: ""
-  end
-end
-
-defmodule CompileAssertion do
-  import ExUnit.Assertions
-
-  def assert_compile_fail(given_exception, string) do
-    case format_rescue(string) do
-      {^given_exception, _} -> :ok
-      {exception, _} ->
-        raise ExUnit.AssertionError,
-          left: inspect(exception),
-          right: inspect(given_exception),
-          message: "Expected match"
-    end
-  end
-
-  def assert_compile_fail(given_exception, given_message, string) do
-    {exception, message} = format_rescue(string)
-
-    unless exception == given_exception and message =~ given_message do
-      raise ExUnit.AssertionError,
-        left: "#{inspect exception}[message: #{inspect message}]",
-        right: "#{inspect given_exception}[message: #{inspect given_message}]",
-        message: "Expected match"
-    end
-  end
-
-  defp format_rescue(expr) do
-    result = try do
-      :elixir.eval(to_charlist(expr), [])
-      nil
-    rescue
-      error -> {error.__struct__, Exception.message(error)}
-    end
-
-    result || flunk("Expected expression to fail")
   end
 end

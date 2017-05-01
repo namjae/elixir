@@ -50,11 +50,15 @@ defmodule ModuleTest do
   end
   Module.eval_quoted __MODULE__, contents, [], file: "sample.ex", line: 13
 
+  defp purge(module) do
+    :code.purge(module)
+    :code.delete(module)
+  end
+
   defmacrop in_module(block) do
     quote do
       defmodule Temp, unquote(block)
-      :code.purge(Temp)
-      :code.delete(Temp)
+      purge Temp
     end
   end
 
@@ -97,7 +101,7 @@ defmodule ModuleTest do
     assert name == :hello
     assert [{:foo, _, _}, {:bar, _, _}] = args
     assert [] = guards
-    assert {:+, _, [{:foo, _, nil}, {:bar, _, nil}]} = expr
+    assert [do: {:+, _, [{:foo, _, nil}, {:bar, _, nil}]}] = expr
   end
 
   test "executes on definition callback" do
@@ -133,8 +137,8 @@ defmodule ModuleTest do
   end
 
   test "registered attributes" do
-    assert [{:register_example, [:it_works]}, {:register_example, [:still_works]}] ==
-      Enum.filter __MODULE__.__info__(:attributes), &match?({:register_example, _}, &1)
+    assert Enum.filter __MODULE__.__info__(:attributes), &match?({:register_example, _}, &1) ==
+           [{:register_example, [:it_works]}, {:register_example, [:still_works]}]
   end
 
   @some_attribute [1]
@@ -174,10 +178,10 @@ defmodule ModuleTest do
     module = Very.Long.Module.Name.And.Even.Longer
     assert Module.split(module) == ["Very", "Long", "Module", "Name", "And", "Even", "Longer"]
     assert Module.split("Elixir.Very.Long") == ["Very", "Long"]
-    assert_raise FunctionClauseError, fn ->
+    assert_raise ArgumentError, "expected an Elixir module, got: :just_an_atom", fn ->
       Module.split(:just_an_atom)
     end
-    assert_raise FunctionClauseError, fn ->
+    assert_raise ArgumentError, "expected an Elixir module, got: \"Foo\"", fn ->
       Module.split("Foo")
     end
     assert Module.concat(Module.split(module)) == module
@@ -309,5 +313,20 @@ defmodule ModuleTest do
       assert Module.definitions_in(__MODULE__, :def)  == [foo: 3]
       assert Module.definitions_in(__MODULE__, :defp) == []
     end
+  end
+
+  test "make_overridable/2 with invalid arguments" do
+    contents =
+      quote do
+        Module.make_overridable(__MODULE__, [{:foo, 256}])
+      end
+
+    assert_raise ArgumentError,
+      "each element in tuple list has to be a {function_name :: atom, arity :: 0..255} tuple, got: {:foo, 256}",
+      fn ->
+      Module.create(Foo, contents, __ENV__)
+    end
+  after
+    purge Foo
   end
 end

@@ -76,7 +76,6 @@ defmodule Kernel.Typespec do
     end
   end
 
-
   @doc """
   Defines a macro callback.
   This macro is responsible for handling the attribute `@macrocallback`.
@@ -90,27 +89,6 @@ defmodule Kernel.Typespec do
     quote do
       Kernel.Typespec.defspec(:macrocallback, unquote(Macro.escape(spec, unquote: true)), __ENV__)
     end
-  end
-
-  defmacro defoptional_callbacks(callbacks) do
-    quote do
-      Module.store_typespec(__ENV__.module, :optional_callbacks, {__ENV__.line, unquote(callbacks)})
-    end
-  end
-
-  @doc """
-  Defines a `type`, `typep` or `opaque` by receiving a typespec expression.
-  """
-  def define_type(kind, expr, doc \\ nil, env) do
-    Module.store_typespec(env.module, kind, {kind, expr, doc, env})
-  end
-
-  @doc """
-  Defines a `spec` by receiving a typespec expression.
-  """
-  @spec define_spec(atom, Macro.t, Macro.Env.t) :: Keyword.t
-  def define_spec(kind, expr, env) do
-    defspec(kind, expr, env)
   end
 
   @doc """
@@ -409,9 +387,8 @@ defmodule Kernel.Typespec do
         :opaque -> {:opaque, true}
       end
 
-    if elixir_builtin_type?(name, arity) do
-      :elixir_errors.handle_file_error(caller.file,
-        {caller.line, :erl_lint, {:builtin_type, {name, arity}}})
+    if builtin_type?(name, arity) do
+      compile_error caller, "type #{name}/#{arity} is a builtin type and it cannot be redefined"
     end
 
     {{kind, {name, arity}, type}, caller.line, export}
@@ -422,14 +399,15 @@ defmodule Kernel.Typespec do
     compile_error caller, "invalid type specification: #{type_spec}"
   end
 
-  defp elixir_builtin_type?(:as_boolean, 1), do: true
-  defp elixir_builtin_type?(:struct, 0), do: true
-  defp elixir_builtin_type?(:charlist, 0), do: true
+  defp builtin_type?(:as_boolean, 1), do: true
+  defp builtin_type?(:struct, 0), do: true
+  defp builtin_type?(:charlist, 0), do: true
   # TODO: Remove char_list type by 2.0
-  defp elixir_builtin_type?(:char_list, 0), do: true
-  defp elixir_builtin_type?(:keyword, 0), do: true
-  defp elixir_builtin_type?(:keyword, 1), do: true
-  defp elixir_builtin_type?(_, _), do: false
+  defp builtin_type?(:char_list, 0), do: true
+  defp builtin_type?(:nonempty_charlist, 0), do: true
+  defp builtin_type?(:keyword, 0), do: true
+  defp builtin_type?(:keyword, 1), do: true
+  defp builtin_type?(name, arity), do: :erl_internal.is_type(name, arity)
 
   @doc false
   def translate_spec(kind, {:when, _meta, [spec, guard]}, caller) do
@@ -457,8 +435,6 @@ defmodule Kernel.Typespec do
 
   defp translate_spec(kind, meta, name, args, return, guard, caller) when is_atom(args),
     do: translate_spec(kind, meta, name, [], return, guard, caller)
-  defp translate_spec(:macrocallback, meta, name, args, return, guard, caller),
-    do: translate_spec(:callback, meta, :"MACRO-#{name}", macro_args(args), return, guard, caller)
   defp translate_spec(kind, meta, name, args, return, guard, caller) do
     ensure_no_defaults!(args)
 
@@ -478,10 +454,6 @@ defmodule Kernel.Typespec do
 
     arity = length(args)
     {{kind, {name, arity}, spec}, caller.line}
-  end
-
-  defp macro_args(args) do
-    [quote(do: {line :: Macro.Env.line, env :: Macro.Env.t}) | args]
   end
 
   defp ensure_no_defaults!(args) do
@@ -665,6 +637,10 @@ defmodule Kernel.Typespec do
     typespec_to_ast({:type, line, :charlist, []})
   end
 
+  defp typespec_to_ast({:remote_type, line, [{:atom, _, :elixir}, {:atom, _, :nonempty_charlist}, []]}) do
+    typespec_to_ast({:type, line, :nonempty_charlist, []})
+  end
+
   defp typespec_to_ast({:remote_type, line, [{:atom, _, :elixir}, {:atom, _, :struct}, []]}) do
     typespec_to_ast({:type, line, :struct, []})
   end
@@ -767,7 +743,7 @@ defmodule Kernel.Typespec do
         {{:optional, meta2, [k]}, v} ->
           {:type, line(meta2), :map_field_assoc, [typespec(k, vars, caller), typespec(v, vars, caller)]}
         {k, v} ->
-          # TODO: Emit warnings on v1.5
+          # TODO: Emit warnings on v1.6 (when we drop OTP 18 support)
           # :elixir_errors.warn(caller.line, caller.file,
           #   "invalid map specification. %{foo => bar} is deprecated in favor of " <>
           #   "%{required(foo) => bar} and %{optional(foo) => bar}. required/1 is an " <>
@@ -933,11 +909,24 @@ defmodule Kernel.Typespec do
   end
 
   # Handle local calls
-  defp typespec({type, meta, arguments}, vars, caller) when type in [:string, :nonempty_string] do
-    :elixir_errors.warn caller.line, caller.file, "#{type}() type use is discouraged. For character lists, use " <>
-      "charlist() type, for strings, String.t()\n#{Exception.format_stacktrace(Macro.Env.stacktrace(caller))}"
+  defp typespec({:string, meta, arguments}, vars, caller) do
+    :elixir_errors.warn caller.line, caller.file,
+      "string() type use is discouraged. " <>
+      "For character lists, use charlist() type, for strings, String.t()\n" <>
+      Exception.format_stacktrace(Macro.Env.stacktrace(caller))
+
     arguments = for arg <- arguments, do: typespec(arg, vars, caller)
-    {:type, line(meta), type, arguments}
+    {:type, line(meta), :string, arguments}
+  end
+
+  defp typespec({:nonempty_string, meta, arguments}, vars, caller) do
+    :elixir_errors.warn caller.line, caller.file,
+      "nonempty_string() type use is discouraged. " <>
+      "For non-empty character lists, use nonempty_charlist() type, for strings, String.t()\n" <>
+      Exception.format_stacktrace(Macro.Env.stacktrace(caller))
+
+    arguments = for arg <- arguments, do: typespec(arg, vars, caller)
+    {:type, line(meta), :nonempty_string, arguments}
   end
 
   # TODO: Remove char_list type by 2.0
@@ -946,6 +935,10 @@ defmodule Kernel.Typespec do
       :elixir_errors.warn caller.line, caller.file, "the char_list() type is deprecated, use charlist()"
     end
     typespec((quote do: :elixir.charlist()), vars, caller)
+  end
+
+  defp typespec({:nonempty_charlist, _meta, []}, vars, caller) do
+    typespec((quote do: :elixir.nonempty_charlist()), vars, caller)
   end
 
   defp typespec({:struct, _meta, []}, vars, caller) do

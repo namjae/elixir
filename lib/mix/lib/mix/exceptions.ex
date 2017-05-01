@@ -61,8 +61,8 @@ defmodule Mix.ElixirVersionError do
 end
 
 defmodule Mix.NoProjectError do
-  defexception message: "Could not find a Mix.Project, please ensure a mix.exs file is available",
-               mix: true
+  message = "Could not find a Mix.Project, please ensure you are running Mix in a directory with a mix.exs file"
+  defexception message: message, mix: true
 end
 
 defmodule Mix.Error do

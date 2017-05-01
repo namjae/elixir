@@ -150,6 +150,8 @@ defmodule IntegerTest do
 
     # Base should be an integer
     assert_raise ArgumentError, "invalid base 10.2", fn -> Integer.parse("2", 10.2) end
+
+    assert_raise ArgumentError, "invalid base nil", fn -> Integer.parse("2", nil) end
   end
 
   test "to_string/1" do
@@ -203,6 +205,11 @@ defmodule IntegerTest do
     end
   end
 
+  test "to_char_list/1" do
+    module = Integer
+    assert module.to_char_list(42) == '42'
+  end
+
   test "to_charlist/2" do
     assert Integer.to_charlist(42, 2) == '101010'
     assert Integer.to_charlist(42, 10) == '42'
@@ -226,5 +233,27 @@ defmodule IntegerTest do
         Integer.to_charlist(n, n)
       end
     end
+  end
+
+  test "to_char_list/2" do
+    module = Integer
+    assert module.to_char_list(42, 2) == '101010'
+  end
+
+  test "gcd/2" do
+    assert Integer.gcd(1, 5) == 1
+    assert Integer.gcd(2, 3) == 1
+    assert Integer.gcd(8, 12) == 4
+    assert Integer.gcd(-8, 12) == 4
+    assert Integer.gcd(8, -12) == 4
+    assert Integer.gcd(-8, -12) == 4
+    assert Integer.gcd(27, 27) == 27
+    assert Integer.gcd(-27, -27) == 27
+    assert Integer.gcd(-27, 27) == 27
+    assert Integer.gcd(0, 3) == 3
+    assert Integer.gcd(0, -3) == 3
+    assert Integer.gcd(3, 0) == 3
+    assert Integer.gcd(-3, 0) == 3
+    assert Integer.gcd(0, 0) == 0
   end
 end

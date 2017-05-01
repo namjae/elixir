@@ -2,23 +2,9 @@ Code.require_file "test_helper.exs", __DIR__
 
 defmodule KernelTest do
   use ExUnit.Case, async: true
-
   doctest Kernel
 
-  test "paren as nil" do
-    assert is_nil(()) == true
-    assert (_ = (); ();) == nil
-    assert [1, (), 3] == [1, nil, 3]
-    assert [do: ()] == [do: nil]
-    assert {1, (), 3} == {1, nil, 3}
-    assert (Kernel.&& nil, ()) == nil
-    assert (() && ()) == nil
-    assert (if(() && ()) do
-      :ok
-    else
-      :error
-    end) == :error
-  end
+  defp empty_list(), do: []
 
   test "=~/2" do
     assert ("abcd" =~ ~r/c(d)/) == true
@@ -640,6 +626,10 @@ defmodule KernelTest do
       assert_raise FunctionClauseError, fn ->
         pop_in(users, [])
       end
+
+      assert_raise FunctionClauseError, "no function clause matching in Kernel.pop_in/2", fn ->
+        pop_in(users, :not_a_list)
+      end
     end
 
     test "pop_in/2 with paths" do
@@ -869,6 +859,24 @@ defmodule KernelTest do
     after
       purge(KernelTest.TestMod)
     end
+  end
+
+  test "tl/1" do
+    assert tl([:one]) == []
+    assert tl([1, 2, 3]) == [2, 3]
+    assert_raise ArgumentError, "argument error", fn ->
+      tl(empty_list())
+    end
+    assert tl([:a | :b]) == :b
+    assert tl([:a, :b | :c]) == [:b | :c]
+  end
+
+  test "hd/1" do
+    assert hd([1, 2, 3, 4]) == 1
+    assert_raise ArgumentError, "argument error", fn ->
+      hd(empty_list())
+    end
+    assert hd([1 | 2]) == 1
   end
 
   defp purge(module) do

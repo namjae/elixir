@@ -184,7 +184,7 @@ do_quote({unquote, _Meta, [Expr]}, #elixir_quote{unquote=true} = Q, _) ->
 
 do_quote({'__aliases__', Meta, [H | T]} = Alias, #elixir_quote{aliases_hygiene=true} = Q, E) when is_atom(H) and (H /= 'Elixir') ->
   Annotation =
-    case elixir_aliases:expand(Alias, ?m(E, aliases), ?m(E, macro_aliases), ?m(E, lexical_tracker)) of
+    case elixir_aliases:expand(Alias, ?key(E, aliases), ?key(E, macro_aliases), ?key(E, lexical_tracker)) of
       Atom when is_atom(Atom) -> Atom;
       Aliases when is_list(Aliases) -> false
     end,
@@ -238,7 +238,7 @@ do_quote(BitString, #elixir_quote{escape=true} = Q, _) when is_bitstring(BitStri
       {BitString, Q};
     Size ->
       <<Bits:Size, Bytes/binary>> = BitString,
-      {{'<<>>', [], [{'::', [], [Bits, Size]}, Bytes]}, Q}
+      {{'<<>>', [], [{'::', [], [Bits, {size, [], [Size]}]}, {'::', [], [Bytes, {binary, [], []}]}]}, Q}
   end;
 
 do_quote(Map, #elixir_quote{escape=true} = Q, E) when is_map(Map) ->

@@ -154,7 +154,7 @@ defmodule Task do
   @doc """
   Starts a task as part of a supervision tree.
   """
-  @spec start_link(fun) :: {:ok, pid}
+  @spec start_link((() -> any)) :: {:ok, pid}
   def start_link(fun) do
     start_link(:erlang, :apply, [fun, []])
   end
@@ -174,7 +174,7 @@ defmodule Task do
   (i.e. no interest in the returned result) and it should not
   be linked to the current process.
   """
-  @spec start(fun) :: {:ok, pid}
+  @spec start((() -> any)) :: {:ok, pid}
   def start(fun) do
     start(:erlang, :apply, [fun, []])
   end
@@ -203,7 +203,7 @@ defmodule Task do
 
   See also `async/3`.
   """
-  @spec async(fun) :: t
+  @spec async((() -> any)) :: t
   def async(fun) do
     async(:erlang, :apply, [fun, []])
   end
@@ -309,9 +309,13 @@ defmodule Task do
 
     * `:max_concurrency` - sets the maximum number of tasks to run
       at the same time. Defaults to `System.schedulers_online/0`.
-    * `:timeout` - the maximum amount of time to wait (in milliseconds)
-      without receiving a task reply (across all running tasks).
-      Defaults to `5000`.
+    * `:timeout` - the maximum amount of time (in milliseconds) each
+      task is allowed to execute for. Defaults to `5000`.
+    * `:on_timeout` - what do to when a task times out. The possible
+      values are:
+      * `:exit` (default) - the process that spawned the tasks exits.
+      * `:kill_task` - the task that timed out is killed. The value
+        emitted for that task is `{:exit, :timeout}`.
 
   ## Example
 
@@ -341,11 +345,11 @@ defmodule Task do
   Each `enumerable` item is passed as argument to the given function `fun` and
   processed by its own task. The tasks will be linked to the current process,
   similarly to `async/1`.
-  
+
   ## Example
-  
+
   Count the codepoints in each string asynchronously, then add the counts together using reduce.
-  
+
       iex> strings = ["long string", "longer string", "there are many of these"]
       iex> stream = Task.async_stream(strings, fn text -> text |> String.codepoints |> Enum.count end)
       iex> Enum.reduce(stream, 0, fn {:ok, num}, acc -> num + acc end)
@@ -364,12 +368,17 @@ defmodule Task do
     end)
   end
 
-  defp get_info(self) do
-    {node(),
-     case Process.info(self, :registered_name) do
-       {:registered_name, []} -> self()
-       {:registered_name, name} -> name
-     end}
+  # Returns a tuple with the node where this is executed and either the
+  # registered name of the given pid or the pid of where this is executed. Used
+  # when exiting from tasks to print out from where the task was started.
+  defp get_info(pid) do
+    self_or_name =
+      case Process.info(pid, :registered_name) do
+        {:registered_name, []} -> self()
+        {:registered_name, name} -> name
+      end
+
+    {node(), self_or_name}
   end
 
   @doc """
@@ -429,11 +438,7 @@ defmodule Task do
   @doc false
   # TODO: Remove on 2.0
   # (hard-deprecated in elixir_dispatch)
-  def find(tasks, msg) do
-    do_find(tasks, msg)
-  end
-
-  defp do_find(tasks, {ref, reply}) when is_reference(ref) do
+  def find(tasks, {ref, reply}) when is_reference(ref) do
     Enum.find_value tasks, fn
       %Task{ref: ^ref} = task ->
         Process.demonitor(ref, [:flush])
@@ -443,14 +448,14 @@ defmodule Task do
     end
   end
 
-  defp do_find(tasks, {:DOWN, ref, _, proc, reason} = msg) when is_reference(ref) do
+  def find(tasks, {:DOWN, ref, _, proc, reason} = msg) when is_reference(ref) do
     find = fn %Task{ref: task_ref} -> task_ref == ref end
     if Enum.find(tasks, find) do
       exit({reason(reason, proc), {__MODULE__, :find, [tasks, msg]}})
     end
   end
 
-  defp do_find(_tasks, _msg) do
+  def find(_tasks, _msg) do
     nil
   end
 

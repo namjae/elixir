@@ -38,8 +38,8 @@ defmodule Mix.CLI do
   end
 
   defp get_task(["-" <> _ | _]) do
-    Mix.shell.error "** (Mix) Cannot implicitly pass flags to default Mix task, " <>
-                    "please invoke instead \"mix #{Mix.Project.config[:default_task]}\""
+    Mix.shell.error "** (Mix) Mix requires a task name when passing flags, " <>
+                    "try invoking \"mix #{Mix.Project.config[:default_task]}\" instead"
     exit({:shutdown, 1})
   end
 
@@ -48,7 +48,24 @@ defmodule Mix.CLI do
   end
 
   defp get_task([]) do
-    {Mix.Project.config[:default_task], []}
+    case Mix.Project.get do
+      nil ->
+        Mix.shell.error "** (Mix) \"mix\" with no arguments must be executed in a directory with a mix.exs file"
+        Mix.shell.info """
+
+        Usage: mix [task]
+
+        Examples:
+
+            mix             - Invokes the default task (current: "mix run")
+            mix new PATH    - Creates a new Elixir project at the given path
+            mix help        - Lists all available tasks
+            mix help TASK   - Prints documentation for a given task
+        """
+        exit({:shutdown, 1})
+      _ ->
+        {Mix.Project.config[:default_task], []}
+    end
   end
 
   defp run_task(name, args) do
@@ -119,11 +136,11 @@ defmodule Mix.CLI do
   end
 
   # Check for --help or --version in the args
-  defp check_for_shortcuts([first_arg | _]) when first_arg in
-      ["--help", "-h"], do: :help
+  defp check_for_shortcuts([first_arg | _]) when first_arg in ["--help", "-h"],
+    do: :help
 
-  defp check_for_shortcuts([first_arg | _]) when first_arg in
-      ["--version", "-v"], do: :version
+  defp check_for_shortcuts([first_arg | _]) when first_arg in ["--version", "-v"],
+    do: :version
 
   defp check_for_shortcuts(_), do: nil
 end

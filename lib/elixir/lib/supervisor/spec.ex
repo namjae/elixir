@@ -109,7 +109,7 @@ defmodule Supervisor.Spec do
   @type restart :: :permanent | :transient | :temporary
 
   @typedoc "Supported shutdown values"
-  @type shutdown :: :brutal_kill | :infinity | non_neg_integer
+  @type shutdown :: timeout | :brutal_kill
 
   @typedoc "Supported worker values"
   @type worker :: :worker | :supervisor
@@ -159,7 +159,7 @@ defmodule Supervisor.Spec do
   """
   @spec supervise([spec], strategy: strategy,
                           max_restarts: non_neg_integer,
-                          max_seconds: non_neg_integer) :: {:ok, tuple}
+                          max_seconds: pos_integer) :: {:ok, tuple}
   # TODO: Make it return a tuple of format {:ok, children, opts}
   # TODO: Deprecate once the new tuple format has been established
   def supervise(children, options) do

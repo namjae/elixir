@@ -26,19 +26,15 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec alive?(pid) :: boolean
-  def alive?(pid) do
-    :erlang.is_process_alive(pid)
-  end
+  defdelegate alive?(pid), to: :erlang, as: :is_process_alive
 
   @doc """
   Returns all key-value pairs in the process dictionary.
 
   Inlined by the compiler.
   """
-  @spec get :: [{term, term}]
-  def get do
-    :erlang.get()
-  end
+  @spec get() :: [{term, term}]
+  defdelegate get(), to: :erlang
 
   @doc """
   Returns the value for the given `key` in the process dictionary,
@@ -61,9 +57,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec get_keys() :: [term]
-  def get_keys() do
-    :erlang.get_keys()
-  end
+  defdelegate get_keys(), to: :erlang
 
   @doc """
   Returns all keys in the process dictionary that have the given `value`.
@@ -71,9 +65,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec get_keys(term) :: [term]
-  def get_keys(value) do
-    :erlang.get_keys(value)
-  end
+  defdelegate get_keys(value), to: :erlang
 
   @doc """
   Stores the given `key`-`value` pair in the process dictionary.
@@ -134,16 +126,15 @@ defmodule Process do
 
   """
   @spec exit(pid, term) :: true
-  def exit(pid, reason) do
-    :erlang.exit(pid, reason)
-  end
+  defdelegate exit(pid, reason), to: :erlang
 
   @doc """
   Sleeps the current process for the given `timeout`.
 
   `timeout` is either the number of milliseconds to sleep as an
   integer or the atom `:infinity`. When `:infinity` is given,
-  the current process will suspend forever.
+  the current process will sleep forever, and not
+  consume or reply to messages.
 
   **Use this function with extreme care**. For almost all situations
   where you would use `sleep/1` in Elixir, there is likely a
@@ -207,6 +198,7 @@ defmodule Process do
       end
 
   """
+  @spec sleep(timeout) :: :ok
   def sleep(timeout)
       when is_integer(timeout) and timeout >= 0
       when timeout == :infinity do
@@ -232,14 +224,13 @@ defmodule Process do
       iex> Process.send({:name, :node_that_does_not_exist}, :hi, [:noconnect])
       :noconnect
 
+  Inlined by the compiler.
   """
   @spec send(dest, msg, [option]) :: :ok | :noconnect | :nosuspend
         when dest: pid | port | atom | {atom, node},
              msg: any,
              option: :noconnect | :nosuspend
-  def send(dest, msg, options) do
-    :erlang.send(dest, msg, options)
-  end
+  defdelegate send(dest, msg, options), to: :erlang
 
   @doc """
   Sends `msg` to `dest` after `time` milliseconds.
@@ -256,6 +247,8 @@ defmodule Process do
   which is not alive or when the given PID exits. Note that timers will not be
   automatically canceled when `dest` is an atom (as the atom resolution is done
   on delivery).
+
+  Inlined by the compiler.
 
   ## Options
 
@@ -289,12 +282,28 @@ defmodule Process do
   Even if the timer had expired and the message was sent, this function does not
   tell you if the timeout message has arrived at its destination yet.
 
+  ## Options
+
+    * `:async` - (boolean) when `false`, the request for cancellation is
+      synchronous. When `true`, the request for cancellation is asynchronous,
+      meaning that the request to cancel the timer is issued and `:ok` is
+      returned right away. Defaults to `false`.
+
+    * `:info` - (boolean) whether to return information about the timer being
+      cancelled. When the `:async` option is `false` and `:info` is `true`, then
+      either an integer or `false` (like described above) is returned. If
+      `:async` is `false` and `:info` is `false`, `:ok` is returned. If `:async`
+      is `true` and `:info` is `true`, a message in the form `{:cancel_timer,
+      timer_ref, result}` (where `result` is an integer or `false` like
+      described above) is sent to the caller of this function when the
+      cancellation has been performed. If `:async` is `true` and `:info` is
+      `false`, no message is sent. Defaults to `true`.
+
   Inlined by the compiler.
   """
-  @spec cancel_timer(reference) :: non_neg_integer | false
-  def cancel_timer(timer_ref) do
-    :erlang.cancel_timer(timer_ref)
-  end
+  @spec cancel_timer(reference, options) :: non_neg_integer | false | :ok
+        when options: [async: boolean, info: boolean]
+  defdelegate cancel_timer(timer_ref, options \\ []), to: :erlang
 
   @doc """
   Reads a timer created by `send_after/3`.
@@ -312,9 +321,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec read_timer(reference) :: non_neg_integer | false
-  def read_timer(timer_ref) do
-    :erlang.read_timer(timer_ref)
-  end
+  defdelegate read_timer(timer_ref), to: :erlang
 
   @type spawn_opt  :: :link | :monitor | {:priority, :low | :normal | :high} |
                       {:fullsweep_after, non_neg_integer} |
@@ -336,9 +343,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec spawn((() -> any), spawn_opts) :: pid | {pid, reference}
-  def spawn(fun, opts) do
-    :erlang.spawn_opt(fun, opts)
-  end
+  defdelegate spawn(fun, opts), to: :erlang, as: :spawn_opt
 
   @doc """
   Spawns the given function `fun` from module `mod`, passing the given `args`
@@ -355,14 +360,22 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec spawn(module, atom, list, spawn_opts) :: pid | {pid, reference}
-  def spawn(mod, fun, args, opts) do
-    :erlang.spawn_opt(mod, fun, args, opts)
-  end
+  defdelegate spawn(mod, fun, args, opts), to: :erlang, as: :spawn_opt
 
   @doc """
   Starts monitoring the given `item` from the calling process.
 
-  This function returns the monitor reference.
+  Once the monitored process dies, a message is delivered to the
+  monitoring process in the shape of:
+
+      {:DOWN, ref, :process, object, reason}
+
+  where:
+
+    * `ref` is a monitor reference returned by this function;
+    * `object` is either a `pid` of the monitored process (if monitoring
+      a PID) or `{name, node}` (if monitoring a remote or local name);
+    * `reason` is the exit reason.
 
   See [the need for monitoring](http://elixir-lang.org/getting-started/mix-otp/genserver.html#the-need-for-monitoring)
   for an example.
@@ -388,9 +401,7 @@ defmodule Process do
   """
   @spec demonitor(reference) :: true
   @spec demonitor(reference, options :: [:flush | :info]) :: boolean
-  def demonitor(monitor_ref, options \\ []) do
-    :erlang.demonitor(monitor_ref, options)
-  end
+  defdelegate demonitor(monitor_ref, options \\ []), to: :erlang
 
   @doc """
   Returns a list of PIDs corresponding to all the
@@ -401,26 +412,36 @@ defmodule Process do
   its PID will be part of the list of PIDs returned by this function.
 
   See [`:erlang.processes/0`](http://www.erlang.org/doc/man/erlang.html#processes-0) for more info.
+
+  Inlined by the compiler.
   """
-  @spec list :: [pid]
-  def list do
-    :erlang.processes()
-  end
+  @spec list() :: [pid]
+  defdelegate list(), to: :erlang, as: :processes
 
   @doc """
   Creates a link between the calling process and the given item (process or
   port).
 
-  If such a link exists already, this function does nothing.
+  Links are bidirectional. Linked processes can be unlinked by using `unlink/1`.
+
+  If such a link exists already, this function does nothing since there can only
+  be one link between two given processes. If a process tries to create a link
+  to itself, nothing will happen.
+
+  When two processes are linked, each one receives exit signals from the other
+  (see also `exit/2`). Let's assume `pid1` and `pid2` are linked. If `pid2`
+  exits with a reason other than `:normal` (which is also the exit reason used
+  when a process finishes its job) and `pid1` is not trapping exits (see
+  `flag/2`), then `pid1` will exit with the same reason as `pid2` and in turn
+  emit an exit signal to all its other linked processes. The behaviour when
+  `pid1` is trapping exits is described in `exit/2`.
 
   See [`:erlang.link/1`](http://www.erlang.org/doc/man/erlang.html#link-1) for more info.
 
   Inlined by the compiler.
   """
   @spec link(pid | port) :: true
-  def link(pid_or_port) do
-    :erlang.link(pid_or_port)
-  end
+  defdelegate link(pid_or_port), to: :erlang
 
   @doc """
 
@@ -437,9 +458,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec unlink(pid | port) :: true
-  def unlink(pid_or_port) do
-    :erlang.unlink(pid_or_port)
-  end
+  defdelegate unlink(pid_or_port), to: :erlang
 
   @doc """
   Registers the given `pid_or_port` under the given `name`.
@@ -485,11 +504,11 @@ defmodule Process do
 
   Fails with `ArgumentError` if the name is not registered
   to any PID or port.
+
+  Inlined by the compiler.
   """
   @spec unregister(atom) :: true
-  def unregister(name) do
-    :erlang.unregister(name)
-  end
+  defdelegate unregister(name), to: :erlang
 
   @doc """
   Returns the PID or port identifier registered under `name` or `nil` if the
@@ -504,17 +523,19 @@ defmodule Process do
 
   @doc """
   Returns the PID of the group leader for the calling process.
+
+  Inlined by the compiler.
   """
-  @spec group_leader :: pid
-  def group_leader do
-    :erlang.group_leader
-  end
+  @spec group_leader() :: pid
+  defdelegate group_leader(), to: :erlang
 
   @doc """
   Sets the group leader of the given `pid` to `leader`.
 
   Typically, this is used when a process started from a certain shell should
   have a group leader other than `:init`.
+
+  Inlined by the compiler.
   """
   @spec group_leader(pid, leader :: pid) :: true
   def group_leader(pid, leader) do
@@ -523,11 +544,11 @@ defmodule Process do
 
   @doc """
   Returns a list of names which have been registered using `register/2`.
+
+  Inlined by the compiler.
   """
-  @spec registered :: [atom]
-  def registered do
-    :erlang.registered()
-  end
+  @spec registered() :: [atom]
+  defdelegate registered(), to: :erlang
 
   @typep process_flag :: :trap_exit | :error_handler | :min_heap_size |
                          :min_bin_vheap_size | :priority | :save_calls |
@@ -538,11 +559,11 @@ defmodule Process do
   Returns the old value of `flag`.
 
   See [`:erlang.process_flag/2`](http://www.erlang.org/doc/man/erlang.html#process_flag-2) for more info.
+
+  Inlined by the compiler.
   """
   @spec flag(process_flag, term) :: term
-  def flag(flag, value) do
-    :erlang.process_flag(flag, value)
-  end
+  defdelegate flag(flag, value), to: :erlang, as: :process_flag
 
   @doc """
   Sets the given `flag` to `value` for the given process `pid`.
@@ -553,11 +574,11 @@ defmodule Process do
   namely `:save_calls`.
 
   See [`:erlang.process_flag/3`](http://www.erlang.org/doc/man/erlang.html#process_flag-3) for more info.
+
+  Inlined by the compiler.
   """
   @spec flag(pid, :save_calls, non_neg_integer) :: non_neg_integer
-  def flag(pid, flag, value) do
-    :erlang.process_flag(pid, flag, value)
-  end
+  defdelegate flag(pid, flag, value), to: :erlang, as: :process_flag
 
   @doc """
   Returns information about the process identified by `pid`, or returns `nil` if the process
@@ -606,9 +627,7 @@ defmodule Process do
   Inlined by the compiler.
   """
   @spec hibernate(module, atom, list) :: no_return
-  def hibernate(mod, fun, args) do
-    :erlang.hibernate(mod, fun, args)
-  end
+  defdelegate hibernate(mod, fun_name, args), to: :erlang
 
   @compile {:inline, nillify: 1}
   defp nillify(:undefined), do: nil

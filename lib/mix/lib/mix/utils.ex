@@ -40,6 +40,64 @@ defmodule Mix.Utils do
   end
 
   @doc """
+  Parses a string into module, function and arity.
+
+  It returns `{:ok, mfa_list}`, where a `mfa_list` is
+  `[module, function, arity]`, `[module, function]` or `[module]`,
+  or the atom `:error`.
+
+      iex> Mix.Utils.parse_mfa("Foo.bar/1")
+      {:ok, [Foo, :bar, 1]}
+      iex> Mix.Utils.parse_mfa(":foo.bar/1")
+      {:ok, [:foo, :bar, 1]}
+      iex> Mix.Utils.parse_mfa(":foo.bar")
+      {:ok, [:foo, :bar]}
+      iex> Mix.Utils.parse_mfa(":foo")
+      {:ok, [:foo]}
+      iex> Mix.Utils.parse_mfa("Foo")
+      {:ok, [Foo]}
+
+      iex> Mix.Utils.parse_mfa("Foo.")
+      :error
+      iex> Mix.Utils.parse_mfa("Foo.bar.baz")
+      :error
+      iex> Mix.Utils.parse_mfa("Foo.bar/2/2")
+      :error
+  """
+  def parse_mfa(mfa) do
+    with {:ok, quoted} <- Code.string_to_quoted(mfa),
+         [_ | _] = mfa_list <- quoted_to_mfa(quoted) do
+      {:ok, mfa_list}
+    else
+      _ -> :error
+    end
+  end
+
+  defp quoted_to_mfa({:/, _, [dispatch, arity]}) when is_integer(arity) do
+    quoted_to_mf(dispatch, [arity])
+  end
+  defp quoted_to_mfa(dispatch) do
+    quoted_to_mf(dispatch, [])
+  end
+
+  defp quoted_to_mf({{:., _, [module, fun]}, _, []}, acc) when is_atom(fun) do
+    quoted_to_m(module, [fun | acc])
+  end
+  defp quoted_to_mf(module, acc) do
+    quoted_to_m(module, acc)
+  end
+
+  defp quoted_to_m({:__aliases__, _, aliases}, acc) do
+    [Module.concat(aliases) | acc]
+  end
+  defp quoted_to_m(atom, acc) when is_atom(atom) do
+    [atom | acc]
+  end
+  defp quoted_to_m(_, _acc) do
+    []
+  end
+
+  @doc """
   Takes a `command` name and attempts to load a module
   with the command name converted to a module name
   in the given `at` scope.
@@ -156,34 +214,38 @@ defmodule Mix.Utils do
   """
   @spec print_tree([tree_node], (tree_node -> {tree_node, [tree_node]}), Keyword.t) :: :ok
   def print_tree(nodes, callback, opts \\ []) do
-    pretty =
+    pretty? =
       case Keyword.get(opts, :format) do
         "pretty" -> true
         "plain" -> false
-        _ -> elem(:os.type, 0) != :win32
+        _other -> elem(:os.type, 0) != :win32
       end
-    print_tree(nodes, [], nil, MapSet.new(), pretty, callback)
+
+    print_tree(nodes, _depth = [], _parent = nil, _seen = MapSet.new(), pretty?, callback)
 
     :ok
   end
 
-  defp print_tree([], _depth, _parent, seen, _pretty, _callback), do: seen
-  defp print_tree([node | nodes], depth, parent, seen, pretty, callback) do
+  defp print_tree(_nodes = [], _depth, _parent, seen, _pretty, _callback) do
+    seen
+  end
+
+  defp print_tree([node | nodes], depth, parent, seen, pretty?, callback) do
     {{name, info}, children} = callback.(node)
     key = {parent, name}
 
     if MapSet.member?(seen, key) do
       seen
     else
-      space = if info, do: " ", else: ""
-      Mix.shell.info("#{depth(pretty, depth)}#{prefix(pretty, depth, nodes)}#{name}#{space}#{info}")
-      seen = print_tree(children, [(nodes != []) | depth], name, MapSet.put(seen, key), pretty, callback)
-      print_tree(nodes, depth, parent, seen, pretty, callback)
+      info = if(info, do: " #{info}", else: "")
+      Mix.shell.info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
+      seen = print_tree(children, [(nodes != []) | depth], name, MapSet.put(seen, key), pretty?, callback)
+      print_tree(nodes, depth, parent, seen, pretty?, callback)
     end
   end
 
-  defp depth(_pretty, []),    do: ""
-  defp depth(pretty, depth), do: Enum.reverse(depth) |> tl |> Enum.map(&entry(pretty, &1))
+  defp depth(_pretty?, []), do: ""
+  defp depth(pretty?, depth), do: Enum.reverse(depth) |> tl |> Enum.map(&entry(pretty?, &1))
 
   defp entry(false, true),  do: "|   "
   defp entry(false, false), do: "    "

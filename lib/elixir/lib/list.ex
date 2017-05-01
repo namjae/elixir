@@ -116,9 +116,10 @@ defmodule List do
 
   """
   @spec delete(list, any) :: list
-  def delete(list, item) do
-    :lists.delete(item, list)
-  end
+  def delete(list, item)
+  def delete([item | list], item), do: list
+  def delete([other | list], item), do: [other | delete(list, item)]
+  def delete([], _item), do: []
 
   @doc """
   Duplicates the given element `n` times in a list.
@@ -575,6 +576,36 @@ defmodule List do
       do_pop_at(list, index, default, [])
     end
   end
+
+  @doc """
+  Returns `true` if `list` starts with the given `prefix` list; otherwise returns `false`.
+
+  If `prefix` is an empty list, it returns `true`.
+
+  ### Examples
+
+      iex> List.starts_with?([1, 2, 3], [1, 2])
+      true
+
+      iex> List.starts_with?([1, 2], [1, 2, 3])
+      false
+
+      iex> List.starts_with?([:alpha], [])
+      true
+
+      iex> List.starts_with?([], [:alpha])
+      false
+
+  """
+  @spec starts_with?(list, list) :: boolean
+  @spec starts_with?(list, []) :: true
+  @spec starts_with?([], nonempty_list) :: false
+  def starts_with?([head | tail], [head | prefix_tail]),
+    do: starts_with?(tail, prefix_tail);
+  def starts_with?(list, []) when is_list(list),
+    do: true
+  def starts_with?(list, [_ | _]) when is_list(list),
+    do: false
 
   @doc """
   Converts a charlist to an atom.

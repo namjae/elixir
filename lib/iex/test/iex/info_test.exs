@@ -24,8 +24,8 @@ defmodule IEx.InfoTest do
 
   test "atoms: loaded module (with docs)" do
     info = Info.info(List)
-    description = "Use h(List) to access its documentation.\n"
-                  <> "Call List.module_info() to access metadata."
+    description = "Use h(List) to access its documentation.\n" <>
+                  "Call List.module_info() to access metadata."
     assert info[:"Description"] == description
   end
 
@@ -157,7 +157,7 @@ defmodule IEx.InfoTest do
     {:ok, time} = Time.new(23, 59, 59)
     info = Info.info(time)
     assert info[:"Data type"] == "Time"
-    assert info[:"Raw representation"] == "%Time{hour: 23, microsecond: {0, 0}, minute: 59, second: 59}"
+    assert info[:"Raw representation"] == "%Time{calendar: Calendar.ISO, hour: 23, microsecond: {0, 0}, minute: 59, second: 59}"
     assert info[:"Reference modules"] == "Time, Calendar, Map"
     assert info[:"Description"] =~ "a time"
     assert info[:"Description"] =~ "`~T`"

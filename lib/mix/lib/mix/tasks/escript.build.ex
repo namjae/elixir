@@ -44,7 +44,11 @@ defmodule Mix.Tasks.Escript.Build do
       Defaults to app name. Set it to `nil` if no application should
       be started.
 
-    * `:embed_elixir` - if `true` embed Elixir and its children apps
+    * `:strip_beam` - if `true` strips BEAM code in the escript to remove chunks
+      unnecessary at runtime, such as debug information and documentation.
+      Defaults to `true`.
+
+    * `:embed_elixir` - if `true` embeds Elixir and its children apps
       (`ex_unit`, `mix`, etc.) mentioned in the `:applications` list inside the
       `application/0` function in `mix.exs`.
 
@@ -67,7 +71,7 @@ defmodule Mix.Tasks.Escript.Build do
   There is one project-level option that affects how the escript is generated:
 
     * `language: :elixir | :erlang` - set it to `:erlang` for Erlang projects
-      managed by mix. Doing so will ensure Elixir is not embedded by default.
+      managed by Mix. Doing so will ensure Elixir is not embedded by default.
       Your app will still be started as part of escript loading, with the
       config used during build.
 
@@ -109,23 +113,20 @@ defmodule Mix.Tasks.Escript.Build do
     project  = Mix.Project.config
     language = Keyword.get(project, :language, :elixir)
 
-    escriptize(project, language, opts[:force])
+    escriptize(project, language, Keyword.get(opts, :force, false))
   end
 
-  defp escriptize(project, language, force) do
+  defp escriptize(project, language, force?) do
     escript_opts = project[:escript] || []
 
     if Mix.Project.umbrella?() do
       Mix.raise "Building escripts for umbrella projects is unsupported"
     end
 
-    script_name  = Mix.Local.name_for(:escript, project)
-    filename     = escript_opts[:path] || script_name
-    main         = escript_opts[:main_module]
-    app          = Keyword.get(escript_opts, :app, project[:app])
-    files        = project_files()
-
-    escript_mod = String.to_atom(Atom.to_string(app) <> "_escript")
+    script_name = Mix.Local.name_for(:escript, project)
+    filename = escript_opts[:path] || script_name
+    main = escript_opts[:main_module]
+    files = project_files()
 
     cond do
       !script_name ->
@@ -140,7 +141,11 @@ defmodule Mix.Tasks.Escript.Build do
         Mix.raise "Could not generate escript, module #{main} defined as " <>
           ":main_module could not be loaded"
 
-      force || Mix.Utils.stale?(files, [filename]) ->
+      force? or Mix.Utils.stale?(files, [filename]) ->
+        app = Keyword.get(escript_opts, :app, project[:app])
+        strip_beam? = Keyword.get(escript_opts, :strip_beam, true)
+        escript_mod = String.to_atom(Atom.to_string(app) <> "_escript")
+
         beam_paths =
           [files, deps_files(), core_files(escript_opts, language)]
           |> Stream.concat
@@ -149,11 +154,12 @@ defmodule Mix.Tasks.Escript.Build do
 
         tuples = gen_main(project, escript_mod, main, app, language) ++
                  read_beams(beam_paths)
+        tuples = if strip_beam?, do: strip_beams(tuples), else: tuples
 
-        case :zip.create 'mem', tuples, [:memory] do
+        case :zip.create('mem', tuples, [:memory]) do
           {:ok, {'mem', zip}} ->
-            shebang  = escript_opts[:shebang] || "#! /usr/bin/env escript\n"
-            comment  = build_comment(escript_opts[:comment])
+            shebang = escript_opts[:shebang] || "#! /usr/bin/env escript\n"
+            comment = build_comment(escript_opts[:comment])
             emu_args = build_emu_args(escript_opts[:emu_args], escript_mod)
 
             script = IO.iodata_to_binary([shebang, comment, emu_args, zip])
@@ -240,6 +246,20 @@ defmodule Mix.Tasks.Escript.Build do
     |> Enum.map(fn {basename, beam_path} ->
       {String.to_charlist(basename), File.read!(beam_path)}
     end)
+  end
+
+  defp strip_beams(tuples) do
+    for {basename, maybe_beam} <- tuples do
+      case Path.extname(basename) do
+        ".beam" -> {basename, strip_beam(maybe_beam)}
+        _ -> {basename, maybe_beam}
+      end
+    end
+  end
+
+  defp strip_beam(beam) do
+    {:ok, {_, stripped_beam}} = :beam_lib.strip(beam)
+    stripped_beam
   end
 
   defp consolidated_paths(config) do

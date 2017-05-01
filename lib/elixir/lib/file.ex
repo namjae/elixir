@@ -89,6 +89,9 @@ defmodule File do
   @doc """
   Returns `true` if the path is a regular file.
 
+  This function follows symbolic links, so if a symbolic link points to a
+  regular file, `true` is returned.
+
   ## Examples
 
       File.regular? __ENV__.file #=> true
@@ -102,18 +105,21 @@ defmodule File do
   @doc """
   Returns `true` if the given path is a directory.
 
+  This function follows symbolic links, so if a symbolic link points to a
+  directory, `true` is returned.
+
   ## Examples
 
-      File.dir("./test")
+      File.dir?("./test")
       #=> true
 
-      File.dir("test")
+      File.dir?("test")
       #=> true
 
-      File.dir("/usr/bin")
+      File.dir?("/usr/bin")
       #=> true
 
-      File.dir("~/Downloads")
+      File.dir?("~/Downloads")
       #=> false
 
       "~/Downloads" |> Path.expand |> File.dir?
@@ -300,7 +306,7 @@ defmodule File do
   end
 
   @doc """
-  Same as `stat/2` but returns the `File.Stat` directly and
+  Same as `stat/2` but returns the `File.Stat` directly, or
   throws `File.Error` if an error is returned.
   """
   @spec stat!(Path.t, stat_options) :: File.Stat.t | no_return
@@ -345,7 +351,7 @@ defmodule File do
   end
 
   @doc """
-  Same as `lstat/2` but returns the `File.Stat` struct directly and
+  Same as `lstat/2` but returns the `File.Stat` struct directly, or
   throws `File.Error` if an error is returned.
   """
   @spec lstat!(Path.t, stat_options) :: File.Stat.t | no_return
@@ -355,6 +361,44 @@ defmodule File do
       {:error, reason} ->
         raise File.Error, reason: reason, action: "read file stats",
           path: IO.chardata_to_string(path)
+    end
+  end
+
+  @doc """
+  Reads the symbolic link at `path`.
+
+  If `path` exists and is a symlink, returns `{:ok, target}`, otherwise returns
+  `{:error, reason}`.
+
+  For more details, see
+  [`:file.read_link/1`](http://erlang.org/doc/man/file.html#read_link-1).
+
+  Typical error reasons are:
+
+    * `:einval` - path is not a symbolic link
+    * `:enoent` - path does not exist
+    * `:enotsup` - symbolic links are not supported on the current platform
+
+  """
+  @spec read_link(Path.t) :: {:ok, binary} | {:error, posix}
+  def read_link(path) do
+    case path |> IO.chardata_to_string |> :file.read_link do
+      {:ok, target} -> {:ok, IO.chardata_to_string(target)}
+      error -> error
+    end
+  end
+
+  @doc """
+  Same as `read_link/1` but returns the target directly or throws `File.Error` if an error is
+  returned.
+  """
+  @spec read_link!(Path.t) :: binary | no_return
+  def read_link!(path) do
+    case read_link(path) do
+      {:ok, resolved} ->
+        resolved
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "read link", path: IO.chardata_to_string(path)
     end
   end
 
@@ -596,10 +640,9 @@ defmodule File do
   `destination`. If the source is a directory, it copies
   the contents inside source into the destination.
 
-  If a file already exists in the destination,
-  it invokes a callback which should return
-  `true` if the existing file should be overwritten,
-  `false` otherwise. The callback defaults to return `true`.
+  If a file already exists in the destination, it invokes `callback`.
+  `callback` must be a function that takes two arguments: `source` and `destination`.
+  The callback should return `true` if the existing file should be overwritten and `false` otherwise.
 
   If a directory already exists in the destination
   where a file is meant to be (or vice versa), this
@@ -633,7 +676,7 @@ defmodule File do
 
   """
   @spec cp_r(Path.t, Path.t, (Path.t, Path.t -> boolean)) :: {:ok, [binary]} | {:error, posix, binary}
-  def cp_r(source, destination, callback \\ fn(_, _) -> true end) when is_function(callback) do
+  def cp_r(source, destination, callback \\ fn(_, _) -> true end) when is_function(callback, 2) do
     source = IO.chardata_to_string(source)
     destination = IO.chardata_to_string(destination)
 
@@ -1324,19 +1367,21 @@ defmodule File do
 
   ## Permissions
 
-    * 0o400 - read permission: owner
-    * 0o200 - write permission: owner
-    * 0o100 - execute permission: owner
+  File permissions are specified by adding together the following octal flags:
 
-    * 0o040 - read permission: group
-    * 0o020 - write permission: group
-    * 0o010 - execute permission: group
+    * `0o400` - read permission: owner
+    * `0o200` - write permission: owner
+    * `0o100` - execute permission: owner
 
-    * 0o004 - read permission: other
-    * 0o002 - write permission: other
-    * 0o001 - execute permission: other
+    * `0o040` - read permission: group
+    * `0o020` - write permission: group
+    * `0o010` - execute permission: group
 
-  For example, setting the mode 0o755 gives it
+    * `0o004` - read permission: other
+    * `0o002` - write permission: other
+    * `0o001` - execute permission: other
+
+  For example, setting the mode `0o755` gives it
   write, read and execute permission to the owner
   and both read and execute permission to group
   and others.

@@ -261,6 +261,8 @@ defmodule Kernel do
   @doc """
   Returns the head of a list. Raises `ArgumentError` if the list is empty.
 
+  It works with improper lists.
+
   Allowed in guard tests. Inlined by the compiler.
 
   ## Examples
@@ -270,6 +272,9 @@ defmodule Kernel do
 
       hd([])
       #=> ** (ArgumentError) argument error
+
+      hd([1 | 2])
+      #=> 1
 
   """
   @spec hd(nonempty_maybe_improper_list(elem, any)) :: elem when elem: term
@@ -512,8 +517,9 @@ defmodule Kernel do
 
   @doc """
   Returns the biggest of the two given terms according to
-  Erlang's term ordering. If the terms compare equal, the
-  first one is returned.
+  Erlang's term ordering.
+
+  If the terms compare equal, the first one is returned.
 
   Inlined by the compiler.
 
@@ -532,8 +538,9 @@ defmodule Kernel do
 
   @doc """
   Returns the smallest of the two given terms according to
-  Erlang's term ordering. If the terms compare equal, the
-  first one is returned.
+  Erlang's term ordering.
+
+  If the terms compare equal, the first one is returned.
 
   Inlined by the compiler.
 
@@ -638,9 +645,9 @@ defmodule Kernel do
       :hello
 
   """
-  @spec send(dest :: pid | port | atom | {atom, node}, msg) :: msg when msg: any
-  def send(dest, msg) do
-    :erlang.send(dest, msg)
+  @spec send(dest :: pid | port | atom | {atom, node}, message) :: message when message: any
+  def send(dest, message) do
+    :erlang.send(dest, message)
   end
 
   @doc """
@@ -661,7 +668,7 @@ defmodule Kernel do
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions.
 
   The anonymous function receives 0 arguments, and may return any value.
 
@@ -670,7 +677,7 @@ defmodule Kernel do
   ## Examples
 
       current = self()
-      child   = spawn(fn -> send current, {self(), 1 + 2} end)
+      child = spawn(fn -> send current, {self(), 1 + 2} end)
 
       receive do
         {^child, 3} -> IO.puts "Received 3 back"
@@ -683,15 +690,15 @@ defmodule Kernel do
   end
 
   @doc """
-  Spawns the given module and function passing the given args
-  and returns its PID.
+  Spawns the given function `fun` from the given `module` passing it the given
+  `args` and returns its PID.
 
   Typically developers do not use the `spawn` functions, instead they use
   abstractions such as `Task`, `GenServer` and `Agent`, built on top of
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions.
 
   Inlined by the compiler.
 
@@ -706,14 +713,15 @@ defmodule Kernel do
   end
 
   @doc """
-  Spawns the given function, links it to the current process and returns its PID.
+  Spawns the given function, links it to the current process, and returns its PID.
 
   Typically developers do not use the `spawn` functions, instead they use
   abstractions such as `Task`, `GenServer` and `Agent`, built on top of
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions. For more
+  information on linking, check `Process.link/1`.
 
   The anonymous function receives 0 arguments, and may return any value.
 
@@ -722,7 +730,7 @@ defmodule Kernel do
   ## Examples
 
       current = self()
-      child   = spawn_link(fn -> send current, {self(), 1 + 2} end)
+      child = spawn_link(fn -> send(current, {self(), 1 + 2}) end)
 
       receive do
         {^child, 3} -> IO.puts "Received 3 back"
@@ -735,15 +743,16 @@ defmodule Kernel do
   end
 
   @doc """
-  Spawns the given module and function passing the given args,
-  links it to the current process and returns its PID.
+  Spawns the given function `fun` from the given `module` passing it the given
+  `args`, links it to the current process, and returns its PID.
 
   Typically developers do not use the `spawn` functions, instead they use
   abstractions such as `Task`, `GenServer` and `Agent`, built on top of
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions. For more
+  information on linking, check `Process.link/1`.
 
   Inlined by the compiler.
 
@@ -766,7 +775,7 @@ defmodule Kernel do
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions.
 
   The anonymous function receives 0 arguments, and may return any value.
 
@@ -792,7 +801,7 @@ defmodule Kernel do
   `spawn`, that spawns processes with more conveniences in terms of
   introspection and debugging.
 
-  Check the `Process` module for more process related functions,
+  Check the `Process` module for more process-related functions.
 
   Inlined by the compiler.
 
@@ -821,6 +830,8 @@ defmodule Kernel do
   @doc """
   Returns the tail of a list. Raises `ArgumentError` if the list is empty.
 
+  It works with improper lists.
+
   Allowed in guard tests. Inlined by the compiler.
 
   ## Examples
@@ -830,6 +841,15 @@ defmodule Kernel do
 
       tl([])
       #=> ** (ArgumentError) argument error
+
+      tl([:one])
+      #=> []
+
+      tl([:a, :b | :c])
+      #=> [:b | :c]
+
+      tl([:a | %{b: 1}])
+      #=> %{b: 1}
 
   """
   @spec tl(nonempty_maybe_improper_list(elem, tail)) ::
@@ -1079,8 +1099,8 @@ defmodule Kernel do
   """
   @spec not(true) :: false
   @spec not(false) :: true
-  def not(arg) do
-    :erlang.not(arg)
+  def not(value) do
+    :erlang.not(value)
   end
 
   @doc """
@@ -1358,20 +1378,20 @@ defmodule Kernel do
       true
 
   """
-  defmacro !(arg)
+  defmacro !(value)
 
-  defmacro !({:!, _, [arg]}) do
+  defmacro !({:!, _, [value]}) do
     optimize_boolean(quote do
-      case unquote(arg) do
+      case unquote(value) do
         x when x in [false, nil] -> false
         _ -> true
       end
     end)
   end
 
-  defmacro !(arg) do
+  defmacro !(value) do
     optimize_boolean(quote do
-      case unquote(arg) do
+      case unquote(value) do
         x when x in [false, nil] -> true
         _ -> false
       end
@@ -1428,7 +1448,10 @@ defmodule Kernel do
   If `msg` is an atom, it just calls `raise/2` with the atom as the first
   argument and `[]` as the second argument.
 
-  If `msg` is anything else, raises an `ArgumentError` exception.
+  If `msg` is an exception struct, it is raised as is.
+
+  If `msg` is anything else, `raise` will fail with an `ArgumentError`
+  exception.
 
   ## Examples
 
@@ -1444,22 +1467,22 @@ defmodule Kernel do
       end
 
   """
-  defmacro raise(msg) do
+  defmacro raise(message) do
     # Try to figure out the type at compilation time
     # to avoid dead code and make Dialyzer happy.
-    msg = case not is_binary(msg) and bootstrapped?(Macro) do
-      true  -> Macro.expand(msg, __CALLER__)
-      false -> msg
+    message = case not is_binary(message) and bootstrapped?(Macro) do
+      true  -> Macro.expand(message, __CALLER__)
+      false -> message
     end
 
-    case msg do
-      msg when is_binary(msg) ->
+    case message do
+      message when is_binary(message) ->
         quote do
-          :erlang.error RuntimeError.exception(unquote(msg))
+          :erlang.error RuntimeError.exception(unquote(message))
         end
-      {:<<>>, _, _} = msg ->
+      {:<<>>, _, _} = message ->
         quote do
-          :erlang.error RuntimeError.exception(unquote(msg))
+          :erlang.error RuntimeError.exception(unquote(message))
         end
       alias when is_atom(alias) ->
         quote do
@@ -1467,7 +1490,7 @@ defmodule Kernel do
         end
       _ ->
         quote do
-          :erlang.error Kernel.Utils.raise(unquote(msg))
+          :erlang.error Kernel.Utils.raise(unquote(message))
         end
     end
   end
@@ -1489,9 +1512,9 @@ defmodule Kernel do
       ** (ArgumentError) Sample
 
   """
-  defmacro raise(exception, attrs) do
+  defmacro raise(exception, attributes) do
     quote do
-      :erlang.error unquote(exception).exception(unquote(attrs))
+      :erlang.error unquote(exception).exception(unquote(attributes))
     end
   end
 
@@ -1519,35 +1542,35 @@ defmodule Kernel do
           end
       end
   """
-  defmacro reraise(msg, stacktrace) do
+  defmacro reraise(message, stacktrace) do
     # Try to figure out the type at compilation time
     # to avoid dead code and make Dialyzer happy.
 
-    case Macro.expand(msg, __CALLER__) do
-      msg when is_binary(msg) ->
+    case Macro.expand(message, __CALLER__) do
+      message when is_binary(message) ->
         quote do
-          :erlang.raise :error, RuntimeError.exception(unquote(msg)), unquote(stacktrace)
+          :erlang.raise :error, RuntimeError.exception(unquote(message)), unquote(stacktrace)
         end
-      {:<<>>, _, _} = msg ->
+      {:<<>>, _, _} = message ->
         quote do
-          :erlang.raise :error, RuntimeError.exception(unquote(msg)), unquote(stacktrace)
+          :erlang.raise :error, RuntimeError.exception(unquote(message)), unquote(stacktrace)
         end
       alias when is_atom(alias) ->
         quote do
           :erlang.raise :error, unquote(alias).exception([]), unquote(stacktrace)
         end
-      msg ->
+      message ->
         quote do
           stacktrace = unquote(stacktrace)
-          case unquote(msg) do
-            msg when is_binary(msg) ->
-              :erlang.raise :error, RuntimeError.exception(msg), stacktrace
+          case unquote(message) do
+            message when is_binary(message) ->
+              :erlang.raise :error, RuntimeError.exception(message), stacktrace
             atom when is_atom(atom) ->
               :erlang.raise :error, atom.exception([]), stacktrace
             %{__struct__: struct, __exception__: true} = other when is_atom(struct) ->
               :erlang.raise :error, other, stacktrace
             other ->
-              message = "reraise/2 expects an alias, string or exception as the first argument, got: #{inspect other}"
+              message = "reraise/2 expects a module name, string or exception as the first argument, got: #{inspect other}"
               :erlang.error ArgumentError.exception(message)
           end
         end
@@ -1569,10 +1592,11 @@ defmodule Kernel do
           stacktrace = System.stacktrace
           reraise WrapperError, [exception: exception], stacktrace
       end
+
   """
-  defmacro reraise(exception, attrs, stacktrace) do
+  defmacro reraise(exception, attributes, stacktrace) do
     quote do
-      :erlang.raise :error, unquote(exception).exception(unquote(attrs)), unquote(stacktrace)
+      :erlang.raise :error, unquote(exception).exception(unquote(attributes)), unquote(stacktrace)
     end
   end
 
@@ -1664,14 +1688,14 @@ defmodule Kernel do
 
   """
   @spec inspect(Inspect.t, Keyword.t) :: String.t
-  def inspect(arg, opts \\ []) when is_list(opts) do
-    opts  = struct(Inspect.Opts, opts)
+  def inspect(term, opts \\ []) when is_list(opts) do
+    opts = struct(Inspect.Opts, opts)
     limit = case opts.pretty do
       true  -> opts.width
       false -> :infinity
     end
     IO.iodata_to_binary(
-      Inspect.Algebra.format(Inspect.Algebra.to_doc(arg, opts), limit)
+      Inspect.Algebra.format(Inspect.Algebra.to_doc(term, opts), limit)
     )
   end
 
@@ -1716,10 +1740,10 @@ defmodule Kernel do
 
   """
   @spec struct(module | struct, Enum.t) :: struct
-  def struct(struct, kv \\ []) do
-    struct(struct, kv, fn({key, val}, acc) ->
-      case :maps.is_key(key, acc) and key != :__struct__ do
-        true  -> :maps.put(key, val, acc)
+  def struct(struct, fields \\ []) do
+    struct(struct, fields, fn {key, val}, acc ->
+      case Map.has_key?(acc, key) and key != :__struct__ do
+        true  -> Map.put(acc, key, val)
         false -> acc
       end
     end)
@@ -1745,17 +1769,17 @@ defmodule Kernel do
 
   """
   @spec struct!(module | struct, Enum.t) :: struct | no_return
-  def struct!(struct, kv \\ [])
+  def struct!(struct, fields \\ [])
 
-  def struct!(struct, kv) when is_atom(struct) do
-    struct.__struct__(kv)
+  def struct!(struct, fields) when is_atom(struct) do
+    struct.__struct__(fields)
   end
 
-  def struct!(struct, kv) when is_map(struct) do
-    struct(struct, kv, fn
+  def struct!(struct, fields) when is_map(struct) do
+    struct(struct, fields, fn
       {:__struct__, _}, acc -> acc
       {key, val}, acc ->
-        :maps.update(key, val, acc)
+        Map.replace!(acc, key, val)
     end)
   end
 
@@ -1763,16 +1787,16 @@ defmodule Kernel do
     struct.__struct__()
   end
 
-  defp struct(struct, kv, fun) when is_atom(struct) do
-    struct(struct.__struct__(), kv, fun)
+  defp struct(struct, fields, fun) when is_atom(struct) do
+    struct(struct.__struct__(), fields, fun)
   end
 
   defp struct(%{__struct__: _} = struct, [], _fun) do
     struct
   end
 
-  defp struct(%{__struct__: _} = struct, kv, fun) do
-    Enum.reduce(kv, struct, fun)
+  defp struct(%{__struct__: _} = struct, fields, fun) do
+    Enum.reduce(fields, struct, fun)
   end
 
   @doc """
@@ -1813,7 +1837,7 @@ defmodule Kernel do
       [27, 23]
 
   If the previous value before invoking the function is `nil`,
-  the function *will* receive nil as a value and must handle it
+  the function *will* receive `nil` as a value and must handle it
   accordingly.
   """
   @spec get_in(Access.t, nonempty_list(term)) :: term
@@ -1966,21 +1990,28 @@ defmodule Kernel do
   In case any entry returns `nil`, its key will be removed
   and the deletion will be considered a success.
   """
-  @spec pop_in(Access.t, nonempty_list(term)) :: {term, Access.t}
+  @spec pop_in(data, nonempty_list(Access.get_and_update_fun(term, data) | term)) ::
+        {term, data} when data: Access.container
   def pop_in(data, keys)
-  def pop_in(nil, [h | _]), do: Access.pop(nil, h)
-  def pop_in(data, keys), do: do_pop_in(data, keys)
 
-  defp do_pop_in(nil, [_ | _]),
+  def pop_in(nil, [key | _]) do
+    raise ArgumentError, "could not pop key #{inspect key} on a nil value"
+  end
+
+  def pop_in(data, keys) when is_list(keys) do
+    pop_in_data(data, keys)
+  end
+
+  defp pop_in_data(nil, [_ | _]),
     do: :pop
-  defp do_pop_in(data, [h]) when is_function(h),
-    do: h.(:get_and_update, data, fn _ -> :pop end)
-  defp do_pop_in(data, [h | t]) when is_function(h),
-    do: h.(:get_and_update, data, &do_pop_in(&1, t))
-  defp do_pop_in(data, [h]),
-    do: Access.pop(data, h)
-  defp do_pop_in(data, [h | t]),
-    do: Access.get_and_update(data, h, &do_pop_in(&1, t))
+  defp pop_in_data(data, [fun]) when is_function(fun),
+    do: fun.(:get_and_update, data, fn _ -> :pop end)
+  defp pop_in_data(data, [fun | tail]) when is_function(fun),
+    do: fun.(:get_and_update, data, &pop_in_data(&1, tail))
+  defp pop_in_data(data, [key]),
+    do: Access.pop(data, key)
+  defp pop_in_data(data, [key | tail]),
+    do: Access.get_and_update(data, key, &pop_in_data(&1, tail))
 
   @doc """
   Puts a value in a nested structure via the given `path`.
@@ -2264,12 +2295,12 @@ defmodule Kernel do
       "foo"
 
   """
-  defmacro to_string(arg) do
-    quote do: String.Chars.to_string(unquote(arg))
+  defmacro to_string(term) do
+    quote do: String.Chars.to_string(unquote(term))
   end
 
   @doc """
-  Converts the argument to a charlist according to the `List.Chars` protocol.
+  Converts the given term to a charlist according to the `List.Chars` protocol.
 
   ## Examples
 
@@ -2277,8 +2308,8 @@ defmodule Kernel do
       'foo'
 
   """
-  defmacro to_charlist(arg) do
-    quote do: List.Chars.to_charlist(unquote(arg))
+  defmacro to_charlist(term) do
+    quote do: List.Chars.to_charlist(unquote(term))
   end
 
   @doc """
@@ -2438,6 +2469,13 @@ defmodule Kernel do
         :elixir_errors.warn env.line, env.file,
                             "@behavior attribute is not supported, please use @behaviour instead"
 
+      # TODO: Remove :compile check once on 2.0 as we no longer
+      # need to warn on parse transforms in Module.put_attribute.
+      name == :compile ->
+        {stack, _} = :elixir_quote.escape(env_stacktrace(env), false)
+        quote do: Module.put_attribute(__MODULE__, unquote(name), unquote(arg),
+                                       unquote(stack), unquote(line))
+
       :lists.member(name, [:moduledoc, :typedoc, :doc]) ->
         {stack, _} = :elixir_quote.escape(env_stacktrace(env), false)
         arg = {env.line, arg}
@@ -2485,14 +2523,13 @@ defmodule Kernel do
     raise ArgumentError, "expected 0 or 1 argument for @#{name}, got: #{length(args)}"
   end
 
-  defp typespec(:type),               do: :deftype
-  defp typespec(:typep),              do: :deftypep
-  defp typespec(:opaque),             do: :defopaque
-  defp typespec(:spec),               do: :defspec
-  defp typespec(:callback),           do: :defcallback
-  defp typespec(:macrocallback),      do: :defmacrocallback
-  defp typespec(:optional_callbacks), do: :defoptional_callbacks
-  defp typespec(_),                   do: false
+  defp typespec(:type),          do: :deftype
+  defp typespec(:typep),         do: :deftypep
+  defp typespec(:opaque),        do: :defopaque
+  defp typespec(:spec),          do: :defspec
+  defp typespec(:callback),      do: :defcallback
+  defp typespec(:macrocallback), do: :defmacrocallback
+  defp typespec(_),              do: false
 
   @doc """
   Returns the binding for the given context as a keyword list.
@@ -3342,7 +3379,7 @@ defmodule Kernel do
     end
   end
 
-  @doc """
+  @doc ~S"""
   Defines a function with the given name and body.
 
   ## Examples
@@ -3363,6 +3400,43 @@ defmodule Kernel do
 
   In the example above, a `sum/2` function is defined; this function receives
   two arguments and returns their sum.
+
+  ## Default arguments
+
+  `\\` is used to specify a default value for a parameter of a function. For
+  example:
+
+      defmodule MyMath do
+        def multiply_by(number, factor \\ 2) do
+          number * factor
+        end
+      end
+
+      MyMath.multiply_by(4, 3) #=> 12
+      MyMath.multiply_by(4)    #=> 8
+
+  The compiler translates this into multiple functions with different arities,
+  here `Foo.mul_by/1` and `Foo.mul_by/2`, that represent cases when arguments
+  for parameters with default values are passed or not passed.
+
+  When defining a function with default arguments as well as multiple
+  explicitly declared clauses, you must write a function head that declares the
+  defaults. For example:
+
+      defmodule MyString do
+        def join(string1, string2 \\ nil, separator \\ " ")
+
+        def join(string1, nil, _separator) do
+          string1
+        end
+
+        def join(string1, string2, separator) do
+          string1 <> separator <> string2
+        end
+      end
+
+  Because anonymous functions can only have a single arity, `\\` can't be used
+  with anonymous functions.
 
   ## Function and variable names
 
@@ -3443,6 +3517,8 @@ defmodule Kernel do
   @doc """
   Defines a macro with the given name and body.
 
+  Check `def/2` for rules on naming and default arguments.
+
   ## Examples
 
       defmodule MyLogic do
@@ -3469,7 +3545,8 @@ defmodule Kernel do
   Private macros are only accessible from the same module in which they are
   defined.
 
-  Check `defmacro/2` for more information.
+  Check `defmacro/2` for more information, and check `def/2` for rules on
+  naming and default arguments.
 
   """
   defmacro defmacrop(call, expr \\ nil) do
@@ -3615,7 +3692,7 @@ defmodule Kernel do
             def __struct__(kv) do
               {map, keys} =
                 Enum.reduce(kv, {__struct__(), @enforce_keys}, fn {key, val}, {map, keys} ->
-                  {:maps.update(key, val, map), :lists.delete(key, keys)}
+                  {Map.replace!(map, key, val), List.delete(keys, key)}
                 end)
               case keys do
                 [] -> map
@@ -3629,7 +3706,7 @@ defmodule Kernel do
             _ = @enforce_keys
             def __struct__(kv) do
               :lists.foldl(fn {key, val}, acc ->
-                :maps.update(key, val, acc)
+                Map.replace!(acc, key, val)
               end, __struct__(), kv)
             end
           end
@@ -3980,10 +4057,42 @@ defmodule Kernel do
   As seen as in the example above, `super` can be used to call the default
   implementation.
 
+  If `@behaviour` has been defined, `defoverridable` can also be called with a
+  module as an argument. All implemented callbacks from the behaviour above the
+  call to `defoverridable` will be marked as overridable.
+
+  ## Example
+
+      defmodule Behaviour do
+        @callback foo :: any
+      end
+
+      defmodule DefaultMod do
+        defmacro __using__(_opts) do
+          quote do
+            @behaviour Behaviour
+
+            def foo do
+              "Override me"
+            end
+
+            defoverridable Behaviour
+          end
+        end
+      end
+
+      defmodule InheritMod do
+        use DefaultMod
+
+        def foo do
+          "Overriden"
+        end
+      end
+
   """
-  defmacro defoverridable(keywords) do
+  defmacro defoverridable(keywords_or_behaviour) do
     quote do
-      Module.make_overridable(__MODULE__, unquote(keywords))
+      Module.make_overridable(__MODULE__, unquote(keywords_or_behaviour))
     end
   end
 
@@ -4075,7 +4184,7 @@ defmodule Kernel do
   the `__using__/1` callback, unless those functions are the default
   implementation of a previously defined `@callback` or are functions
   meant to be overridden (see `defoverridable/1`). Even in these cases,
-  defining functions should be seen as a "last resource".
+  defining functions should be seen as a "last resort".
 
   In case you want to provide some existing functionality to the user module,
   please define it in a module which will be imported accordingly; for example,
@@ -4121,6 +4230,8 @@ defmodule Kernel do
 
   Delegation only works with functions; delegating macros is not supported.
 
+  Check `def/2` for rules on naming and default arguments.
+
   ## Options
 
     * `:to` - the module to dispatch to.
@@ -4163,14 +4274,16 @@ defmodule Kernel do
           "Kernel.defdelegate/2 :append_first option is deprecated")
       end
 
-      for fun <- List.wrap(funs),
-        {name, args, as, as_args} <- Kernel.Utils.defdelegate(fun, opts) do
-          unless Module.get_attribute(__MODULE__, :doc) do
-            @doc "See `#{inspect target}.#{as}/#{:erlang.length args}`."
-          end
-          def unquote(name)(unquote_splicing(args)) do
-            unquote(target).unquote(as)(unquote_splicing(as_args))
-          end
+      for fun <- List.wrap(funs) do
+        {name, args, as, as_args} = Kernel.Utils.defdelegate(fun, opts)
+
+        unless Module.get_attribute(__MODULE__, :doc) do
+          @doc "See `#{inspect target}.#{as}/#{:erlang.length args}`."
+        end
+
+        def unquote(name)(unquote_splicing(args)) do
+          unquote(target).unquote(as)(unquote_splicing(as_args))
+        end
       end
     end
   end

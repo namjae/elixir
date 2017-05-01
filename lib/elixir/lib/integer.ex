@@ -232,74 +232,44 @@ defmodule Integer do
       ** (ArgumentError) invalid base 38
 
   """
-  @spec parse(binary, 2..36) :: {integer, binary} | :error | no_return
+  @spec parse(binary, 2..36) :: {integer, binary} | :error
   def parse(binary, base \\ 10)
 
-  def parse("", base) when base in 2..36,
-    do: :error
-
-  def parse(binary, base) when is_binary(binary) and base in 2..36 do
-    parse_in_base(binary, base)
+  def parse(_binary, base) when not base in 2..36 do
+    raise ArgumentError, "invalid base #{inspect base}"
   end
 
-  def parse(binary, base) when is_binary(binary) do
-    raise ArgumentError, "invalid base #{base}"
-  end
-
-  defp parse_in_base("-" <> bin, base) do
-    case do_parse(bin, base) do
-      {number, remainder} -> {-number, remainder}
-      :error -> :error
+  def parse(binary, base) do
+    case count_digits(binary, base, 0) do
+      0 -> :error
+      n ->
+        {digits, rem} = :erlang.split_binary(binary, n)
+        {:erlang.binary_to_integer(digits, base), rem}
     end
   end
 
-  defp parse_in_base("+" <> bin, base) do
-    do_parse(bin, base)
-  end
+  digits = [{?0..?9, -?0}, {?A..?Z, 10 - ?A}, {?a..?z, 10 - ?a}]
 
-  defp parse_in_base(binary, base) when is_binary(binary) do
-    do_parse(binary, base)
-  end
+  for {chars, diff} <- digits, char <- chars do
+    digit = char + diff
 
-  defp do_parse(<<char, rest::binary>>, base) do
-    if valid_digit_in_base?(char, base) do
-      do_parse(rest, base, parse_digit(char))
-    else
-      :error
+    defp count_digits(<<unquote(char), rest::binary>>, base, count)
+         when base > unquote(digit) do
+      count_digits(rest, base, count + 1)
+    end
+
+    defp count_digits(<<?+, unquote(char), rest::binary>>, base, 0)
+         when base > unquote(digit) do
+      count_digits(rest, base, 2)
+    end
+
+    defp count_digits(<<?-, unquote(char), rest::binary>>, base, 0)
+         when base > unquote(digit) do
+      count_digits(rest, base, 2)
     end
   end
 
-  defp do_parse(_, _) do
-    :error
-  end
-
-  defp do_parse(<<char, rest::binary>> = bin, base, acc) do
-    if valid_digit_in_base?(char, base) do
-      do_parse(rest, base, base * acc + parse_digit(char))
-    else
-      {acc, bin}
-    end
-  end
-
-  defp do_parse(bitstring, _, acc) do
-    {acc, bitstring}
-  end
-
-  defp parse_digit(char) do
-    cond do
-      char in ?0..?9 -> char - ?0
-      char in ?A..?Z -> char - ?A + 10
-      true           -> char - ?a + 10
-    end
-  end
-
-  defp valid_digit_in_base?(char, base) do
-    if base <= 10 do
-      char in ?0..(?0 + base - 1)
-    else
-      char in ?0..?9 or char in ?A..(?A + base - 11) or char in ?a..(?a + base - 11)
-    end
-  end
+  defp count_digits(<<_::binary>>, _, count), do: count
 
   @doc """
   Returns a binary which corresponds to the text representation
@@ -401,9 +371,54 @@ defmodule Integer do
     :erlang.integer_to_list(integer, base)
   end
 
+  @doc """
+  Returns the greatest common divisor of the two given numbers.
+
+  The greatest common divisor (GCD) of `int1` and `int2` is the largest positive
+  integer that divides both `int1` and `int2` without leaving a remainder.
+
+  By convention, `gcd(0, 0)` returns `0`.
+
+  ## Examples
+
+      iex> Integer.gcd(2, 3)
+      1
+
+      iex> Integer.gcd(8, 12)
+      4
+
+      iex> Integer.gcd(8, -12)
+      4
+
+      iex> Integer.gcd(10, 0)
+      10
+
+      iex> Integer.gcd(7, 7)
+      7
+
+      iex> Integer.gcd(0, 0)
+      0
+
+  """
+  @spec gcd(0, 0) :: 0
+  @spec gcd(integer, integer) :: pos_integer
+  def gcd(int1, int2) when is_integer(int1) and is_integer(int2) do
+    gcd_positive(abs(int1), abs(int2))
+  end
+
+  defp gcd_positive(0, int2), do: int2
+  defp gcd_positive(int1, 0), do: int1
+  defp gcd_positive(int1, int2), do: gcd_positive(int2, rem(int1, int2))
+
   # TODO: Remove by 2.0
   # (hard-deprecated in elixir_dispatch)
   @doc false
   @spec to_char_list(integer) :: charlist
   def to_char_list(integer), do: Integer.to_charlist(integer)
+
+  # TODO: Remove by 2.0
+  # (hard-deprecated in elixir_dispatch)
+  @doc false
+  @spec to_char_list(integer, 2..36) :: charlist
+  def to_char_list(integer, base), do: Integer.to_charlist(integer, base)
 end

@@ -58,6 +58,37 @@ defmodule Logger.Backends.ConsoleTest do
     end) =~ "user_id=13 hello"
   end
 
+  test "can configure formatter to {module, function} tuple" do
+    Logger.configure_backend(:console, format: {__MODULE__, :format})
+
+    assert capture_log(fn ->
+      Logger.debug("hello")
+    end) =~ "my_format: hello"
+  end
+
+  def format(_level, message, _ts, _metadata) do
+    "my_format: #{message}"
+  end
+
+  test "can configure metadata to :all" do
+    Logger.configure_backend(:console, format: "$metadata", metadata: :all)
+
+    Logger.metadata(user_id: 11)
+    Logger.metadata(dynamic_metadata: 5)
+
+    %{module: mod, function: {name, arity}, file: file, line: line} = __ENV__
+
+    log = capture_log(fn ->
+      Logger.debug("hello")
+    end)
+
+    assert log =~ "file=#{file}"
+    assert log =~ "line=#{line + 3}"
+    assert log =~ "module=#{inspect(mod)}"
+    assert log =~ "function=#{name}/#{arity}"
+    assert log =~ "dynamic_metadata=5 user_id=11"
+  end
+
   test "metadata defaults" do
     Logger.configure_backend(:console,
       format: "$metadata", metadata: [:file, :line, :module, :function])

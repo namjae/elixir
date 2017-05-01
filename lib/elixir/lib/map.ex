@@ -94,7 +94,7 @@ defmodule Map do
 
   @type key :: any
   @type value :: any
-  @compile {:inline, fetch: 2, put: 3, delete: 2, has_key?: 2}
+  @compile {:inline, fetch: 2, put: 3, delete: 2, has_key?: 2, replace!: 3}
 
   @doc """
   Returns all keys from `map`.
@@ -212,6 +212,7 @@ defmodule Map do
       iex> Map.has_key?(%{a: 1}, :b)
       false
 
+  Inlined by the compiler.
   """
   @spec has_key?(map, key) :: boolean
   def has_key?(map, key), do: :maps.is_key(key, map)
@@ -229,6 +230,7 @@ defmodule Map do
       iex> Map.fetch(%{a: 1}, :b)
       :error
 
+  Inlined by the compiler.
   """
   @spec fetch(map, key) :: {:ok, value} | :error
   def fetch(map, key), do: :maps.find(key, map)
@@ -271,9 +273,47 @@ defmodule Map do
   @spec put_new(map, key, value) :: map
   def put_new(map, key, value) do
     case has_key?(map, key) do
-      true  -> map
+      true -> map
       false -> put(map, key, value)
     end
+  end
+
+  @doc """
+  Alters the value stored under `key` to `value`, but only
+  if the entry `key` already exists in `map`.
+
+  ## Examples
+
+      iex> Map.replace(%{a: 1}, :b, 2)
+      %{a: 1}
+      iex> Map.replace(%{a: 1, b: 2}, :a, 3)
+      %{a: 3, b: 2}
+
+  """
+  @spec replace(map, key, value) :: map
+  def replace(map, key, value) do
+    case has_key?(map, key) do
+      true -> replace!(map, key, value)
+      false -> map
+    end
+  end
+
+  @doc """
+  Similar to `replace/3`, but will raise a `KeyError`
+  if the key does not exist in the map.
+
+  ## Examples
+
+      iex> Map.replace!(%{a: 1, b: 2}, :a, 3)
+      %{a: 3, b: 2}
+      iex> Map.replace!(%{a: 1}, :b, 2)
+      ** (KeyError) key :b not found in: %{a: 1}
+
+  Inlined by the compiler.
+  """
+  @spec replace!(map, key, value) :: map
+  def replace!(map, key, value) do
+    :maps.update(key, value, map)
   end
 
   @doc """
@@ -300,7 +340,7 @@ defmodule Map do
   @spec put_new_lazy(map, key, (() -> value)) :: map
   def put_new_lazy(map, key, fun) when is_function(fun, 0) do
     case has_key?(map, key) do
-      true  -> map
+      true -> map
       false -> put(map, key, fun.())
     end
   end
@@ -407,6 +447,7 @@ defmodule Map do
       iex> Map.put(%{a: 1, b: 2}, :a, 3)
       %{a: 3, b: 2}
 
+  Inlined by the compiler.
   """
   @spec put(map, key, value) :: map
   def put(map, key, value) do
@@ -425,6 +466,7 @@ defmodule Map do
       iex> Map.delete(%{b: 2}, :a)
       %{b: 2}
 
+  Inlined by the compiler.
   """
   @spec delete(map, key) :: map
   def delete(map, key), do: :maps.remove(key, map)
@@ -468,9 +510,15 @@ defmodule Map do
   """
   @spec merge(map, map, (key, value, value -> value)) :: map
   def merge(map1, map2, callback) when is_function(callback, 3) do
-    :maps.fold fn k, v2, acc ->
-      update(acc, k, v2, fn(v1) -> callback.(k, v1, v2) end)
-    end, map1, map2
+    if map_size(map1) > map_size(map2) do
+      :maps.fold fn key, val2, acc ->
+        update(acc, key, val2, fn val1 -> callback.(key, val1, val2) end)
+      end, map1, map2
+    else
+      :maps.fold fn key, val2, acc ->
+        update(acc, key, val2, fn val1 -> callback.(key, val2, val1) end)
+      end, map2, map1
+    end
   end
 
   @doc """

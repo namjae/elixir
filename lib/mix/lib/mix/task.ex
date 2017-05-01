@@ -7,11 +7,11 @@ defmodule Mix.Task do
   in a module starting with `Mix.Tasks.` and defining
   the `run/1` function:
 
-      defmodule Mix.Tasks.Hello do
+      defmodule Mix.Tasks.Echo do
         use Mix.Task
 
-        def run(_args) do
-          Mix.shell.info "hello"
+        def run(args) do
+          Mix.shell.info Enum.join(args, " ")
         end
       end
 
@@ -23,11 +23,12 @@ defmodule Mix.Task do
   There are a few attributes available in Mix tasks to
   configure them in Mix:
 
-    * `@shortdoc`  - makes the task public with a short description that appears
-      on `mix help`
+    * `@shortdoc`  - makes the task public with a short description that appears on `mix help`
     * `@recursive` - runs the task recursively in umbrella projects
     * `@preferred_cli_env` - recommends environment to run task. It is used in absence of
-      a Mix project recommendation, or explicit `MIX_ENV`
+      a Mix project recommendation, or explicit `MIX_ENV`, and it only works for tasks
+      in the current project. `@preferred_cli_env` is not loaded from dependencies as
+      we need to know the environment before dependencies are loaded.
 
   ## Documentation
 
@@ -68,11 +69,17 @@ defmodule Mix.Task do
     # entire load path so make sure we only return unique modules.
 
     for(dir <- dirs,
-        {:ok, files} = :erl_prim_loader.list_dir(to_charlist(dir)),
-        file <- files,
+        file <- safe_list_dir(to_charlist(dir)),
         mod = task_from_path(file),
         do: mod)
     |> Enum.uniq
+  end
+
+  defp safe_list_dir(path) do
+    case :erl_prim_loader.list_dir(path) do
+      {:ok, paths} -> paths
+      {:error, _} -> []
+    end
   end
 
   @prefix_size byte_size("Elixir.Mix.Tasks.")

@@ -4,70 +4,12 @@
   setup/1, cleanup/1, cache_env/1, get_cached_env/1,
   record_local/2, record_local/3, record_import/4,
   record_definition/3, record_defaults/4,
-  ensure_no_import_conflict/4, warn_unused_local/3, format_error/1
+  ensure_no_import_conflict/3, warn_unused_local/3, format_error/1
 ]).
--export([macro_for/3, local_for/3, local_for/4]).
 
 -include("elixir.hrl").
 -define(attr, {elixir, locals_tracker}).
 -define(tracker, 'Elixir.Module.LocalsTracker').
-
-macro_for(Module, Name, Arity) ->
-  Tuple = {Name, Arity},
-  try elixir_def:lookup_clauses(Module, Tuple) of
-    {Kind, Ann, [_ | _] = Clauses} when Kind == defmacro; Kind == defmacrop ->
-      fun() -> get_function(Ann, Module, Clauses) end;
-    _ ->
-      false
-  catch
-    error:badarg -> false
-  end.
-
-local_for(Module, Name, Arity) ->
-  local_for(Module, Name, Arity, nil).
-local_for(Module, Name, Arity, Given) ->
-  Tuple = {Name, Arity},
-  case elixir_def:lookup_clauses(Module, Tuple) of
-    {Kind, Ann, [_ | _] = Clauses} when Given == nil; Kind == Given ->
-      get_function(Ann, Module, Clauses);
-    _ ->
-      {current_stacktrace, [_ | T]} = erlang:process_info(self(), current_stacktrace),
-      erlang:raise(error, undef, [{Module, Name, Arity, []} | T])
-  end.
-
-get_function(Ann, Module, Clauses) ->
-  RewrittenClauses = [rewrite_clause(Clause, Module) || Clause <- Clauses],
-  Fun = {'fun', Ann, {clauses, RewrittenClauses}},
-  {value, Result, _Binding} = erl_eval:exprs([Fun], []),
-  Result.
-
-rewrite_clause({call, Ann1, {atom, Ann2, RawName}, Args}, Module) ->
-  Remote = {remote, Ann1,
-    {atom, Ann2, ?MODULE},
-    {atom, Ann2, local_for}
-  },
-
-  %% If we have a macro, its arity in the table is
-  %% actually one less than in the function call
-  {Name, Arity} = case atom_to_list(RawName) of
-    "MACRO-" ++ Rest -> {list_to_atom(Rest), length(Args) - 1};
-    _ -> {RawName, length(Args)}
-  end,
-
-  FunCall = {call, Ann1, Remote, [
-    {atom, Ann2, Module}, {atom, Ann2, Name}, {integer, Ann2, Arity}
-  ]},
-  {call, Ann1, FunCall, rewrite_clause(Args, Module)};
-
-rewrite_clause(Tuple, Module) when is_tuple(Tuple) ->
-  list_to_tuple(rewrite_clause(tuple_to_list(Tuple), Module));
-
-rewrite_clause(List, Module) when is_list(List) ->
-  [rewrite_clause(Item, Module) || Item <- List];
-
-rewrite_clause(Else, _) -> Else.
-
-%% TRACKING
 
 setup(Module) ->
   case elixir_compiler:get_opt(internal) of
@@ -130,28 +72,19 @@ get_cached_env(Env) -> Env.
 
 %% ERROR HANDLING
 
-ensure_no_import_conflict(_Line, _File, 'Elixir.Kernel', _All) ->
+ensure_no_import_conflict(_File, 'Elixir.Kernel', _All) ->
   ok;
-ensure_no_import_conflict(Line, File, Module, All) ->
+ensure_no_import_conflict(File, Module, All) ->
   if_tracker(Module, ok, fun(Pid) ->
-    _ = [ begin
-        elixir_errors:form_error([{line, Line}], File, ?MODULE, {function_conflict, Error})
-      end || Error <- ?tracker:collect_imports_conflicts(Pid, All) ],
+    [elixir_errors:form_error(Meta, File, ?MODULE, {function_conflict, Error})
+     || {Meta, Error} <- ?tracker:collect_imports_conflicts(Pid, All)],
     ok
   end).
 
 warn_unused_local(File, Module, Private) ->
   if_tracker(Module, [], fun(Pid) ->
-    Args = [{Fun, Kind, Defaults} ||
-            {Fun, Kind, _Line, true, Defaults} <- Private],
-
-    {Unreachable, Warnings} = ?tracker:collect_unused_locals(Pid, Args),
-
-    [begin
-      {_, _, Line, _, _} = lists:keyfind(element(2, Error), 1, Private),
-      elixir_errors:form_warn([{line, Line}], File, ?MODULE, Error)
-     end || Error <- Warnings ],
-
+    {Unreachable, Warnings} = ?tracker:collect_unused_locals(Pid, Private),
+    [elixir_errors:form_warn(Meta, File, ?MODULE, Error) || {Meta, Error} <- Warnings],
     Unreachable
   end).
 

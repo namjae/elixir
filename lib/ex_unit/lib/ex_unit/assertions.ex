@@ -52,9 +52,9 @@ defmodule ExUnit.Assertions do
   `some_fun()` returns `13`):
 
       Comparison (using ==) failed in:
-      code: some_fun() == 10
-      lhs:  13
-      rhs:  10
+      code:  some_fun() == 10
+      left:  13
+      right: 10
 
   This module also provides other convenience functions
   like `assert_in_delta` and `assert_raise` to easily handle
@@ -70,14 +70,14 @@ defmodule ExUnit.Assertions do
   if the expression uses the comparison operator, the message
   will show the values of the two sides. The assertion
 
-      assert 1+2+3+4 > 15
+      assert 1 + 2 + 3 + 4 > 15
 
    will fail with the message:
 
       Assertion with > failed
-      code: 1+2+3+4 > 15
-      lhs:  10
-      rhs:  15
+      code:  1 + 2 + 3 + 4 > 15
+      left:  10
+      right: 15
 
   Similarly, if a match expression is given, it will report
   any failure in terms of that match. Given
@@ -87,8 +87,8 @@ defmodule ExUnit.Assertions do
   you'll see:
 
       match (=) failed
-      code: [one] = [two]
-      rhs:  [2]
+      code:  [one] = [two]
+      right: [2]
 
   Keep in mind that `assert` does not change its semantics
   based on the expression. In other words, the expression
@@ -123,10 +123,8 @@ defmodule ExUnit.Assertions do
         end
       end)
 
-    quote do
-      right = unquote(right)
-      expr  = unquote(code)
-      unquote(vars) =
+    match_expr =
+      no_warning(quote do
         case right do
           unquote(left) ->
             unquote(return)
@@ -138,6 +136,12 @@ defmodule ExUnit.Assertions do
               message: "match (=) failed" <>
                        ExUnit.Assertions.__pins__(unquote(pins))
         end
+      end)
+
+    quote do
+      right = unquote(right)
+      expr = unquote(code)
+      unquote(vars) = unquote(match_expr)
       right
     end
   end
@@ -427,8 +431,9 @@ defmodule ExUnit.Assertions do
               """)
             else
               failure_message = unquote(failure_message) || "No message matching #{unquote(binary)} after #{timeout}ms."
-              flunk(failure_message <> ExUnit.Assertions.__pins__(unquote(pins))
-                                    <> ExUnit.Assertions.__mailbox__(messages))
+              flunk(failure_message <>
+                    ExUnit.Assertions.__pins__(unquote(pins)) <>
+                    ExUnit.Assertions.__mailbox__(messages))
             end
         end
 
@@ -461,8 +466,8 @@ defmodule ExUnit.Assertions do
 
   defp mailbox_message(0, _mailbox), do: "\nThe process mailbox is empty."
   defp mailbox_message(length, mailbox) when length > 10 do
-    "\nProcess mailbox:" <> mailbox
-      <> "\nShowing only #{@max_mailbox_length} of #{length} messages."
+    "\nProcess mailbox:" <> mailbox <>
+      "\nShowing only #{@max_mailbox_length} of #{length} messages."
   end
   defp mailbox_message(_length, mailbox) do
     "\nProcess mailbox:" <> mailbox
@@ -505,7 +510,7 @@ defmodule ExUnit.Assertions do
 
   defp no_warning({name, meta, [expr, [do: clauses]]}) do
     clauses = Enum.map clauses, fn {:->, meta, args} ->
-      {:->, [generated: true] ++ Keyword.put(meta, :line, -1), args}
+      {:->, [generated: true] ++ meta, args}
     end
     {name, meta, [expr, [do: clauses]]}
   end

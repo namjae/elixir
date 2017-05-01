@@ -210,6 +210,7 @@ defmodule Logger do
 
     * `:metadata` - the metadata to be printed by `$metadata`.
       Defaults to an empty list (no metadata).
+      Setting `:metadata` to `:all` prints all metadata.
 
     * `:colors` - a keyword list of coloring options.
 
@@ -253,7 +254,7 @@ defmodule Logger do
   `config/config.exs` file:
 
       config :logger, :console,
-        format: "\n$time $metadata[$level] $levelpad$message\n"
+        format: "\n$time $metadata[$level] $levelpad$message\n",
         metadata: [:user_id]
 
   #### Custom Formatting

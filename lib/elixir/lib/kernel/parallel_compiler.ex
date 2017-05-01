@@ -304,18 +304,18 @@ defmodule Kernel.ParallelCompiler do
   end
 
   defp print_failure(file, {:failure, kind, reason, stacktrace}) do
-    IO.puts "\n== Compilation error on file #{Path.relative_to_cwd(file)} =="
+    IO.puts "\n== Compilation error in file #{Path.relative_to_cwd(file)} =="
     IO.puts Exception.format(kind, reason, prune_stacktrace(stacktrace))
   end
 
   defp print_failure(file, reason) do
-    IO.puts "\n== Compilation error on file #{Path.relative_to_cwd(file)} =="
+    IO.puts "\n== Compilation error in file #{Path.relative_to_cwd(file)} =="
     IO.puts Exception.format(:exit, reason, [])
   end
 
-  @elixir_internals [:elixir, :elixir_exp, :elixir_compiler, :elixir_module, :elixir_clauses,
-                     :elixir_translator, :elixir_expand, :elixir_lexical, :elixir_exp_clauses,
-                     :elixir_def, :elixir_map, Kernel.ErrorHandler]
+  @elixir_internals [:elixir, :elixir_expand, :elixir_compiler, :elixir_module,
+                     :elixir_clauses, :elixir_lexical, :elixir_def, :elixir_map,
+                     :elixir_erl, :elixir_erl_clauses, :elixir_erl_pass, Kernel.ErrorHandler]
 
   defp prune_stacktrace([{mod, _, _, _} | t]) when mod in @elixir_internals do
     prune_stacktrace(t)

@@ -3,8 +3,8 @@ defmodule URI do
   Utilities for working with URIs.
 
   This module provides functions for working with URIs (for example, parsing
-  URIs or encoding query strings). For reference, most of the functions in this
-  module refer to [RFC 3986](https://tools.ietf.org/html/rfc3986).
+  URIs or encoding query strings). The functions in this module are implemented
+  according to [RFC 3986](https://tools.ietf.org/html/rfc3986).
   """
 
   defstruct scheme: nil, path: nil, query: nil,
@@ -46,7 +46,7 @@ defmodule URI do
   end
 
   @doc """
-  Registers the default port `port` for the given `scheme`.
+  Registers the default `port` for the given `scheme`.
 
   After this function is called, `port` will be returned by
   `default_port/1` for the given scheme `scheme`. Note that this function
@@ -157,7 +157,9 @@ defmodule URI do
       nil ->
         dict
       {{key, value}, rest} ->
-        decode_query_into_dict(rest, Dict.put(dict, key, value))
+        # Avoid warnings about Dict being deprecated
+        dict_module = Dict
+        decode_query_into_dict(rest, dict_module.put(dict, key, value))
     end
   end
 
@@ -253,12 +255,19 @@ defmodule URI do
   end
 
   @doc """
-  Percent-escapes the given string.
+  Percent-escapes all characters that require escaped in a string.
 
-  This function accepts a `predicate` function as an optional argument; if
-  passed, this function will be called with each character (byte) in `string` as
-  its argument and should return `true` if that character should not be escaped
-  and left as is.
+  This means reserved characters, such as `:` and `/`, and the so-
+  called unreserved characters, which have the same meaning both
+  escaped and unescaped, won't be escaped by default.
+
+  See `encode_www_form` if you are interested in escaping reserved
+  characters too.
+
+  This function also accepts a `predicate` function as an optional
+  argument. If passed, this function will be called with each byte
+  in `string` as its argument and should return `true` if the given
+  byte should be left as is.
 
   ## Examples
 
@@ -473,6 +482,9 @@ defmodule URI do
   def merge(_base, %URI{scheme: rel_scheme} = rel) when rel_scheme != nil do
     rel
   end
+  def merge(base, %URI{authority: authority} = rel) when authority != nil do
+    %{rel | scheme: base.scheme}
+  end
   def merge(%URI{} = base, %URI{path: rel_path} = rel) when rel_path in ["", nil] do
     %{base | query: rel.query || base.query, fragment: rel.fragment}
   end
@@ -509,7 +521,7 @@ defmodule URI do
   defp remove_dot_segments([head | tail], acc),
     do: remove_dot_segments(tail, [head | acc])
 
-  def path_to_segments(path) do
+  defp path_to_segments(path) do
     [head | tail] = String.split(path, "/")
     reverse_and_discard_empty(tail, [head])
   end

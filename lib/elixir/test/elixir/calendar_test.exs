@@ -1,10 +1,12 @@
 Code.require_file "test_helper.exs", __DIR__
+Code.require_file "fixtures/calendar/julian.exs", __DIR__
 
 defmodule FakeCalendar do
   def date_to_string(_, _, _), do: "boom"
   def time_to_string(_, _, _, _), do: "boom"
   def naive_datetime_to_string(_, _, _, _, _, _, _), do: "boom"
   def datetime_to_string(_, _, _, _, _, _, _, _, _, _), do: "boom"
+  def day_rollover_relative_to_midnight_utc, do: {123456, 123457}
 end
 
 defmodule DateTest do
@@ -33,6 +35,13 @@ defmodule DateTest do
     assert Date.compare(date2, date1) == :gt
   end
 
+  test "compare/2 across calendars" do
+    date1 = ~D[2000-01-01]
+    date2 = Calendar.Julian.date(2000, 01, 01)
+    assert Date.compare(date1, date2) == :lt
+    assert Date.compare(date2, date1) == :gt
+  end
+
   test "day_of_week/1" do
     assert Date.day_of_week(~D[2016-10-31]) == 1
     assert Date.day_of_week(~D[2016-11-01]) == 2
@@ -41,6 +50,22 @@ defmodule DateTest do
     assert Date.day_of_week(~D[2016-11-04]) == 5
     assert Date.day_of_week(~D[2016-11-05]) == 6
     assert Date.day_of_week(~D[2016-11-06]) == 7
+  end
+
+  test "convert/2" do
+    assert Date.convert(~D[2000-01-01], Calendar.Julian) == {:ok, Calendar.Julian.date(1999, 12, 19)}
+    assert (~D[2000-01-01] |> Date.convert!(Calendar.Julian) |> Date.convert!(Calendar.ISO)) == ~D[2000-01-01]
+    assert Date.convert(~D[2016-02-03], FakeCalendar) == {:error, :incompatible_calendars}
+  end
+
+  test "diff/2" do
+    assert Date.diff(~D[2000-01-31], ~D[2000-01-01]) == 30
+    assert Date.diff(~D[2000-01-01], ~D[2000-01-31]) == -30
+
+    date1 = ~D[2000-01-01]
+    date2 = Calendar.Julian.date(2000, 01, 01)
+    assert Date.diff(date1, date2) == -13
+    assert Date.diff(date2, date1) == 13
   end
 end
 
@@ -98,6 +123,26 @@ defmodule NaiveDateTimeTest do
     assert NaiveDateTime.compare(ndt3, ndt1) == :gt
     assert NaiveDateTime.compare(ndt3, ndt2) == :gt
   end
+
+  test "to_iso8601/1" do
+    ndt = ~N[2000-04-16 12:34:15.1234]
+    ndt = put_in ndt.calendar, FakeCalendar
+
+    message =
+      "cannot convert #{inspect(ndt)} to target calendar Calendar.ISO, " <>
+      "reason: #{inspect(ndt.calendar)} and Calendar.ISO have different day rollover moments, " <>
+      "making this conversion ambiguous"
+
+    assert_raise ArgumentError, message, fn ->
+      NaiveDateTime.to_iso8601(ndt)
+    end
+  end
+
+  test "convert/2" do
+    assert NaiveDateTime.convert(~N[2000-01-01 12:34:15.1234], Calendar.Julian) == {:ok, Calendar.Julian.naive_datetime(1999, 12, 19, 12, 34, 15, 123400)}
+    assert ~N[2000-01-01 12:34:15.123456] |> NaiveDateTime.convert!(Calendar.Julian) |> NaiveDateTime.convert!(Calendar.ISO) == ~N[2000-01-01 12:34:15.123456]
+    assert NaiveDateTime.convert(~N[2016-02-03 00:00:01], FakeCalendar) == {:error, :incompatible_calendars}
+  end
 end
 
 defmodule DateTimeTest do
@@ -114,18 +159,27 @@ defmodule DateTimeTest do
   end
 
   test "from_unix/2" do
-    # with Unix times back to 0 Gregorian Seconds
-    datetime = %DateTime{
+    # with Unix times back to 0 Gregorian seconds
+    min_datetime = %DateTime{
       calendar: Calendar.ISO, day: 1, hour: 0, microsecond: {0, 0},
       minute: 0, month: 1, second: 0, std_offset: 0, time_zone: "Etc/UTC",
       utc_offset: 0, year: 0, zone_abbr: "UTC"
     }
-    assert DateTime.from_unix(-62167219200) == {:ok, datetime}
+    assert DateTime.from_unix(-62167219200) == {:ok, min_datetime}
     assert DateTime.from_unix(-62167219201) == {:error, :invalid_unix_time}
+
+    max_datetime = %DateTime{
+      calendar: Calendar.ISO, day: 31, hour: 23, microsecond: {0, 0},
+      minute: 59, month: 12, second: 59, std_offset: 0, time_zone: "Etc/UTC",
+      utc_offset: 0, year: 9999, zone_abbr: "UTC"
+    }
+
+    assert DateTime.from_unix(253402300799) == {:ok, max_datetime}
+    assert DateTime.from_unix(253402300800) == {:error, :invalid_unix_time}
   end
 
   test "from_unix!/2" do
-    # with Unix times back to 0 Gregorian Seconds
+    # with Unix times back to 0 Gregorian seconds
     datetime = %DateTime{
       calendar: Calendar.ISO, day: 1, hour: 0, microsecond: {0, 0},
       minute: 0, month: 1, second: 0, std_offset: 0, time_zone: "Etc/UTC",
@@ -133,13 +187,13 @@ defmodule DateTimeTest do
     }
     assert DateTime.from_unix!(-62167219200) == datetime
 
-    assert_raise ArgumentError, "invalid Unix time -62167219201", fn ->
+    assert_raise ArgumentError, fn ->
       DateTime.from_unix!(-62167219201)
     end
   end
 
-  test "to_unix/2 works with Unix times back to 0 Gregorian Seconds" do
-    # with Unix times back to 0 Gregorian Seconds
+  test "to_unix/2 works with Unix times back to 0 Gregorian seconds" do
+    # with Unix times back to 0 Gregorian seconds
     gregorian_0 = %DateTime{calendar: Calendar.ISO, day: 1, hour: 0, microsecond: {0, 0},
                             minute: 0, month: 1, second: 0, std_offset: 0, time_zone: "Etc/UTC",
                             utc_offset: 0, year: 0, zone_abbr: "UTC"}
