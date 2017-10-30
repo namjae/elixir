@@ -8,12 +8,14 @@ defmodule Mix do
   The foundation of Mix is a project. A project can be defined by using
   `Mix.Project` in a module, usually placed in a file named `mix.exs`:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
-          [app: :my_app,
-           version: "1.0.0"]
+          [
+            app: :my_app,
+            version: "1.0.0"
+          ]
         end
       end
 
@@ -61,18 +63,22 @@ defmodule Mix do
   to your project configuration. We often extract the list of dependencies
   into its own function:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
-          [app: :my_app,
-           version: "1.0.0",
-           deps: deps()]
+          [
+            app: :my_app,
+            version: "1.0.0",
+            deps: deps()
+          ]
         end
 
         defp deps do
-          [{:ecto, "~> 0.2.5"},
-           {:plug, github: "elixir-lang/plug"}]
+          [
+            {:ecto, "~> 2.0"},
+            {:plug, github: "elixir-lang/plug"}
+          ]
         end
       end
 
@@ -102,18 +108,22 @@ defmodule Mix do
   we wanted the task to only be available for our project? Just
   define an alias:
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
-          [app: :my_app,
-           version: "1.0.0",
-           aliases: aliases()]
+          [
+            app: :my_app,
+            version: "1.0.0",
+            aliases: aliases()
+          ]
         end
 
         defp aliases do
-          [c: "compile",
-           hello: &hello/1]
+          [
+            c: "compile",
+            hello: &hello/1
+          ]
         end
 
         defp hello(_) do
@@ -146,7 +156,7 @@ defmodule Mix do
       [clean: ["clean", &clean_extra/1]]
 
   Where `&clean_extra/1` would be a function in your `mix.exs`
-  with extra clean up logic.
+  with extra cleanup logic.
 
   Note aliases do not show up on `mix help`.
   Aliases defined in the current project do not affect its dependencies and aliases defined in dependencies are not accessible from the current project.
@@ -184,20 +194,22 @@ defmodule Mix do
 
   @doc false
   def start(_type, []) do
-    import Supervisor.Spec
-
-    children = [
-      worker(Mix.State, []),
-      worker(Mix.TasksServer, []),
-      worker(Mix.ProjectStack, [])
-    ]
-
+    children = [Mix.State, Mix.TasksServer, Mix.ProjectStack]
     opts = [strategy: :one_for_one, name: Mix.Supervisor, max_restarts: 0]
     Supervisor.start_link(children, opts)
   end
 
   @doc """
   Returns the Mix environment.
+
+  This function should not be used at runtime in application code (as opposed
+  to infrastructure and build code like Mix tasks). Mix is a build tool and may
+  not be available after the code is compiled (for example in a release).
+
+  To differentiate the program behavior depending on the environment, it is
+  recommended to use application environment through `Application.get_env/3`.
+  Proper configuration can be set in `Mix.Config` files, often per-environment
+  (see `Mix.Config.import_config/1` for more information).
   """
   def env do
     # env is not available on bootstrapping, so set a :dev default
@@ -209,6 +221,9 @@ defmodule Mix do
 
   Be careful when invoking this function as any project
   configuration won't be reloaded.
+
+  This function should not be used at runtime in application code
+  (see `env/0` for more information).
   """
   def env(env) when is_atom(env) do
     Mix.State.put(:env, env)
@@ -273,6 +288,6 @@ defmodule Mix do
   """
   @spec raise(binary) :: no_return
   def raise(message) when is_binary(message) do
-    Kernel.raise Mix.Error, mix: true, message: message
+    Kernel.raise(Mix.Error, mix: true, message: message)
   end
 end

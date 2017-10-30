@@ -15,17 +15,18 @@ overridable(Module, Value) ->
 
 super(Meta, File, Module, Function) ->
   case store(Module, Function, true) of
-    {ok, Name} ->
-      Name;
+    {_, _} = KindName ->
+      KindName;
     error ->
       elixir_errors:form_error(Meta, File, ?MODULE, {no_super, Module, Function})
   end.
 
 store_pending(Module) ->
-  _ = [{ok, _} = store(Module, X, false) ||
-         {X, {_, _, _, false}} <- maps:to_list(overridable(Module)),
-         not 'Elixir.Module':'defines?'(Module, X)],
-  ok.
+  [begin
+    {_, _} = store(Module, Pair, false),
+    Pair
+   end || {Pair, {_, _, _, false}} <- maps:to_list(overridable(Module)),
+          not 'Elixir.Module':'defines?'(Module, Pair)].
 
 %% Private
 
@@ -41,7 +42,7 @@ store(Module, Function, Hidden) ->
           false ->
             {Kind, Name, Arity, Clauses};
           true when Kind == defmacro; Kind == defmacrop ->
-            {defp, name(Name, Count), Arity + 1, rewrite_clauses(Clauses)};
+            {defmacrop, name(Name, Count), Arity, Clauses};
           true ->
             {defp, name(Name, Count), Arity, Clauses}
         end,
@@ -51,24 +52,17 @@ store(Module, Function, Hidden) ->
       case Overridden of
         false ->
           overridable(Module, maps:put(Function, {Count, Def, Neighbours, true}, Overridable)),
-          (not elixir_compiler:get_opt(internal)) andalso
-            'Elixir.Module.LocalsTracker':reattach(Module, Kind, Function, Neighbours),
           elixir_def:store_definition(false, FinalKind, Meta, FinalName, FinalArity,
                                       File, Module, Defaults, FinalClauses),
-          elixir_locals:record_definition(Tuple, FinalKind, Module),
-          elixir_locals:record_local(Tuple, Module, Function);
+          elixir_locals:reattach(Tuple, FinalKind, Module, Function, Neighbours);
         true ->
           ok
       end,
 
-      {ok, Tuple};
+      {FinalKind, FinalName};
     error ->
       error
   end.
-
-rewrite_clauses(Clauses) ->
-  [{Meta, [{'__CALLER__', [], nil} | Args], Guards, Body} ||
-   {Meta, Args, Guards, Body} <- Clauses].
 
 name(Name, Count) when is_integer(Count) ->
   list_to_atom(atom_to_list(Name) ++ " (overridable " ++ integer_to_list(Count) ++ ")").
@@ -82,6 +76,6 @@ format_error({no_super, Module, {Name, Arity}}) ->
     [Name, Arity, elixir_aliases:inspect(Module), Joined]).
 
 format_fa({Name, Arity}) ->
-  A = atom_to_binary(Name, utf8),
+  A = 'Elixir.Code.Identifier':inspect_as_function(Name),
   B = integer_to_binary(Arity),
   <<A/binary, $/, B/binary>>.

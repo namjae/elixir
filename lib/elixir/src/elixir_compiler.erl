@@ -75,7 +75,7 @@ compile(Forms, Vars, #{line := Line, file := File} = E) ->
   Args = list_to_tuple([V || {_, _, _, V} <- Vars]),
 
   {Module, Binary} = elixir_erl_compiler:noenv_forms(Form, File, [nowarn_nomatch]),
-  code:load_binary(Module, in_memory, Binary),
+  code:load_binary(Module, "", Binary),
 
   Purgeable = beam_lib:chunks(Binary, [labeled_locals]) ==
               {ok, {Module, [{labeled_locals, []}]}},
@@ -101,6 +101,7 @@ code_mod(Fun, Expr, Line, File, Module, Vars) when is_binary(File), is_integer(L
 
   [{attribute, Line, file, {elixir_utils:characters_to_list(Relative), 1}},
    {attribute, Line, module, Module},
+   {attribute, Line, compile, no_auto_import},
    {attribute, Line, export, [{Fun, 1}, {'__RELATIVE__', 0}]},
    {function, Line, Fun, 1, [
      {clause, Line, [Tuple], [], [Expr]}
@@ -120,13 +121,13 @@ allows_fast_compilation({'__block__', _, Exprs}) ->
 allows_fast_compilation({defmodule, _, _}) -> true;
 allows_fast_compilation(_) -> false.
 
-%% Bootstraper
+%% Bootstrapper
 
 bootstrap() ->
   {ok, _} = application:ensure_all_started(elixir),
-  Update = fun(Old) -> maps:merge(Old, #{docs => false, internal => true,
-                                         relative_paths => false}) end,
+  Update = fun(Old) -> maps:merge(Old, #{docs => false, relative_paths => false}) end,
   _ = elixir_config:update(compiler_options, Update),
+  _ = elixir_config:put(bootstrap, true),
   [bootstrap_file(File) || File <- bootstrap_main()].
 
 bootstrap_file(File) ->
@@ -148,17 +149,16 @@ bootstrap_main() ->
    <<"lib/elixir/lib/list.ex">>,
    <<"lib/elixir/lib/macro.ex">>,
    <<"lib/elixir/lib/code.ex">>,
+   <<"lib/elixir/lib/code/identifier.ex">>,
    <<"lib/elixir/lib/module/locals_tracker.ex">>,
    <<"lib/elixir/lib/kernel/typespec.ex">>,
    <<"lib/elixir/lib/kernel/utils.ex">>,
-   <<"lib/elixir/lib/behaviour.ex">>,
    <<"lib/elixir/lib/exception.ex">>,
    <<"lib/elixir/lib/protocol.ex">>,
    <<"lib/elixir/lib/stream/reducers.ex">>,
    <<"lib/elixir/lib/enum.ex">>,
    <<"lib/elixir/lib/inspect/algebra.ex">>,
    <<"lib/elixir/lib/inspect.ex">>,
-   <<"lib/elixir/lib/range.ex">>,
    <<"lib/elixir/lib/regex.ex">>,
    <<"lib/elixir/lib/string.ex">>,
    <<"lib/elixir/lib/string/chars.ex">>,

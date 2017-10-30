@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule Kernel.Overridable do
   def sample do
@@ -25,11 +25,14 @@ defmodule Kernel.Overridable do
     13
   end
 
-  defoverridable [sample: 0, with_super: 0, without_super: 0,
-                  super_with_multiple_args: 2, many_clauses: 1]
+  defoverridable sample: 0,
+                 with_super: 0,
+                 without_super: 0,
+                 super_with_multiple_args: 2,
+                 many_clauses: 1
 
-  true = Module.overridable? __MODULE__, {:without_super, 0}
-  true = Module.overridable? __MODULE__, {:with_super, 0}
+  true = Module.overridable?(__MODULE__, {:without_super, 0})
+  true = Module.overridable?(__MODULE__, {:with_super, 0})
 
   def without_super do
     :without_super
@@ -40,7 +43,7 @@ defmodule Kernel.Overridable do
   end
 
   def super_with_multiple_args(x, y) do
-    super x, y * 2
+    super(x, y * 2)
   end
 
   def many_clauses(2) do
@@ -67,11 +70,11 @@ defmodule Kernel.Overridable do
 
   defmacro overridable_macro(x) do
     quote do
-      unquote(super(x)) + 1_000
+      unquote(super(x)) + 1000
     end
   end
 
-  defmacrop private_macro(x \\ raise "never called")
+  defmacrop private_macro(x \\ raise("never called"))
 
   defmacrop private_macro(x) do
     quote do
@@ -83,7 +86,7 @@ defmodule Kernel.Overridable do
 
   defmacrop private_macro(x) do
     quote do
-      unquote(super(x)) + 1_000
+      unquote(super(x)) + 1000
     end
   end
 
@@ -95,75 +98,12 @@ end
 defmodule Kernel.OverridableExampleBehaviour do
   @callback required_callback :: any
   @callback optional_callback :: any
-  @macrocallback required_macro_callback(arg :: any) :: Macro.t
-  @macrocallback optional_macro_callback(arg :: any, arg2 :: any) :: Macro.t
-  @optional_callbacks optional_callback: 0, optional_macro_callback: 1
-end
-
-defmodule Kernel.OverridableWithBehaviour do
-  @behaviour Kernel.OverridableExampleBehaviour
-
-  def required_callback(), do: "original"
-
-  def optional_callback(), do: "original"
-
-  def not_a_behaviour_callback(), do: "original"
-
-  defmacro required_macro_callback(boolean) do
-    quote do
-      if unquote(boolean) do
-        "original"
-      end
-    end
-  end
-
-  defoverridable Kernel.OverridableExampleBehaviour
-
-  def required_callback(), do: "overridden"
-
-  defmacro required_macro_callback(boolean) do
-    quote do
-      if unquote(boolean) do
-        "overridden"
-      end
-    end
-  end
-
-  defmacro optional_macro_callback(boolean, boolean2) do
-    quote do
-      if unquote(boolean) && unquote(boolean2) do
-        "defined optional for the first time"
-      end
-    end
-  end
-
-  def optional_callback(), do: "overridden"
-
-  def not_a_behaviour_callback(), do: "overridden"
+  @macrocallback required_macro_callback(arg :: any) :: Macro.t()
+  @macrocallback optional_macro_callback(arg :: any, arg2 :: any) :: Macro.t()
+  @optional_callbacks optional_callback: 0, optional_macro_callback: 2
 end
 
 defmodule Kernel.OverridableTest do
-  defmodule OverridableOrder do
-    def not_private(str) do
-      process_url(str)
-    end
-
-    def process_url(_str) do
-      :first
-    end
-
-    # There was a bug where the order in which we removed
-    # overridable expressions lead to errors. This module
-    # aims to guarantee removing process_url/1 before we
-    # remove the function that depends on it does not cause
-    # errors. If it compiles, it works!
-    defoverridable [process_url: 1, not_private: 1]
-
-    def process_url(_str) do
-      :second
-    end
-  end
-
   require Kernel.Overridable, as: Overridable
   use ExUnit.Case
 
@@ -172,16 +112,70 @@ defmodule Kernel.OverridableTest do
     :code.delete(module)
   end
 
+  test "overridable keeps function ordering" do
+    defmodule OverridableOrder do
+      def not_private(str) do
+        process_url(str)
+      end
+
+      def process_url(_str) do
+        :first
+      end
+
+      # There was a bug where the order in which we removed
+      # overridable expressions lead to errors. This module
+      # aims to guarantee removing process_url/1 before we
+      # remove the function that depends on it does not cause
+      # errors. If it compiles, it works!
+      defoverridable process_url: 1, not_private: 1
+
+      def process_url(_str) do
+        :second
+      end
+    end
+  end
+
+  test "overridable works with defaults" do
+    defmodule OverridableDefault do
+      def fun(value, opt \\ :from_parent) do
+        {value, opt}
+      end
+
+      defmacro macro(value, opt \\ :from_parent) do
+        {{value, opt}, Macro.escape(__CALLER__)}
+      end
+
+      # There was a bug where the default function would
+      # attempt to call its overridable name instead of
+      # func/1. If it compiles, it works!
+      defoverridable fun: 1, fun: 2, macro: 1, macro: 2
+
+      def fun(value) do
+        {value, super(value)}
+      end
+
+      defmacro macro(value) do
+        {{value, super(value)}, Macro.escape(__CALLER__)}
+      end
+    end
+
+    defmodule OverridableCall do
+      require OverridableDefault
+      OverridableDefault.fun(:foo)
+      OverridableDefault.macro(:bar)
+    end
+  end
+
   test "overridable is made concrete if no other is defined" do
-    assert Overridable.sample == 1
+    assert Overridable.sample() == 1
   end
 
   test "overridable overridden with super" do
-    assert Overridable.with_super == 3
+    assert Overridable.with_super() == 3
   end
 
   test "overridable overridden without super" do
-    assert Overridable.without_super == :without_super
+    assert Overridable.without_super() == :without_super
   end
 
   test "calling super with multiple args" do
@@ -209,108 +203,127 @@ defmodule Kernel.OverridableTest do
   test "invalid super call" do
     message =
       "nofile:4: no super defined for foo/0 in module Kernel.OverridableOrder.Forwarding. " <>
-      "Overridable functions available are: bar/0"
+        "Overridable functions available are: bar/0"
+
     assert_raise CompileError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableOrder.Forwarding do
         def bar(), do: 1
         defoverridable bar: 0
         def foo(), do: super()
       end
-      """
+      """)
     end
 
-    purge Kernel.OverridableOrder.Forwarding
+    purge(Kernel.OverridableOrder.Forwarding)
   end
 
   test "undefined functions can't be marked as overridable" do
     message = "cannot make function foo/2 overridable because it was not defined"
+
     assert_raise ArgumentError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableOrder.Foo do
         defoverridable foo: 2
       end
-      """
+      """)
     end
 
-    purge Kernel.OverridableOrder.Foo
+    purge(Kernel.OverridableOrder.Foo)
   end
 
-  test "overrides required callback with behaviour as argument" do
-    assert Kernel.OverridableWithBehaviour.required_callback == "overridden"
-  end
+  test "overrides with behaviour" do
+    defmodule OverridableWithBehaviour do
+      @behaviour Elixir.Kernel.OverridableExampleBehaviour
 
-  test "overrides optional callback with behaviour as argument" do
-    assert Kernel.OverridableWithBehaviour.optional_callback == "overridden"
-  end
+      def required_callback(), do: "original"
 
-  test "does not override function that is not a callback for this behaviour" do
-    assert Kernel.OverridableWithBehaviour.not_a_behaviour_callback == "original"
-  end
+      def optional_callback(), do: "original"
 
-  test "overrides required macro callback with behaviour as argument" do
-    require Kernel.OverridableWithBehaviour
+      def not_a_behaviour_callback(), do: "original"
 
-    assert Kernel.OverridableWithBehaviour.required_macro_callback(true) == "overridden"
-  end
+      defmacro required_macro_callback(boolean) do
+        quote do
+          if unquote(boolean) do
+            "original"
+          end
+        end
+      end
 
-  test "specifies optional macro callback with behaviour as argument" do
-    require Kernel.OverridableWithBehaviour
+      defoverridable Elixir.Kernel.OverridableExampleBehaviour
 
-    assert Kernel.OverridableWithBehaviour.optional_macro_callback(true, true) == "defined optional for the first time"
+      defmacro optional_macro_callback(arg1, arg2), do: {arg1, arg2}
+
+      assert Module.overridable?(__MODULE__, {:required_callback, 0})
+      assert Module.overridable?(__MODULE__, {:optional_callback, 0})
+      assert Module.overridable?(__MODULE__, {:required_macro_callback, 1})
+      refute Module.overridable?(__MODULE__, {:optional_macro_callback, 1})
+      refute Module.overridable?(__MODULE__, {:not_a_behaviour_callback, 1})
+    end
   end
 
   test "undefined module can't be passed as argument to defoverridable" do
-    message = "cannot pass module Kernel.OverridableTest.Bar as argument to defoverridable/1 because it was not defined"
+    message =
+      "cannot pass module Kernel.OverridableTest.Bar as argument to defoverridable/1 because it was not defined"
+
     assert_raise ArgumentError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableTest.Foo do
         defoverridable Kernel.OverridableTest.Bar
       end
-      """
+      """)
     end
-    purge Kernel.OverridableTest.Foo
+
+    purge(Kernel.OverridableTest.Foo)
   end
 
   test "module without @behaviour can't be passed as argument to defoverridable" do
-    message = "cannot pass module Kernel.OverridableExampleBehaviour as argument to defoverridable/1" <>
-              " because its corresponding behaviour is missing. Did you forget to add " <>
-              "@behaviour Kernel.OverridableExampleBehaviour ?"
+    message =
+      "cannot pass module Kernel.OverridableExampleBehaviour as argument to defoverridable/1" <>
+        " because its corresponding behaviour is missing. Did you forget to add " <>
+        "@behaviour Kernel.OverridableExampleBehaviour?"
+
     assert_raise ArgumentError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableTest.Foo do
         defoverridable Kernel.OverridableExampleBehaviour
       end
-      """
+      """)
     end
-    purge Kernel.OverridableTest.Foo
+
+    purge(Kernel.OverridableTest.Foo)
   end
 
   test "module with no callbacks can't be passed as argument to defoverridable" do
-    message = "cannot pass module Kernel.OverridableTest.Bar as argument to defoverridable/1 because it does not define any callbacks"
+    message =
+      "cannot pass module Kernel.OverridableTest.Bar as argument to defoverridable/1 because it does not define any callbacks"
+
     assert_raise ArgumentError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableTest.Bar do
       end
       defmodule Kernel.OverridableTest.Foo do
         @behaviour Kernel.OverridableTest.Bar
         defoverridable Kernel.OverridableTest.Bar
       end
-      """
+      """)
     end
-    purge Kernel.OverridableTest.Bar
-    purge Kernel.OverridableTest.Foo
+
+    purge(Kernel.OverridableTest.Bar)
+    purge(Kernel.OverridableTest.Foo)
   end
 
   test "atom which is not a module can't be passed as argument to defoverridable" do
     message = "cannot pass module :abc as argument to defoverridable/1 because it was not defined"
+
     assert_raise ArgumentError, message, fn ->
-      Code.eval_string """
+      Code.eval_string("""
       defmodule Kernel.OverridableTest.Foo do
         defoverridable :abc
       end
-      """
+      """)
     end
-    purge Kernel.OverridableTest.Foo
+
+    purge(Kernel.OverridableTest.Foo)
   end
 end

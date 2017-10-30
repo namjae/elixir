@@ -206,7 +206,7 @@ optimized_andand_test() ->
   {'case', _, _,
     [{clause, _,
       [{var, _, Var}],
-      [[{op, _, 'or', _, _}]],
+      [[{op, _, 'orelse', _, _}]],
       [{var, _, Var}]},
     {clause, _, [{var, _, '_'}], [], [{atom, 0, done}]}]
   } = to_erl("is_list([]) && :done").
@@ -215,10 +215,16 @@ optimized_oror_test() ->
   {'case', _, _,
     [{clause, 1,
       [{var, 1, _}],
-      [[{op, 1, 'or', _, _}]],
+      [[{op, 1, 'orelse', _, _}]],
       [{atom, 0, done}]},
     {clause, 1, [{var, 1, Var}], [], [{var, 1, Var}]}]
   } = to_erl("is_list([]) || :done").
 
 no_after_in_try_test() ->
   {'try', _, [_], [_], _, []} = to_erl("try do :foo.bar() else _ -> :ok end").
+
+optimized_inspect_interpolation_test() ->
+    {bin, _,
+     [{bin_element, _,
+       {call, _, {remote, _,{atom, _, 'Elixir.Kernel'}, {atom, _, inspect}}, [_]},
+       default, [binary]}]} = to_erl("\"#{inspect(1)}\"").

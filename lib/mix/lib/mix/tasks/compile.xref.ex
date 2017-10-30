@@ -1,9 +1,10 @@
 defmodule Mix.Tasks.Compile.Xref do
-  use Mix.Task
+  use Mix.Task.Compiler
   alias Mix.Tasks.Compile.Elixir, as: E
 
   @recursive true
   @manifest ".compile.xref"
+  @manifest_vsn :v1
 
   @moduledoc """
   Performs remote dispatch checking.
@@ -23,30 +24,40 @@ defmodule Mix.Tasks.Compile.Xref do
   @doc """
   Runs this task.
   """
-  @spec run(OptionParser.argv) :: :ok | :noop
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args, switches: [force: :boolean, warnings_as_errors: :boolean])
 
-    if needs_xref?(opts) and should_exit?(run_xref(), opts) do
-      exit({:shutdown, 1})
+    warnings =
+      if needs_xref?(opts) do
+        run_xref()
+      else
+        read_manifest()
+      end
+
+    if warnings != [] and warnings_as_errors(opts) do
+      {:error, to_diagnostics(warnings, :error)}
+    else
+      {:noop, to_diagnostics(warnings, :warning)}
     end
-
-    write_manifest()
-  end
-
-  defp run_xref do
-    Mix.Task.run("xref", ["warnings"])
   end
 
   defp needs_xref?(opts) do
     !!opts[:force] or Mix.Utils.stale?(E.manifests(), manifests())
   end
 
-  defp should_exit?(:error, opts),
-    do: warnings_as_errors(opts) == true
-  defp should_exit?(_, _opts),
-    do: false
+  defp run_xref do
+    timestamp = :calendar.universal_time()
+
+    case Mix.Task.run("xref", ["warnings"]) do
+      :noop ->
+        []
+
+      {:ok, warnings} ->
+        write_manifest(warnings, timestamp)
+        warnings
+    end
+  end
 
   defp warnings_as_errors(opts) do
     Keyword.get_lazy(opts, :warnings_as_errors, fn ->
@@ -58,17 +69,41 @@ defmodule Mix.Tasks.Compile.Xref do
   Returns xref manifests.
   """
   def manifests, do: [manifest()]
-  defp manifest, do: Path.join(Mix.Project.manifest_path, @manifest)
+  defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
-  defp write_manifest do
-    File.touch(manifest())
-    :noop
+  defp write_manifest(warnings, timestamp) do
+    File.write!(manifest(), :erlang.term_to_binary({@manifest_vsn, warnings}))
+    File.touch(manifest(), timestamp)
+  end
+
+  defp read_manifest() do
+    try do
+      manifest() |> File.read!() |> :erlang.binary_to_term()
+    rescue
+      _ -> []
+    else
+      {@manifest_vsn, data} when is_list(data) -> data
+      _ -> []
+    end
   end
 
   @doc """
   Cleans up xref manifest.
   """
   def clean do
-    File.rm manifest()
+    File.rm(manifest())
+  end
+
+  defp to_diagnostics(warnings, severity) do
+    for {message, locations} <- warnings,
+        {file, line} <- locations do
+      %Mix.Task.Compiler.Diagnostic{
+        compiler_name: "Xref",
+        file: Path.absname(file),
+        message: to_string(message),
+        position: line,
+        severity: severity
+      }
+    end
   end
 end

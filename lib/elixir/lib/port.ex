@@ -84,16 +84,16 @@ defmodule Port do
   The `:spawn` tuple receives a binary that is going to be executed as a
   full invocation. For example, we can use it to invoke "echo hello" directly:
 
-      iex> port = Port.open({:spawn, "echo oops"}, [:binary])
+      iex> port = Port.open({:spawn, "echo hello"}, [:binary])
       iex> flush()
-      {#Port<0.1444>, {:data, "oops\n"}}
+      {#Port<0.1444>, {:data, "hello\n"}}
 
   `:spawn` will retrieve the program name from the argument and traverse your
   OS `$PATH` environment variable looking for a matching program.
 
   Although the above is handy, it means it is impossible to invoke an executable
   that has whitespaces on its name or in any of its arguments. For those reasons,
-  most times it is preferrable to execute `:spawn_executable`.
+  most times it is preferable to execute `:spawn_executable`.
 
   ### spawn_executable
 
@@ -109,14 +109,6 @@ defmodule Port do
   When using `:spawn_executable`, the list of arguments can be passed via
   the `:args` option as done above. For the full list of options, see the
   documentation for the Erlang function `:erlang.open_port/2`.
-
-  ### spawn_driver
-
-  Spawn driver is used to start Port Drivers, which are programs written in
-  C that implements a specific communication protocols and are dynamically
-  linked to the Erlang VM. Port drivers are an advanced topic and one of the
-  mechanisms for integrating C code, alongside NIFs. For more information,
-  [please check the Erlang docs](http://erlang.org/doc/reference_manual/ports.html).
 
   ### fd
 
@@ -147,7 +139,6 @@ defmodule Port do
       done
       kill -KILL $pid
 
-
   Now instead of:
 
       Port.open({:spawn_executable, "/path/to/program"},
@@ -160,10 +151,11 @@ defmodule Port do
 
   """
 
-  @type name :: {:spawn, charlist | binary} |
-                {:spawn_driver, charlist | binary} |
-                {:spawn_executable, charlist | atom} |
-                {:fd, non_neg_integer, non_neg_integer}
+  @type name ::
+          {:spawn, charlist | binary}
+          | {:spawn_driver, charlist | binary}
+          | {:spawn_executable, charlist | atom}
+          | {:fd, non_neg_integer, non_neg_integer}
 
   @doc """
   Opens a port given a tuple `name` and a list of `options`.
@@ -180,8 +172,7 @@ defmodule Port do
     * `{:fd, fd_in, fd_out}` - accesses file descriptors, `fd_in` and `fd_out`
       opened by the VM.
 
-  For more information and the list of options, see
-  [`:erlang.open_port/2`](http://www.erlang.org/doc/man/erlang.html#open_port-2).
+  For more information and the list of options, see `:erlang.open_port/2`.
 
   Inlined by the compiler.
   """
@@ -193,7 +184,7 @@ defmodule Port do
   @doc """
   Closes the `port`.
 
-  For more information, see [`:erlang.port_close/1`](http://www.erlang.org/doc/man/erlang.html#port_close-1).
+  For more information, see `:erlang.port_close/1`.
 
   Inlined by the compiler.
   """
@@ -205,7 +196,7 @@ defmodule Port do
   @doc """
   Sends `data` to the port driver `port`.
 
-  For more information, see [`:erlang.port_command/2`](http://www.erlang.org/doc/man/erlang.html#port_command-2).
+  For more information, see `:erlang.port_command/2`.
 
   Inlined by the compiler.
   """
@@ -217,7 +208,7 @@ defmodule Port do
   @doc """
   Associates the `port` identifier with a `pid`.
 
-  For more information, see [`:erlang.port_connect/2`](http://www.erlang.org/doc/man/erlang.html#port_connect-2).
+  For more information, see `:erlang.port_connect/2`.
 
   Inlined by the compiler.
   """
@@ -229,16 +220,16 @@ defmodule Port do
   @doc """
   Returns information about the `port` or `nil` if the port is closed.
 
-  For more information, see [`:erlang.port_info/1`](http://www.erlang.org/doc/man/erlang.html#port_info-1).
+  For more information, see `:erlang.port_info/1`.
   """
   def info(port) do
-    nillify :erlang.port_info(port)
+    nillify(:erlang.port_info(port))
   end
 
   @doc """
   Returns information about the `port` or `nil` if the port is closed.
 
-  For more information, see [`:erlang.port_info/2`](http://www.erlang.org/doc/man/erlang.html#port_info-2).
+  For more information, see `:erlang.port_info/2`.
   """
   @spec info(port, atom) :: {atom, term} | nil
   def info(port, spec)
@@ -251,8 +242,46 @@ defmodule Port do
   end
 
   def info(port, item) do
-    nillify :erlang.port_info(port, item)
+    nillify(:erlang.port_info(port, item))
   end
+
+  @doc """
+  Starts monitoring the given `port` from the calling process.
+
+  Once the monitored port process dies, a message is delivered to the
+  monitoring process in the shape of:
+
+      {:DOWN, ref, :port, object, reason}
+
+  where:
+
+    * `ref` is a monitor reference returned by this function;
+    * `object` is either the `port` being monitored (when monitoring by port id)
+    or `{name, node}` (when monitoring by a port name);
+    * `reason` is the exit reason.
+
+  See `:erlang.monitor/2` for more info.
+
+  Inlined by the compiler.
+  """
+  @spec monitor(port | {name :: atom, node :: atom} | name :: atom) :: reference
+  def monitor(port) do
+    :erlang.monitor(:port, port)
+  end
+
+  @doc """
+  Demonitors the monitor identified by the given `reference`.
+
+  If `monitor_ref` is a reference which the calling process
+  obtained by calling `monitor/1`, that monitoring is turned off.
+  If the monitoring is already turned off, nothing happens.
+
+  See `:erlang.demonitor/2` for more info.
+
+  Inlined by the compiler.
+  """
+  @spec demonitor(reference, options :: [:flush | :info]) :: boolean
+  defdelegate demonitor(monitor_ref, options \\ []), to: :erlang
 
   @doc """
   Returns a list of all ports in the current node.
@@ -261,10 +290,10 @@ defmodule Port do
   """
   @spec list :: [port]
   def list do
-    :erlang.ports
+    :erlang.ports()
   end
 
   @compile {:inline, nillify: 1}
   defp nillify(:undefined), do: nil
-  defp nillify(other),      do: other
+  defp nillify(other), do: other
 end

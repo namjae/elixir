@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule IEx.AutocompleteTest do
   use ExUnit.Case, async: true
@@ -11,15 +11,15 @@ defmodule IEx.AutocompleteTest do
 
   defmodule MyServer do
     def evaluator do
-      Process.get(:evaluator)
+      {Process.get(:evaluator), self()}
     end
   end
 
   defp eval(line) do
     ExUnit.CaptureIO.capture_io(fn ->
-      evaluator = MyServer.evaluator
-      Process.group_leader(evaluator, Process.group_leader)
-      send evaluator, {:eval, self(), line <> "\n", %IEx.State{}}
+      {evaluator, _} = MyServer.evaluator()
+      Process.group_leader(evaluator, Process.group_leader())
+      send(evaluator, {:eval, self(), line <> "\n", %IEx.State{}})
       assert_receive {:evaled, _, _}
     end)
   end
@@ -67,7 +67,7 @@ defmodule IEx.AutocompleteTest do
     assert expand('Str') == {:yes, [], ['Stream', 'String', 'StringIO']}
     assert expand('Ma') == {:yes, '', ['Macro', 'Map', 'MapSet', 'MatchError']}
     assert expand('Dic') == {:yes, 't', []}
-    assert expand('Ex')  == {:yes, [], ['ExUnit', 'Exception']}
+    assert expand('Ex') == {:yes, [], ['ExUnit', 'Exception']}
   end
 
   test "Elixir no completion for underscored functions with no doc" do
@@ -77,6 +77,7 @@ defmodule IEx.AutocompleteTest do
         @doc "Bar doc"
         def __bar__(), do: 1
       end
+
     File.write!("Elixir.Sample.beam", bytecode)
     assert Code.get_docs(Sample, :docs)
     assert expand('Sample._') == {:yes, '_bar__', []}
@@ -86,8 +87,52 @@ defmodule IEx.AutocompleteTest do
     :code.delete(Sample)
   end
 
+  test "Elixir no completion for default argument functions with doc set to false" do
+    {:yes, '', available} = expand('String.')
+    refute Enum.member?(available, 'rjust/2')
+    assert Enum.member?(available, 'replace/3')
+
+    assert expand('String.r') == {:yes, 'e', []}
+
+    {:module, _, bytecode, _} =
+      defmodule Elixir.DefaultArgumentFunctions do
+        def foo(a \\ :a, b, c \\ :c), do: {a, b, c}
+
+        def _do_fizz(a \\ :a, b, c \\ :c), do: {a, b, c}
+
+        @doc false
+        def __fizz__(a \\ :a, b, c \\ :c), do: {a, b, c}
+
+        @doc "bar/0 doc"
+        def bar(), do: :bar
+        @doc false
+        def bar(a \\ :a, b, c \\ :c, d \\ :d), do: {a, b, c, d}
+        @doc false
+        def bar(a, b, c, d, e), do: {a, b, c, d, e}
+
+        @doc false
+        def baz(a \\ :a), do: {a}
+
+        @doc "biz/3 doc"
+        def biz(a, b, c \\ :c), do: {a, b, c}
+      end
+
+    File.write!("Elixir.DefaultArgumentFunctions.beam", bytecode)
+    assert Code.get_docs(DefaultArgumentFunctions, :docs)
+
+    functions_list = ['bar/0', 'biz/2', 'biz/3', 'foo/1', 'foo/2', 'foo/3']
+    assert expand('DefaultArgumentFunctions.') == {:yes, '', functions_list}
+
+    assert expand('DefaultArgumentFunctions.bi') == {:yes, 'z', []}
+    assert expand('DefaultArgumentFunctions.foo') == {:yes, '', ['foo/1', 'foo/2', 'foo/3']}
+  after
+    File.rm("Elixir.DefaultArgumentFunctions.beam")
+    :code.purge(DefaultArgumentFunctions)
+    :code.delete(DefaultArgumentFunctions)
+  end
+
   test "Elixir no completion" do
-    assert expand('.')   == {:no, '', []}
+    assert expand('.') == {:no, '', []}
     assert expand('Xyz') == {:no, '', []}
     assert expand('x.Foo') == {:no, '', []}
     assert expand('x.Foo.get_by') == {:no, '', []}
@@ -111,8 +156,8 @@ defmodule IEx.AutocompleteTest do
   end
 
   test "function completion with arity" do
-    assert expand('String.printable?')  == {:yes, '', ['printable?/1']}
-    assert expand('String.printable?/') == {:yes, '', ['printable?/1']}
+    assert expand('String.printable?') == {:yes, '', ['printable?/1', 'printable?/2']}
+    assert expand('String.printable?/') == {:yes, '', ['printable?/1', 'printable?/2']}
   end
 
   test "function completion using a variable bound to a module" do
@@ -198,13 +243,16 @@ defmodule IEx.AutocompleteTest do
 
   test "completion of manually imported functions and macros" do
     eval("import Enum; import Supervisor, only: [count_children: 1]; import Protocol")
-    assert expand('take') == {:yes, '', ['take/2', 'take_every/2', 'take_random/2', 'take_while/2']}
+
+    functions_list = ['take/2', 'take_every/2', 'take_random/2', 'take_while/2']
+    assert expand('take') == {:yes, '', functions_list}
+
     assert expand('count') == {:yes, '', ['count/1', 'count/2', 'count_children/1']}
     assert expand('der') == {:yes, 'ive', []}
   end
 
   defmacro define_var do
-    quote do: var!(my_var_1, Elixir) = 1
+    quote(do: var!(my_var_1, Elixir) = 1)
   end
 
   test "ignores quoted variables when performing variable completion" do
@@ -226,8 +274,10 @@ defmodule IEx.AutocompleteTest do
 
   test "ampersand completion" do
     assert expand('&Enu') == {:yes, 'm', []}
-    assert expand('&Enum.a') == {:yes, [], ['all?/1', 'all?/2', 'any?/1', 'any?/2', 'at/2', 'at/3']}
-    assert expand('f = &Enum.a') == {:yes, [], ['all?/1', 'all?/2', 'any?/1', 'any?/2', 'at/2', 'at/3']}
+
+    functions_list = ['all?/1', 'all?/2', 'any?/1', 'any?/2', 'at/2', 'at/3']
+    assert expand('&Enum.a') == {:yes, [], functions_list}
+    assert expand('f = &Enum.a') == {:yes, [], functions_list}
   end
 
   defmodule SublevelTest.LevelA.LevelB do
@@ -256,15 +306,18 @@ defmodule IEx.AutocompleteTest do
       defmodule Sample do
         def foo(), do: 0
       end
+
     File.write!("Elixir.IEx.AutocompleteTest.Sample.beam", bytecode)
     assert Code.get_docs(Sample, :docs)
     assert expand('IEx.AutocompleteTest.Sample.foo') == {:yes, '', ['foo/0']}
 
     Code.compiler_options(ignore_module_conflict: true)
+
     defmodule Sample do
       def foo(), do: 0
       def foobar(), do: 0
     end
+
     assert expand('IEx.AutocompleteTest.Sample.foo') == {:yes, '', ['foo/0', 'foobar/0']}
   after
     File.rm("Elixir.IEx.AutocompleteTest.Sample.beam")
@@ -284,5 +337,13 @@ defmodule IEx.AutocompleteTest do
   test "completion for struct keys" do
     eval("struct = %IEx.AutocompleteTest.MyStruct{}")
     assert expand('struct.my') == {:yes, '_val', []}
+  end
+
+  test "ignore invalid Elixir module literals" do
+    defmodule(:"Elixir.IEx.AutocompleteTest.Unicodé", do: nil)
+    assert expand('IEx.AutocompleteTest.Unicod') == {:no, '', []}
+  after
+    :code.purge(:"Elixir.IEx.AutocompleteTest.Unicodé")
+    :code.delete(:"Elixir.IEx.AutocompleteTest.Unicodé")
   end
 end

@@ -16,7 +16,9 @@ defmodule Agent do
   this set is shared, we can implement it with an agent:
 
       defmodule Mix.TasksServer do
-        def start_link do
+        use Agent
+
+        def start_link(_) do
           Agent.start_link(fn -> MapSet.new end, name: __MODULE__)
         end
 
@@ -42,12 +44,11 @@ defmodule Agent do
         end
       end
 
-  Note that agents still provide a segregation between the
-  client and server APIs, as seen in GenServers. In particular,
-  all code inside the function passed to `Agent` functions is executed
-  by the agent. This distinction is important because you may
-  want to avoid expensive operations inside the agent, as they will
-  effectively block the agent until the request is fulfilled.
+  Agents provide a segregation between the client and server APIs (similar
+  to GenServers). In particular, the anonymous functions given to the `Agent`
+  are executed inside the agent (the server). This distinction is important
+  because you may want to avoid expensive operations inside the agent,
+  as they will effectively block the agent until the request is fulfilled.
 
   Consider these two examples:
 
@@ -62,14 +63,30 @@ defmodule Agent do
       end
 
   The first function blocks the agent. The second function copies all the state
-  to the client and then executes the operation in the client. One difference is
-  whether the data is large enough to require processing in the server, at least
-  initially, or small enough to be sent to the client cheaply. Another
-  difference is whether the data needs to be processed atomically: getting the
+  to the client and then executes the operation in the client. One aspect to
+  consider is whether the data is large enough to require processing in the server,
+  at least initially, or small enough to be sent to the client cheaply. Another
+  factor is whether the data needs to be processed atomically: getting the
   state and calling `do_something_expensive(state)` outside of the agent means
-  that the agent's state can be updated in the meantime, so putting the state
-  back in the agent afterwards may override the updated that happened while
-  processing.
+  that the agent's state can be updated in the meantime. This is specially
+  important in case of updates as computing the new state in the client rather
+  than in the server can lead to race conditions if multiple clients are trying
+  to update the same state to different values.
+
+  Finally note `use Agent` defines a `child_spec/1` function, allowing the
+  defined module to be put under a supervision tree. The generated
+  `child_spec/1` can be customized with the following options:
+
+    * `:id` - the child specification id, defaults to the current module
+    * `:start` - how to start the child process (defaults to calling `__MODULE__.start_link/1`)
+    * `:restart` - when the child should be restarted, defaults to `:permanent`
+    * `:shutdown` - how to shut down the child
+
+  For example:
+
+      use Agent, restart: :transient, shutdown: 10_000
+
+  See the `Supervisor` docs for more information.
 
   ## Name registration
 
@@ -122,6 +139,33 @@ defmodule Agent do
   @typedoc "The agent state"
   @type state :: term
 
+  @doc false
+  def child_spec(arg) do
+    %{
+      id: Agent,
+      start: {Agent, :start_link, [arg]}
+    }
+  end
+
+  @doc false
+  defmacro __using__(opts) do
+    quote location: :keep do
+      @opts unquote(opts)
+
+      @doc false
+      def child_spec(arg) do
+        default = %{
+          id: __MODULE__,
+          start: {__MODULE__, :start_link, [arg]}
+        }
+
+        Supervisor.child_spec(default, @opts)
+      end
+
+      defoverridable child_spec: 1
+    end
+  end
+
   @doc """
   Starts an agent linked to the current process with the given function.
 
@@ -166,7 +210,7 @@ defmodule Agent do
       %RuntimeError{message: "oops"}
 
   """
-  @spec start_link((() -> term), GenServer.options) :: on_start
+  @spec start_link((() -> term), GenServer.options()) :: on_start
   def start_link(fun, options \\ []) when is_function(fun, 0) do
     GenServer.start_link(Agent.Server, fun, options)
   end
@@ -178,7 +222,7 @@ defmodule Agent do
   instead of an anonymous function; `fun` in `module` will be called with the
   given arguments `args` to initialize the state.
   """
-  @spec start_link(module, atom, [any], GenServer.options) :: on_start
+  @spec start_link(module, atom, [any], GenServer.options()) :: on_start
   def start_link(module, fun, args, options \\ []) do
     GenServer.start_link(Agent.Server, {module, fun, args}, options)
   end
@@ -191,11 +235,11 @@ defmodule Agent do
   ## Examples
 
       iex> {:ok, pid} = Agent.start(fn -> 42 end)
-      iex> Agent.get(pid, fn(state) -> state end)
+      iex> Agent.get(pid, fn state -> state end)
       42
 
   """
-  @spec start((() -> term), GenServer.options) :: on_start
+  @spec start((() -> term), GenServer.options()) :: on_start
   def start(fun, options \\ []) when is_function(fun, 0) do
     GenServer.start(Agent.Server, fun, options)
   end
@@ -205,7 +249,7 @@ defmodule Agent do
 
   See `start_link/4` for more information.
   """
-  @spec start(module, atom, [any], GenServer.options) :: on_start
+  @spec start(module, atom, [any], GenServer.options()) :: on_start
   def start(module, fun, args, options \\ []) do
     GenServer.start(Agent.Server, {module, fun, args}, options)
   end

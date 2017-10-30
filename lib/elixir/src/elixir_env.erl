@@ -19,10 +19,13 @@ new() ->
     lexical_tracker => nil,                %% holds the lexical tracker PID
     vars => [],                            %% a set of defined variables
     export_vars => nil,                    %% a set of variables to be exported in some constructs
-    prematch_vars => nil}.                 %% a set of variables defined before the current match
+    prematch_vars => nil,                  %% a set of variables defined before the current match
+    match_vars => warn}.                   %% handling of new variables
 
 linify({Line, Env}) ->
-  Env#{line := Line}.
+  Env#{line := Line};
+linify(#{} = Env) ->
+  Env.
 
 env_to_scope(#{file := File, context := Context}) ->
   #elixir_erl{file=File, context=Context}.

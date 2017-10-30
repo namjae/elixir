@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule ExUnit.DescribeTest do
   use ExUnit.Case, async: true
@@ -70,6 +70,23 @@ defmodule ExUnit.DescribeTest do
         end
       end
     end
+
+    test "when using the same name for two describe blocks" do
+      message =
+        ~s(describe "some tests" is already defined in ExUnit.DescribeTest.DescribeWithSameNames)
+
+      assert_raise ExUnit.DuplicateDescribeError, message, fn ->
+        defmodule DescribeWithSameNames do
+          use ExUnit.Case
+
+          describe "some tests" do
+          end
+
+          describe "some tests" do
+          end
+        end
+      end
+    end
   end
 
   describe "test names" do
@@ -82,5 +99,11 @@ defmodule ExUnit.DescribeTest do
     assert context.attribute_tag == :from_module
     assert context.setup_tag == :from_module
     assert context.test == :"test attributes from outside describe"
+  end
+
+  describe "describe block" do
+    test "sets describe_line", context do
+      assert context.describe_line == __ENV__.line - 2
+    end
   end
 end

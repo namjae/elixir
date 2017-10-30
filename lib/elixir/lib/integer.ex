@@ -29,7 +29,7 @@ defmodule Integer do
 
   """
   defmacro is_odd(integer) do
-    quote do: (unquote(integer) &&& 1) == 1
+    quote(do: (unquote(integer) &&& 1) == 1)
   end
 
   @doc """
@@ -56,7 +56,7 @@ defmodule Integer do
 
   """
   defmacro is_even(integer) do
-    quote do: (unquote(integer) &&& 1) == 0
+    quote(do: (unquote(integer) &&& 1) == 0)
   end
 
   @doc """
@@ -79,6 +79,7 @@ defmodule Integer do
   @spec mod(integer, neg_integer | pos_integer) :: integer
   def mod(dividend, divisor) do
     remainder = rem(dividend, divisor)
+
     if remainder * divisor < 0 do
       remainder + divisor
     else
@@ -110,7 +111,7 @@ defmodule Integer do
   """
   @spec floor_div(integer, neg_integer | pos_integer) :: integer
   def floor_div(dividend, divisor) do
-    if (dividend * divisor < 0) and rem(dividend, divisor) != 0 do
+    if dividend * divisor < 0 and rem(dividend, divisor) != 0 do
       div(dividend, divisor) - 1
     else
       div(dividend, divisor)
@@ -141,14 +142,11 @@ defmodule Integer do
     do_digits(integer, base, [])
   end
 
-  defp do_digits(digit, base, []) when abs(digit) < base,
-    do: [digit]
-  defp do_digits(digit, base, []) when digit == -base,
-    do: [-1, 0]
-  defp do_digits(base, base, []),
-    do: [1, 0]
-  defp do_digits(0, _base, acc),
-    do: acc
+  defp do_digits(digit, base, []) when abs(digit) < base, do: [digit]
+  defp do_digits(digit, base, []) when digit == -base, do: [-1, 0]
+  defp do_digits(base, base, []), do: [1, 0]
+  defp do_digits(0, _base, acc), do: acc
+
   defp do_digits(integer, base, acc),
     do: do_digits(div(integer, base), base, [rem(integer, base) | acc])
 
@@ -156,7 +154,7 @@ defmodule Integer do
   Returns the integer represented by the ordered `digits`.
 
   An optional `base` value may be provided representing the radix for the `digits`.
-  This one can be an integer >= 2.
+  Base has to be an integer greater or equal than `2`.
 
   ## Examples
 
@@ -170,24 +168,20 @@ defmodule Integer do
       0
 
   """
-  @spec undigits([integer], integer) :: integer
+  @spec undigits([integer], pos_integer) :: integer
   def undigits(digits, base \\ 10) when is_list(digits) and is_integer(base) and base >= 2 do
     do_undigits(digits, base, 0)
   end
 
-  defp do_undigits([], _base, 0),
-    do: 0
-  defp do_undigits([digit], base, 0) when is_integer(digit) and digit < base,
-    do: digit
-  defp do_undigits([1, 0], base, 0),
-    do: base
-  defp do_undigits([0 | tail], base, 0),
-    do: do_undigits(tail, base, 0)
+  defp do_undigits([], _base, 0), do: 0
+  defp do_undigits([digit], base, 0) when is_integer(digit) and digit < base, do: digit
+  defp do_undigits([1, 0], base, 0), do: base
+  defp do_undigits([0 | tail], base, 0), do: do_undigits(tail, base, 0)
+  defp do_undigits([], _base, acc), do: acc
 
-  defp do_undigits([], _base, acc),
-    do: acc
   defp do_undigits([digit | _], base, _) when is_integer(digit) and digit >= base,
-    do: raise ArgumentError, "invalid digit #{digit} in base #{base}"
+    do: raise(ArgumentError, "invalid digit #{digit} in base #{base}")
+
   defp do_undigits([digit | tail], base, acc) when is_integer(digit),
     do: do_undigits(tail, base, acc * base + digit)
 
@@ -235,41 +229,45 @@ defmodule Integer do
   @spec parse(binary, 2..36) :: {integer, binary} | :error
   def parse(binary, base \\ 10)
 
-  def parse(_binary, base) when not base in 2..36 do
-    raise ArgumentError, "invalid base #{inspect base}"
+  def parse(_binary, base) when base not in 2..36 do
+    raise ArgumentError, "invalid base #{inspect(base)}"
   end
 
   def parse(binary, base) do
-    case count_digits(binary, base, 0) do
-      0 -> :error
-      n ->
-        {digits, rem} = :erlang.split_binary(binary, n)
+    case count_digits(binary, base) do
+      0 ->
+        :error
+
+      count ->
+        {digits, rem} = :erlang.split_binary(binary, count)
         {:erlang.binary_to_integer(digits, base), rem}
     end
   end
 
-  digits = [{?0..?9, -?0}, {?A..?Z, 10 - ?A}, {?a..?z, 10 - ?a}]
-
-  for {chars, diff} <- digits, char <- chars do
-    digit = char + diff
-
-    defp count_digits(<<unquote(char), rest::binary>>, base, count)
-         when base > unquote(digit) do
-      count_digits(rest, base, count + 1)
-    end
-
-    defp count_digits(<<?+, unquote(char), rest::binary>>, base, 0)
-         when base > unquote(digit) do
-      count_digits(rest, base, 2)
-    end
-
-    defp count_digits(<<?-, unquote(char), rest::binary>>, base, 0)
-         when base > unquote(digit) do
-      count_digits(rest, base, 2)
+  defp count_digits(<<sign, rest::binary>>, base) when sign in '+-' do
+    case count_digits_nosign(rest, base, 1) do
+      1 -> 0
+      count -> count
     end
   end
 
-  defp count_digits(<<_::binary>>, _, count), do: count
+  defp count_digits(<<rest::binary>>, base) do
+    count_digits_nosign(rest, base, 0)
+  end
+
+  digits = [{?0..?9, -?0}, {?A..?Z, 10 - ?A}, {?a..?z, 10 - ?a}]
+
+  for {chars, diff} <- digits,
+      char <- chars do
+    digit = char + diff
+
+    defp count_digits_nosign(<<unquote(char), rest::binary>>, base, count)
+         when base > unquote(digit) do
+      count_digits_nosign(rest, base, count + 1)
+    end
+  end
+
+  defp count_digits_nosign(<<_::binary>>, _, count), do: count
 
   @doc """
   Returns a binary which corresponds to the text representation
@@ -292,7 +290,7 @@ defmodule Integer do
       "123"
 
   """
-  @spec to_string(integer) :: String.t
+  @spec to_string(integer) :: String.t()
   def to_string(integer) do
     :erlang.integer_to_binary(integer)
   end
@@ -317,7 +315,7 @@ defmodule Integer do
       "ELIXIR"
 
   """
-  @spec to_string(integer, 2..36) :: String.t
+  @spec to_string(integer, 2..36) :: String.t()
   def to_string(integer, base) do
     :erlang.integer_to_binary(integer, base)
   end
@@ -372,10 +370,10 @@ defmodule Integer do
   end
 
   @doc """
-  Returns the greatest common divisor of the two given numbers.
+  Returns the greatest common divisor of the two given integers.
 
-  The greatest common divisor (GCD) of `int1` and `int2` is the largest positive
-  integer that divides both `int1` and `int2` without leaving a remainder.
+  The greatest common divisor (GCD) of `integer1` and `integer2` is the largest positive
+  integer that divides both `integer1` and `integer2` without leaving a remainder.
 
   By convention, `gcd(0, 0)` returns `0`.
 
@@ -402,13 +400,13 @@ defmodule Integer do
   """
   @spec gcd(0, 0) :: 0
   @spec gcd(integer, integer) :: pos_integer
-  def gcd(int1, int2) when is_integer(int1) and is_integer(int2) do
-    gcd_positive(abs(int1), abs(int2))
+  def gcd(integer1, integer2) when is_integer(integer1) and is_integer(integer2) do
+    gcd_positive(abs(integer1), abs(integer2))
   end
 
-  defp gcd_positive(0, int2), do: int2
-  defp gcd_positive(int1, 0), do: int1
-  defp gcd_positive(int1, int2), do: gcd_positive(int2, rem(int1, int2))
+  defp gcd_positive(0, integer2), do: integer2
+  defp gcd_positive(integer1, 0), do: integer1
+  defp gcd_positive(integer1, integer2), do: gcd_positive(integer2, rem(integer1, integer2))
 
   # TODO: Remove by 2.0
   # (hard-deprecated in elixir_dispatch)

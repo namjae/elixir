@@ -4,7 +4,7 @@ defmodule Mix.SCM do
   behaviour required by any source code manager (SCM) used by Mix.
   """
 
-  @type opts :: Keyword.t
+  @type opts :: keyword
 
   @doc """
   Returns a boolean if the dependency can be fetched
@@ -22,7 +22,7 @@ defmodule Mix.SCM do
   so the amount of information should be concise and
   easy to spot.
   """
-  @callback format(opts) :: String.t
+  @callback format(opts) :: String.t()
 
   @doc """
   Returns a string representing the SCM. This is used
@@ -32,7 +32,7 @@ defmodule Mix.SCM do
 
   If nil is returned, it means no lock information is available.
   """
-  @callback format_lock(opts) :: String.t | nil
+  @callback format_lock(opts) :: String.t() | nil
 
   @doc """
   This behaviour function receives a keyword list of `opts`

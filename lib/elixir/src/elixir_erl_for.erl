@@ -50,11 +50,11 @@ translate_gen(_Meta, Left, Right, T, S) ->
   {TRight, SR} = elixir_erl_pass:translate(Right, S),
   {LeftArgs, LeftGuards} = elixir_utils:extract_guards(Left),
   {TLeft, SL} = elixir_erl_clauses:match(fun elixir_erl_pass:translate/2, LeftArgs,
-                                     SR#elixir_erl{extra=pin_guard, extra_guards=[]}),
+                                         SR#elixir_erl{extra=pin_guard}),
 
   TLeftGuards = elixir_erl_clauses:guards(LeftGuards, [], SL),
   ExtraGuards = [{nil, X} || X <- SL#elixir_erl.extra_guards],
-  SF = SL#elixir_erl{extra=S#elixir_erl.extra, extra_guards=nil},
+  SF = SL#elixir_erl{extra=S#elixir_erl.extra, extra_guards=[]},
 
   {TT, {TFilters, TS}} = translate_filters(T, SF),
 
@@ -145,10 +145,10 @@ build_reduce(Clauses, Expr, {nil, Ann} = Into, Acc, S) ->
   ListExpr = {cons, Ann, Expr, Acc},
   elixir_erl:remote(Ann, lists, reverse,
     [build_reduce_clause(Clauses, ListExpr, Into, Acc, S)]);
-build_reduce(Clauses, Expr, {bin, _, _} = Into, Acc, S) ->
-  {bin, Ann, Elements} = Expr,
-  BinExpr = {bin, Ann, [{bin_element, Ann, Acc, default, [bitstring]} | Elements]},
-  build_reduce_clause(Clauses, BinExpr, Into, Acc, S).
+build_reduce(Clauses, Expr, {bin, Ann, _} = Into, Acc, S) ->
+  BinExpr = {cons, Ann, Acc, Expr},
+  elixir_erl:remote(Ann, erlang, iolist_to_binary,
+    [build_reduce_clause(Clauses, BinExpr, Into, Acc, S)]).
 
 build_reduce_clause([{enum, Meta, Left, Right, Filters} | T], Expr, Arg, Acc, S) ->
   Ann = ?ann(Meta),
@@ -168,7 +168,7 @@ build_reduce_clause([{enum, Meta, Left, Right, Filters} | T], Expr, Arg, Acc, S)
   Clauses1 =
     [{clause, Ann,
       [Left, Acc], [],
-      [join_filters(Ann, Filters, True, False)]} | Clauses0],
+      [join_filters(Generated, Filters, True, False)]} | Clauses0],
 
   Args  = [Right, Arg, {'fun', Ann, {clauses, Clauses1}}],
   elixir_erl:remote(Ann, 'Elixir.Enum', reduce, Args);
@@ -192,7 +192,7 @@ build_reduce_clause([{bin, Meta, Left, Right, Filters} | T], Expr, Arg, Acc, S) 
   Clauses =
     [{clause, Ann,
       [BinMatch, Acc], [],
-      [{call, Ann, Fun, [Tail, join_filters(Ann, Filters, True, False)]}]},
+      [{call, Ann, Fun, [Tail, join_filters(Generated, Filters, True, False)]}]},
      {clause, Generated,
       [NoVarMatch, Acc], [],
       [{call, Ann, Fun, [Tail, False]}]},

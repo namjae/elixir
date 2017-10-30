@@ -12,18 +12,13 @@
 warn(none, File, Warning) ->
   warn(0, File, Warning);
 warn(Line, File, Warning) when is_integer(Line), is_binary(File) ->
-  warn([Warning, "\n  ", file_format(Line, File), $\n]).
+  send_warning(File, Line, Warning),
+  print_warning([Warning, "\n  ", file_format(Line, File), $\n]).
 
 -spec warn(unicode:chardata()) -> ok.
 warn(Message) ->
-  CompilerPid = get(elixir_compiler_pid),
-  if
-    CompilerPid =/= undefined ->
-      elixir_code_server:cast({register_warning, CompilerPid});
-    true -> ok
-  end,
-  io:put_chars(standard_error, [warning_prefix(), Message, $\n]),
-  ok.
+  send_warning(nil, nil, Message),
+  print_warning(Message).
 
 warning_prefix() ->
   case application:get_env(elixir, ansi_enabled) of
@@ -78,21 +73,17 @@ parse_error(Line, File, <<"syntax error before: ">>, <<"eol">>) ->
 parse_error(Line, File, <<"syntax error before: ">>, <<"'end'">>) ->
   raise(Line, File, 'Elixir.SyntaxError', <<"unexpected token: end">>);
 
+%% TODO: Remove workarounds for sigils, aliases, binaries and interpolation.
+
 %% Produce a human-readable message for errors before a sigil
 parse_error(Line, File, <<"syntax error before: ">>, <<"{sigil,", _Rest/binary>> = Full) ->
-  {sigil, _, Sigil, [Content | _], _} = parse_erl_term(Full),
+  {sigil, _, Sigil, [Content | _], _, _} = parse_erl_term(Full),
   Content2 = case is_binary(Content) of
     true -> Content;
     false -> <<>>
   end,
   Message = <<"syntax error before: sigil \~", Sigil, " starting with content '", Content2/binary, "'">>,
   raise(Line, File, 'Elixir.SyntaxError', Message);
-
-%% Aliases are wrapped in ['']
-parse_error(Line, File, Error, <<"['", _/binary>> = Full) when is_binary(Error) ->
-  [AliasAtom] = parse_erl_term(Full),
-  Alias = atom_to_binary(AliasAtom, utf8),
-  raise(Line, File, 'Elixir.SyntaxError', <<Error/binary, Alias/binary>>);
 
 %% Binaries (and interpolation) are wrapped in [<<...>>]
 parse_error(Line, File, Error, <<"[", _/binary>> = Full) when is_binary(Error) ->
@@ -129,6 +120,20 @@ parse_erl_term(Term) ->
 
 %% Helpers
 
+print_warning(Message) ->
+  io:put_chars(standard_error, [warning_prefix(), Message, $\n]),
+  ok.
+
+send_warning(File, Line, Message) ->
+  CompilerPid = get(elixir_compiler_pid),
+  if
+    CompilerPid =/= undefined ->
+      CompilerPid ! {warning, File, Line, Message},
+      elixir_code_server:cast({register_warning, CompilerPid});
+    true -> ok
+  end,
+  ok.
+
 file_format(0, File) ->
   io_lib:format("~ts", [elixir_utils:relative_to_cwd(File)]);
 
@@ -136,7 +141,7 @@ file_format(Line, File) ->
   io_lib:format("~ts:~w", [elixir_utils:relative_to_cwd(File), Line]).
 
 meta_location(Meta, File) ->
-  case elixir_utils:meta_location(Meta) of
+  case elixir_utils:meta_keep(Meta) of
     {F, L} -> {F, L};
     nil    -> {File, ?line(Meta)}
   end.
@@ -146,11 +151,6 @@ raise(none, File, Kind, Message) ->
 raise({Line, _, _}, File, Kind, Message) when is_integer(Line) ->
   raise(Line, File, Kind, Message);
 raise(Line, File, Kind, Message) when is_integer(Line), is_binary(File), is_binary(Message) ->
-  try
-    throw(ok)
-  catch
-    ok -> ok
-  end,
-  Stacktrace = erlang:get_stacktrace(),
+  Stacktrace = try throw(ok) catch ok -> erlang:get_stacktrace() end,
   Exception = Kind:exception([{description, Message}, {file, File}, {line, Line}]),
   erlang:raise(error, Exception, tl(Stacktrace)).

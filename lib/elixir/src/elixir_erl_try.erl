@@ -23,19 +23,21 @@ each_clause({'catch', Meta, Raw, Expr}, S) ->
 
   Condition = [{'{}', Meta, Final}],
   {TC, TS} = elixir_erl_clauses:clause(Meta, fun elixir_erl_pass:translate_args/2,
-                                   Condition, Expr, Guards, S),
+                                       Condition, Expr, Guards, S),
   {[TC], TS};
 
 each_clause({rescue, Meta, [{in, _, [Left, Right]}], Expr}, S) ->
-  {VarName, _, CS} = elixir_erl_var:build('_', S),
-  Var = {VarName, Meta, nil},
-  {Parts, Safe, FS} = rescue_guards(Meta, Var, Right, CS),
-  Body = rescue_clause_body(Left, Expr, Safe, Var, Meta),
+  {TempName, _, CS} = elixir_erl_var:build('_', S),
+  TempVar = {TempName, Meta, ?var_context},
+  {Parts, Safe, FS} = rescue_guards(Meta, TempVar, Right, CS),
+  Body = rescue_clause_body(Left, Expr, Safe, TempVar, Meta),
   build_rescue(Meta, Parts, Body, FS);
 
-each_clause({rescue, Meta, [{VarName, _, Atom} = Var], Expr}, S) when is_atom(VarName), is_atom(Atom) ->
-  Body = rescue_clause_body(Var, Expr, false, Var, Meta),
-  build_rescue(Meta, _Parts = [{Var, []}], Body, S).
+each_clause({rescue, Meta, [{VarName, _, Context} = Left], Expr}, S) when is_atom(VarName), is_atom(Context) ->
+  {TempName, _, CS} = elixir_erl_var:build('_', S),
+  TempVar = {TempName, Meta, ?var_context},
+  Body = rescue_clause_body(Left, Expr, false, TempVar, Meta),
+  build_rescue(Meta, [{TempVar, []}], Body, CS).
 
 rescue_clause_body({'_', _, Atom}, Expr, _Safe, _Var, _Meta) when is_atom(Atom) ->
   Expr;
@@ -54,7 +56,7 @@ build_rescue(Meta, Parts, Body, S) ->
 
   {{clause, Line, TMatches, _, TBody}, TS} =
     elixir_erl_clauses:clause(Meta, fun elixir_erl_pass:translate_args/2,
-                          Matches, Body, [], S),
+                              Matches, Body, [], S),
 
   TClauses =
     [begin
@@ -74,7 +76,7 @@ rescue_guards(Meta, Var, Aliases, S) ->
       [] -> {[], S};
       _  ->
         {VarName, _, CS} = elixir_erl_var:build('_', S),
-        StructVar = {VarName, Meta, nil},
+        StructVar = {VarName, Meta, 'Elixir'},
         Map = {'%{}', Meta, [{'__struct__', StructVar}, {'__exception__', true}]},
         Match = {'=', Meta, [Map, Var]},
         Guards = [{erl(Meta, '=='), Meta, [StructVar, Mod]} || Mod <- Elixir],

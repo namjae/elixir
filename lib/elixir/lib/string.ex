@@ -7,7 +7,7 @@ defmodule String do
   ## Codepoints and grapheme cluster
 
   The functions in this module act according to the Unicode
-  Standard, version 9.0.0.
+  Standard, version 10.0.0.
 
   As per the standard, a codepoint is a single Unicode Character,
   which may be represented by one or more bytes.
@@ -54,6 +54,9 @@ defmodule String do
   Standard Annex #29](http://www.unicode.org/reports/tr29/).
   The current Elixir version implements Extended Grapheme Cluster
   algorithm.
+
+  For converting a binary to a different encoding and for Unicode
+  normalization mechanisms, see Erlang's `:unicode` module.
 
   ## String and binary operations
 
@@ -203,44 +206,56 @@ defmodule String do
   @type t :: binary
   @type codepoint :: t
   @type grapheme :: t
-  @type pattern :: t | [t] | :binary.cp
+  @type pattern :: t | [t] | :binary.cp()
 
   @doc """
   Checks if a string contains only printable characters.
+
+  Takes an optional `limit` as a second argument. `printable?/2` only
+  checks the printability of the string up to the `limit`.
 
   ## Examples
 
       iex> String.printable?("abc")
       true
 
+      iex> String.printable?("abc" <> <<0>>)
+      false
+
+      iex> String.printable?("abc" <> <<0>>, 2)
+      true
+
   """
   @spec printable?(t) :: boolean
-  def printable?(string)
+  @spec printable?(t, non_neg_integer | :infinity) :: boolean
+  def printable?(string, counter \\ :infinity)
+
+  def printable?(<<>>, _), do: true
+  def printable?(_, 0), do: true
 
   for char <- 0x20..0x7E do
-    def printable?(<<unquote(char), rest::binary>>) do
-      printable?(rest)
+    def printable?(<<unquote(char), rest::binary>>, counter) do
+      printable?(rest, decrement(counter))
     end
   end
-  def printable?(<<?\n, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\r, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\t, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\v, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\b, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\f, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\e, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\d, rest::binary>>), do: printable?(rest)
-  def printable?(<<?\a, rest::binary>>), do: printable?(rest)
 
-  def printable?(<<char::utf8, rest::binary>>)
+  for char <- '\n\r\t\v\b\f\e\d\a' do
+    def printable?(<<unquote(char), rest::binary>>, counter) do
+      printable?(rest, decrement(counter))
+    end
+  end
+
+  def printable?(<<char::utf8, rest::binary>>, counter)
       when char in 0xA0..0xD7FF
       when char in 0xE000..0xFFFD
       when char in 0x10000..0x10FFFF do
-    printable?(rest)
+    printable?(rest, decrement(counter))
   end
 
-  def printable?(<<>>), do: true
-  def printable?(binary) when is_binary(binary), do: false
+  def printable?(binary, _) when is_binary(binary), do: false
+
+  defp decrement(:infinity), do: :infinity
+  defp decrement(counter), do: counter - 1
 
   @doc ~S"""
   Divides a string into substrings at each Unicode whitespace
@@ -270,19 +285,29 @@ defmodule String do
   Divides a string into substrings based on a pattern.
 
   Returns a list of these substrings. The pattern can
-  be a string, a list of strings or a regular expression.
+  be a string, a list of strings, or a regular expression.
 
   The string is split into as many parts as possible by
-  default, but can be controlled via the `parts: pos_integer` option.
-  If you pass `parts: :infinity`, it will return all possible parts
-  (`:infinity` is the default).
+  default, but can be controlled via the `:parts` option.
 
   Empty strings are only removed from the result if the
-  `trim` option is set to `true` (default is `false`).
+  `:trim` option is set to `true`.
 
   When the pattern used is a regular expression, the string is
-  split using `Regex.split/3`. In that case this function accepts
-  additional options which are documented in `Regex.split/3`.
+  split using `Regex.split/3`.
+
+  ## Options
+
+    * `:parts` (positive integer or `:infinity`) - the string
+      is split into at most as many parts as this options specifies.
+      If `:infinity`, the string will be split into all possible
+      parts. Defaults to `:infinity`.
+
+    * `:trim` (boolean) - if `true`, empty strings are removed from
+      the resulting list.
+
+  This function also accepts all options accepted by `Regex.split/3`
+  if `pattern` is a regular expression.
 
   ## Examples
 
@@ -318,9 +343,6 @@ defmodule String do
 
   Splitting on empty patterns returns graphemes:
 
-      iex> String.split("abc", ~r{})
-      ["a", "b", "c", ""]
-
       iex> String.split("abc", "")
       ["a", "b", "c", ""]
 
@@ -337,8 +359,7 @@ defmodule String do
       ["1", "2", "3", "4"]
 
   """
-  @spec split(t, pattern | Regex.t) :: [t]
-  @spec split(t, pattern | Regex.t, Keyword.t) :: [t]
+  @spec split(t, pattern | Regex.t(), keyword) :: [t]
   def split(string, pattern, options \\ [])
 
   def split(string, %Regex{} = pattern, options) when is_binary(string) do
@@ -350,21 +371,22 @@ defmodule String do
   end
 
   def split(string, pattern, options) when is_binary(string) do
-    parts   = Keyword.get(options, :parts, :infinity)
-    trim    = Keyword.get(options, :trim, false)
+    parts = Keyword.get(options, :parts, :infinity)
+    trim = Keyword.get(options, :trim, false)
     pattern = maybe_compile_pattern(pattern)
     split_each(string, pattern, trim, parts_to_index(parts))
   end
 
-  defp parts_to_index(:infinity),                      do: 0
+  defp parts_to_index(:infinity), do: 0
   defp parts_to_index(n) when is_integer(n) and n > 0, do: n
 
   defp split_each("", _pattern, true, 1), do: []
   defp split_each(string, _pattern, _trim, 1) when is_binary(string), do: [string]
+
   defp split_each(string, pattern, trim, count) do
     case do_splitter(string, pattern, trim) do
       {h, t} -> [h | split_each(t, pattern, trim, count - 1)]
-      nil    -> []
+      nil -> []
     end
   end
 
@@ -395,31 +417,26 @@ defmodule String do
       ["a", "b", "c", "d"]
 
   """
-  @spec splitter(t, pattern, Keyword.t) :: Enumerable.t
+  @spec splitter(t, pattern, keyword) :: Enumerable.t()
   def splitter(string, pattern, options \\ []) do
     pattern = maybe_compile_pattern(pattern)
-    trim    = Keyword.get(options, :trim, false)
+    trim = Keyword.get(options, :trim, false)
     Stream.unfold(string, &do_splitter(&1, pattern, trim))
   end
 
   defp do_splitter(:nomatch, _pattern, _), do: nil
-  defp do_splitter("", _pattern, true),    do: nil
-  defp do_splitter("", _pattern, false),   do: {"", :nomatch}
+  defp do_splitter("", _pattern, true), do: nil
+  defp do_splitter("", _pattern, false), do: {"", :nomatch}
 
   defp do_splitter(bin, "", _trim) do
     next_grapheme(bin)
   end
 
   defp do_splitter(bin, pattern, trim) do
-    case :binary.match(bin, pattern) do
-      {0, length} when trim ->
-        do_splitter(:binary.part(bin, length, byte_size(bin) - length), pattern, trim)
-      {pos, length} ->
-        final = pos + length
-        {:binary.part(bin, 0, pos),
-         :binary.part(bin, final, byte_size(bin) - final)}
-      :nomatch ->
-        {bin, :nomatch}
+    case :binary.split(bin, pattern) do
+      ["", second] when trim -> do_splitter(second, pattern, trim)
+      [first, second] -> {first, second}
+      [first] -> {first, :nomatch}
     end
   end
 
@@ -466,8 +483,9 @@ defmodule String do
 
   def split_at(string, position) when is_integer(position) and position < 0 do
     position = length(string) + position
+
     case position >= 0 do
-      true  -> do_split_at(string, position)
+      true -> do_split_at(string, position)
       false -> {"", string}
     end
   end
@@ -647,17 +665,26 @@ defmodule String do
     replace_leading(string, match, replacement, prefix_size, suffix_size, 0)
   end
 
-  defp replace_leading(string, match, replacement, prefix_size, suffix_size, acc) when suffix_size >= 0 do
+  defp replace_leading(string, match, replacement, prefix_size, suffix_size, acc)
+       when suffix_size >= 0 do
     case string do
-      <<prefix::size(prefix_size)-binary, suffix::size(suffix_size)-binary>> when prefix == match ->
-        replace_leading(suffix, match, replacement, prefix_size, suffix_size - prefix_size, acc + 1)
+      <<prefix::size(prefix_size)-binary, suffix::binary>> when prefix == match ->
+        replace_leading(
+          suffix,
+          match,
+          replacement,
+          prefix_size,
+          suffix_size - prefix_size,
+          acc + 1
+        )
+
       _ ->
-        duplicate(replacement, acc) <> string
+        prepend_unless_empty(duplicate(replacement, acc), string)
     end
   end
 
   defp replace_leading(string, _match, replacement, _prefix_size, _suffix_size, acc) do
-    duplicate(replacement, acc) <> string
+    prepend_unless_empty(duplicate(replacement, acc), string)
   end
 
   @doc """
@@ -695,17 +722,26 @@ defmodule String do
     replace_trailing(string, match, replacement, prefix_size, suffix_size, 0)
   end
 
-  defp replace_trailing(string, match, replacement, prefix_size, suffix_size, acc) when prefix_size >= 0 do
+  defp replace_trailing(string, match, replacement, prefix_size, suffix_size, acc)
+       when prefix_size >= 0 do
     case string do
-      <<prefix::size(prefix_size)-binary, suffix::size(suffix_size)-binary>> when suffix == match ->
-        replace_trailing(prefix, match, replacement, prefix_size - suffix_size, suffix_size, acc + 1)
+      <<prefix::size(prefix_size)-binary, suffix::binary>> when suffix == match ->
+        replace_trailing(
+          prefix,
+          match,
+          replacement,
+          prefix_size - suffix_size,
+          suffix_size,
+          acc + 1
+        )
+
       _ ->
-        string <> duplicate(replacement, acc)
+        append_unless_empty(string, duplicate(replacement, acc))
     end
   end
 
   defp replace_trailing(string, _match, replacement, _prefix_size, _suffix_size, acc) do
-    string <> duplicate(replacement, acc)
+    append_unless_empty(string, duplicate(replacement, acc))
   end
 
   @doc """
@@ -738,11 +774,11 @@ defmodule String do
   def replace_prefix(string, match, replacement)
       when is_binary(string) and is_binary(match) and is_binary(replacement) do
     prefix_size = byte_size(match)
-    suffix_size = byte_size(string) - prefix_size
 
     case string do
-      <<prefix::size(prefix_size)-binary, suffix::size(suffix_size)-binary>> when prefix == match ->
-        replacement <> suffix
+      <<prefix::size(prefix_size)-binary, suffix::binary>> when prefix == match ->
+        prepend_unless_empty(replacement, suffix)
+
       _ ->
         string
     end
@@ -781,12 +817,21 @@ defmodule String do
     prefix_size = byte_size(string) - suffix_size
 
     case string do
-      <<prefix::size(prefix_size)-binary, suffix::size(suffix_size)-binary>> when suffix == match ->
-        prefix <> replacement
+      <<prefix::size(prefix_size)-binary, suffix::binary>> when suffix == match ->
+        append_unless_empty(prefix, replacement)
+
       _ ->
         string
     end
   end
+
+  @compile {:inline, prepend_unless_empty: 2, append_unless_empty: 2}
+
+  defp prepend_unless_empty("", suffix), do: suffix
+  defp prepend_unless_empty(prefix, suffix), do: prefix <> suffix
+
+  defp append_unless_empty(prefix, ""), do: prefix
+  defp append_unless_empty(prefix, suffix), do: prefix <> suffix
 
   @doc false
   # TODO: Remove by 2.0
@@ -994,15 +1039,17 @@ defmodule String do
 
   defp pad(kind, string, count, padding) do
     string_len = length(string)
+
     if string_len >= count do
       string
     else
       filler = build_filler(count - string_len, padding, padding, 0, [])
+
       case kind do
         :leading -> [filler | string]
         :trailing -> [string | filler]
       end
-      |> IO.iodata_to_binary
+      |> IO.iodata_to_binary()
     end
   end
 
@@ -1012,15 +1059,17 @@ defmodule String do
     rem_filler =
       rem(count, size)
       |> build_filler(source, source, 0, [])
+
     filler =
       filler
-      |> IO.iodata_to_binary
+      |> IO.iodata_to_binary()
       |> duplicate(div(count, size) + 1)
+
     [filler | rem_filler]
   end
 
   defp build_filler(count, source, [elem | rest], size, filler)
-      when is_binary(elem) do
+       when is_binary(elem) do
     build_filler(count - 1, source, rest, size + 1, [filler | elem])
   end
 
@@ -1097,9 +1146,31 @@ defmodule String do
       iex> String.replace("a,b,c", ",", "[]", insert_replaced: [1, 1])
       "a[,,]b[,,]c"
 
+  When an empty string is provided as a `pattern`, the function will treat it as
+  an implicit empty string between each grapheme and the string will be
+  interspersed. If an empty string is provided as `replacement` the `subject`
+  will be returned:
+
+      iex> String.replace("ELIXIR", "", ".")
+      ".E.L.I.X.I.R."
+
+      iex> String.replace("ELIXIR", "", "")
+      "ELIXIR"
+
   """
-  @spec replace(t, pattern | Regex.t, t, Keyword.t) :: t
-  def replace(subject, pattern, replacement, options \\ []) when is_binary(replacement) do
+  @spec replace(t, pattern | Regex.t(), t, keyword) :: t
+  def replace(subject, pattern, replacement, options \\ [])
+  def replace(subject, "", "", _), do: subject
+
+  def replace(subject, "", replacement, options) do
+    if Keyword.get(options, :global, true) do
+      IO.iodata_to_binary([replacement | intersperse(subject, replacement)])
+    else
+      replacement <> subject
+    end
+  end
+
+  def replace(subject, pattern, replacement, options) when is_binary(replacement) do
     if Regex.regex?(pattern) do
       Regex.replace(pattern, subject, replacement, global: options[:global])
     else
@@ -1108,11 +1179,15 @@ defmodule String do
     end
   end
 
+  defp intersperse(subject, replacement) do
+    case next_grapheme(subject) do
+      {current, rest} -> [current, replacement | intersperse(rest, replacement)]
+      nil -> []
+    end
+  end
+
   defp translate_replace_options(options) do
-    global =
-      if Keyword.get(options, :global) != false,
-        do: [:global],
-        else: []
+    global = if Keyword.get(options, :global) != false, do: [:global], else: []
 
     insert =
       if insert = Keyword.get(options, :insert_replaced),
@@ -1163,8 +1238,12 @@ defmodule String do
 
   defp do_reverse(nil, acc), do: IO.iodata_to_binary(acc)
 
+  @compile {:inline, duplicate: 2}
+
   @doc """
   Returns a string `subject` duplicated `n` times.
+
+  Inlined by the compiler.
 
   ## Examples
 
@@ -1179,7 +1258,7 @@ defmodule String do
 
   """
   @spec duplicate(t, non_neg_integer) :: t
-  def duplicate(subject, n) when is_integer(n) and n >= 0 do
+  def duplicate(subject, n) do
     :binary.copy(subject, n)
   end
 
@@ -1245,22 +1324,15 @@ defmodule String do
       iex> String.valid?(<<0xFFFF :: 16>>)
       false
 
+      iex> String.valid?(<<0xEF, 0xB7, 0x90>>)
+      true
+
       iex> String.valid?("asd" <> <<0xFFFF :: 16>>)
       false
 
   """
   @spec valid?(t) :: boolean
   def valid?(string)
-
-  noncharacters = Enum.to_list(0xFDD0..0xFDEF) ++
-    [0x0FFFE, 0x0FFFF, 0x1FFFE, 0x1FFFF, 0x2FFFE, 0x2FFFF,
-     0x3FFFE, 0x3FFFF, 0x4FFFE, 0x4FFFF, 0x5FFFE, 0x5FFFF,
-     0x6FFFE, 0x6FFFF, 0x7FFFE, 0x7FFFF, 0x8FFFE, 0x8FFFF,
-     0x9FFFE, 0x9FFFF, 0x10FFFE, 0x10FFFF]
-
-  for noncharacter <- noncharacters do
-    def valid?(<<unquote(noncharacter)::utf8, _::binary>>), do: false
-  end
 
   def valid?(<<_::utf8, t::binary>>), do: valid?(t)
   def valid?(<<>>), do: true
@@ -1297,8 +1369,8 @@ defmodule String do
       iex> String.chunk(<<?a, ?b, ?c, 0>>, :valid)
       ["abc\0"]
 
-      iex> String.chunk(<<?a, ?b, ?c, 0, 0x0FFFF::utf8>>, :valid)
-      ["abc\0", <<0x0FFFF::utf8>>]
+      iex> String.chunk(<<?a, ?b, ?c, 0, 0xFFFF::utf16>>, :valid)
+      ["abc\0", <<0xFFFF::utf16>>]
 
       iex> String.chunk(<<?a, ?b, ?c, 0, 0x0FFFF::utf8>>, :printable)
       ["abc", <<0, 0x0FFFF::utf8>>]
@@ -1324,6 +1396,7 @@ defmodule String do
 
   defp do_chunk(string, acc, chunk, flag, pred_fn) do
     {cp, rest} = next_codepoint(string)
+
     if pred_fn.(cp) != flag do
       do_chunk(rest, [chunk | acc], cp, not flag, pred_fn)
     else
@@ -1377,7 +1450,7 @@ defmodule String do
   def next_grapheme(binary) do
     case next_grapheme_size(binary) do
       {size, rest} -> {:binary.part(binary, 0, size), rest}
-      nil          -> nil
+      nil -> nil
     end
   end
 
@@ -1487,15 +1560,16 @@ defmodule String do
 
   def at(string, position) when is_integer(position) and position < 0 do
     position = length(string) + position
+
     case position >= 0 do
-      true  -> do_at(string, position)
+      true -> do_at(string, position)
       false -> nil
     end
   end
 
   defp do_at(string, position) do
     case String.Unicode.split_at(string, position) do
-      {_, nil}  -> nil
+      {_, nil} -> nil
       {_, rest} -> first(rest)
     end
   end
@@ -1545,7 +1619,9 @@ defmodule String do
 
   def slice(string, start, len) when start >= 0 and len >= 0 do
     case String.Unicode.split_at(string, start) do
-      {_, nil} -> ""
+      {_, nil} ->
+        ""
+
       {start_bytes, rest} ->
         {len_bytes, _} = String.Unicode.split_at(rest, len)
         binary_part(string, start_bytes, len_bytes)
@@ -1554,8 +1630,9 @@ defmodule String do
 
   def slice(string, start, len) when start < 0 and len >= 0 do
     start = length(string) + start
+
     case start >= 0 do
-      true  -> slice(string, start, len)
+      true -> slice(string, start, len)
       false -> ""
     end
   end
@@ -1608,7 +1685,7 @@ defmodule String do
       ""
 
   """
-  @spec slice(t, Range.t) :: t
+  @spec slice(t, Range.t()) :: t
 
   def slice(string, range)
 
@@ -1618,6 +1695,7 @@ defmodule String do
     case String.Unicode.split_at(string, first) do
       {_, nil} ->
         ""
+
       {start_bytes, _} ->
         binary_part(string, start_bytes, byte_size(string) - start_bytes)
     end
@@ -1635,12 +1713,12 @@ defmodule String do
     {bytes, length} = do_acc_bytes(next_grapheme_size(string), [], 0)
 
     first = add_if_negative(first, length)
-    last  = add_if_negative(last, length)
+    last = add_if_negative(last, length)
 
     if first < 0 or first > last or first > length do
       ""
     else
-      last  = min(last + 1, length)
+      last = min(last + 1, length)
       bytes = Enum.drop(bytes, length - last)
       first = last - first
       {length_bytes, start_bytes} = Enum.split(bytes, first)
@@ -1733,7 +1811,7 @@ defmodule String do
     string_size = byte_size(string)
     suffix_size = byte_size(suffix)
     scope = {string_size - suffix_size, suffix_size}
-    (suffix_size <= string_size) and (:nomatch != :binary.match(string, suffix, [scope: scope]))
+    suffix_size <= string_size and :nomatch != :binary.match(string, suffix, scope: scope)
   end
 
   @doc """
@@ -1748,7 +1826,7 @@ defmodule String do
       false
 
   """
-  @spec match?(t, Regex.t) :: boolean
+  @spec match?(t, Regex.t()) :: boolean
   def match?(string, regex) do
     Regex.match?(regex, string)
   end
@@ -1826,8 +1904,16 @@ defmodule String do
   @doc """
   Converts a string to an atom.
 
-  Currently Elixir does not support the conversion of strings
-  that contain Unicode codepoints greater than 0xFF.
+  Warning: this function creates atoms dynamically and atoms are
+  not garbage collected. Therefore, `string` should not be an
+  untrusted value, such as input received from a socket or during
+  a web request. Consider using `to_existing_atom/1` instead.
+
+  By default, the maximum number of atoms is `1_048_576`. This limit
+  can be raised or lowered using the VM option `+t`.
+
+  The maximum atom size is of 255 characters. Prior to OTP 20,
+  only latin1 characters are allowed.
 
   Inlined by the compiler.
 
@@ -1837,7 +1923,7 @@ defmodule String do
       :my_atom
 
   """
-  @spec to_atom(String.t) :: atom
+  @spec to_atom(String.t()) :: atom
   def to_atom(string) do
     :erlang.binary_to_atom(string, :utf8)
   end
@@ -1845,8 +1931,8 @@ defmodule String do
   @doc """
   Converts a string to an existing atom.
 
-  Currently Elixir does not support the conversion of strings
-  that contain Unicode codepoints greater than 0xFF.
+  The maximum atom size is of 255 characters. Prior to OTP 20,
+  only latin1 characters are allowed.
 
   Inlined by the compiler.
 
@@ -1860,7 +1946,7 @@ defmodule String do
       ** (ArgumentError) argument error
 
   """
-  @spec to_existing_atom(String.t) :: atom
+  @spec to_existing_atom(String.t()) :: atom
   def to_existing_atom(string) do
     :erlang.binary_to_existing_atom(string, :utf8)
   end
@@ -1876,7 +1962,7 @@ defmodule String do
       123
 
   """
-  @spec to_integer(String.t) :: integer
+  @spec to_integer(String.t()) :: integer
   def to_integer(string) do
     :erlang.binary_to_integer(string)
   end
@@ -1892,7 +1978,7 @@ defmodule String do
       1023
 
   """
-  @spec to_integer(String.t, 2..36) :: integer
+  @spec to_integer(String.t(), 2..36) :: integer
   def to_integer(string, base) do
     :erlang.binary_to_integer(string, base)
   end
@@ -1918,7 +2004,7 @@ defmodule String do
       #=> ** (ArgumentError) argument error
 
   """
-  @spec to_float(String.t) :: float
+  @spec to_float(String.t()) :: float
   def to_float(string) do
     :erlang.binary_to_float(string)
   end
@@ -1950,11 +2036,11 @@ defmodule String do
     {chars2, len2} = chars_and_length(string2)
 
     case match(chars1, len1, chars2, len2) do
-      {0, _trans} -> 0.0
+      {0, _trans} ->
+        0.0
+
       {comm, trans} ->
-        ((comm / len1) +
-         (comm / len2) +
-         ((comm - trans) / comm)) / 3
+        (comm / len1 + comm / len2 + (comm - trans) / comm) / 3
     end
   end
 
@@ -1989,7 +2075,9 @@ defmodule String do
 
   defp submatch(char, chars, {pre, _} = range, state, idx) do
     case detect(char, chars, range) do
-      nil -> {chars, state}
+      nil ->
+        {chars, state}
+
       {subidx, chars} ->
         {chars, proceed(state, idx - pre + subidx)}
     end
@@ -2000,10 +2088,9 @@ defmodule String do
   end
 
   defp detect(_char, _chars, 0, _idx, _acc), do: nil
-  defp detect(_char, [], _lim, _idx, _acc),  do: nil
+  defp detect(_char, [], _lim, _idx, _acc), do: nil
 
-  defp detect(char, [char | rest], _lim, idx, acc),
-    do: {idx, Enum.reverse(acc, [nil | rest])}
+  defp detect(char, [char | rest], _lim, idx, acc), do: {idx, Enum.reverse(acc, [nil | rest])}
 
   defp detect(char, [other | rest], lim, idx, acc),
     do: detect(char, rest, lim - 1, idx + 1, [other | acc])
@@ -2031,10 +2118,9 @@ defmodule String do
   """
   @spec myers_difference(t, t) :: [{:eq | :ins | :del, t}] | nil
   def myers_difference(string1, string2) do
-    List.myers_difference(graphemes(string1), graphemes(string2))
-    |> Enum.map(fn {kind, chars} ->
-      {kind, IO.iodata_to_binary(chars)}
-    end)
+    graphemes(string1)
+    |> List.myers_difference(graphemes(string2))
+    |> Enum.map(fn {kind, chars} -> {kind, IO.iodata_to_binary(chars)} end)
   end
 
   # TODO: Remove by 2.0

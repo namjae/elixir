@@ -116,7 +116,7 @@ defmodule TestOneOfEach do
   end
 
   test "24. exception raised while running test" do
-    assert blows_up
+    assert blows_up()
   end
 
   test "25. error due to exit" do
@@ -153,6 +153,10 @@ defmodule TestOneOfEach do
     require Logger
     Logger.debug "this will be logged"
     flunk "oops"
+  end
+
+  test "29. function clause error" do
+    Access.fetch(:foo, :bar)
   end
 
   defp blows_up do

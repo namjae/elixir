@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule Kernel.LexicalTrackerTest do
   use ExUnit.Case, async: true
@@ -31,32 +31,79 @@ defmodule Kernel.LexicalTrackerTest do
     assert D.remote_references(config[:pid]) == {[], [String]}
 
     D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
+
     assert D.remote_dispatches(config[:pid]) ==
-      {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+             {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+
     assert D.remote_references(config[:pid]) == {[String], []}
 
     D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
+
     assert D.remote_dispatches(config[:pid]) ==
-      {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+             {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+
     assert D.remote_references(config[:pid]) == {[String], []}
 
     D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
+
     assert D.remote_dispatches(config[:pid]) ==
-      {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [2, 1]}}}
+             {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [2, 1]}}}
+
     assert D.remote_references(config[:pid]) == {[String], []}
+  end
+
+  test "can add remote dispatches for external files", config do
+    D.set_file(config[:pid], "lib/foo.ex")
+    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
+
+    assert D.remote_dispatches(config[:pid]) ==
+             {%{}, %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}}
+
+    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
+
+    assert D.remote_dispatches(config[:pid]) ==
+             {
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}
+             }
+
+    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
+
+    assert D.remote_dispatches(config[:pid]) ==
+             {
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}
+             }
+
+    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
+
+    assert D.remote_dispatches(config[:pid]) ==
+             {
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 2}, {"lib/foo.ex", 1}]}}
+             }
+
+    D.reset_file(config[:pid])
+    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
+
+    assert D.remote_dispatches(config[:pid]) ==
+             {
+               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
+               %{String => %{{:upcase, 1} => [2, {"lib/foo.ex", 2}, {"lib/foo.ex", 1}]}}
+             }
   end
 
   test "can add module imports", config do
     D.add_import(config[:pid], String, [], 1, true)
     D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
     assert D.remote_references(config[:pid]) == {[String], []}
-    assert D.remote_dispatches(config[:pid]) ==
-      {%{String => %{{:upcase, 1} => [1]}}, %{}}
+    assert D.remote_dispatches(config[:pid]) == {%{String => %{{:upcase, 1} => [1]}}, %{}}
 
     D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
     assert D.remote_references(config[:pid]) == {[String], []}
+
     assert D.remote_dispatches(config[:pid]) ==
-      {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+             {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
   end
 
   test "can add module with {function, arity} imports", config do
@@ -217,6 +264,37 @@ defmodule Kernel.LexicalTrackerTest do
     assert {17, Remote, :func, 0} in runtime_remote_calls
     assert {18, :erlang, :==, 2} in runtime_remote_calls
     assert {28, :erlang, :is_tuple, 1} in runtime_remote_calls
+  end
+
+  test "remote dispatches with external source" do
+    {{compile_remote_calls, runtime_remote_calls}, []} =
+      Code.eval_string(
+        """
+        defmodule RemoteDispatchesWithExternalSource do
+          def foo do
+            String.upcase("foo")
+          end
+
+          @file "lib/bar.ex"
+          def bar do
+            String.upcase("bar")
+          end
+
+          String.upcase("foo")
+
+          Kernel.LexicalTracker.remote_dispatches(__ENV__.module)
+        end |> elem(3)
+        """,
+        [],
+        file: "lib/remote_dispatches.ex"
+      )
+
+    runtime_remote_calls = unroll_dispatches(runtime_remote_calls)
+    assert {3, String, :upcase, 1} in runtime_remote_calls
+    assert {{"lib/bar.ex", 8}, String, :upcase, 1} in runtime_remote_calls
+
+    compile_remote_calls = unroll_dispatches(compile_remote_calls)
+    assert {11, String, :upcase, 1} in compile_remote_calls
   end
 
   defp unroll_dispatches(dispatches) do

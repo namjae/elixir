@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Compile.Elixir do
-  use Mix.Task
+  use Mix.Task.Compiler
 
   @recursive true
   @manifest ".compile.elixir"
@@ -24,7 +24,8 @@ defmodule Mix.Tasks.Compile.Elixir do
     * `--warnings-as-errors` - treats warnings in the current project as errors and
       return a non-zero exit code
     * `--long-compilation-threshold N` - sets the "long compilation" threshold
-      (in seconds) to `N` (see the docs for `Kernel.ParallelCompiler.files/2`)
+      (in seconds) to `N` (see the docs for `Kernel.ParallelCompiler.compile/2`)
+    * `--all-warnings` - prints warnings even from files that do not need to be recompiled
 
   ## Configuration
 
@@ -39,47 +40,50 @@ defmodule Mix.Tasks.Compile.Elixir do
 
   """
 
-  @switches [force: :boolean, docs: :boolean, warnings_as_errors: :boolean,
-             ignore_module_conflict: :boolean, debug_info: :boolean,
-             verbose: :boolean, long_compilation_threshold: :integer]
+  @switches [
+    force: :boolean,
+    docs: :boolean,
+    warnings_as_errors: :boolean,
+    ignore_module_conflict: :boolean,
+    debug_info: :boolean,
+    verbose: :boolean,
+    long_compilation_threshold: :integer,
+    all_warnings: :boolean
+  ]
 
   @doc """
   Runs this task.
   """
-  @spec run(OptionParser.argv) :: :ok | :noop
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
 
-    project = Mix.Project.config
+    project = Mix.Project.config()
     dest = Mix.Project.compile_path(project)
     srcs = project[:elixirc_paths]
 
     unless is_list(srcs) do
-      Mix.raise ":elixirc_paths should be a list of paths, got: #{inspect(srcs)}"
+      Mix.raise(":elixirc_paths should be a list of paths, got: #{inspect(srcs)}")
     end
 
     manifest = manifest()
-    configs  = Mix.Project.config_files ++ Mix.Tasks.Compile.Erlang.manifests
-    force    = opts[:force] || Mix.Utils.stale?(configs, [manifest])
+    configs = Mix.Project.config_files() ++ Mix.Tasks.Compile.Erlang.manifests()
+    force = opts[:force] || Mix.Utils.stale?(configs, [manifest])
 
     opts = Keyword.merge(project[:elixirc_options] || [], opts)
-    case Mix.Compilers.Elixir.compile(manifest, srcs, dest, [:ex], force, opts) do
-      {[], []} -> :noop
-      {_, _} -> :ok
-    end
+    Mix.Compilers.Elixir.compile(manifest, srcs, dest, [:ex], force, opts)
   end
 
   @doc """
   Returns Elixir manifests.
   """
   def manifests, do: [manifest()]
-  defp manifest, do: Path.join(Mix.Project.manifest_path, @manifest)
+  defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
   @doc """
   Cleans up compilation artifacts.
   """
   def clean do
-    dest = Mix.Project.compile_path
+    dest = Mix.Project.compile_path()
     Mix.Compilers.Elixir.clean(manifest(), dest)
   end
 end

@@ -3,24 +3,26 @@ defmodule Mix.Tasks.Test do
     @moduledoc false
 
     def start(compile_path, opts) do
-      Mix.shell.info "Cover compiling modules ..."
-      _ = :cover.start
+      Mix.shell().info("Cover compiling modules ...")
+      _ = :cover.start()
 
       case :cover.compile_beam_directory(compile_path |> to_charlist) do
         results when is_list(results) ->
           :ok
+
         {:error, _} ->
-          Mix.raise "Failed to cover compile directory: " <> compile_path
+          Mix.raise("Failed to cover compile directory: " <> compile_path)
       end
 
       output = opts[:output]
 
-      fn() ->
-        Mix.shell.info "\nGenerating cover results ..."
+      fn ->
+        Mix.shell().info("\nGenerating cover results ...")
         File.mkdir_p!(output)
-        Enum.each :cover.modules, fn(mod) ->
+
+        Enum.each(:cover.modules(), fn mod ->
           {:ok, _} = :cover.analyse_to_file(mod, '#{output}/#{mod}.html', [:html])
-        end
+        end)
       end
     end
   end
@@ -56,7 +58,8 @@ defmodule Mix.Tasks.Test do
     * `--listen-on-stdin` - runs tests, and then listens on stdin. Receiving a newline will
       result in the tests being run again. Very useful when combined with `--stale` and
       external commands which produce output on stdout upon file system modification.
-    * `--max-cases` - sets the maximum number of cases running async
+    * `--max-cases` - sets the maximum number of tests running async. Only tests from
+      different modules run in parallel. Defaults to twice the number of cores.
     * `--no-archives-check` - does not check archives
     * `--no-color` - disables color in the output
     * `--no-compile` - does not compile, even if files require compilation
@@ -67,6 +70,8 @@ defmodule Mix.Tasks.Test do
     * `--raise` - raises if the test suite failed
     * `--seed` - seeds the random number generator used to randomize tests order;
       `--seed 0` disables randomization
+    * `--slowest` - prints timing information for the N slowest tests; automatically
+      sets `--trace`
     * `--stale` - runs only tests which reference modules that changed since the
       last `test --stale`. You can read more about this option in the "Stale" section below.
     * `--timeout` - sets the timeout for the tests
@@ -114,8 +119,10 @@ defmodule Mix.Tasks.Test do
 
       mix test --only line:12 test/some/particular/file_test.exs
 
-  Note that line filter takes the closest test on or before the given line number.
-  In the case a single file contains more than one test module (test case),
+  If the given line starts a `describe` block, the line filter runs all tests in it.
+  Otherwise, it runs the closest test on or before the given line number.
+
+  Note that in the case a single file contains more than one test module (test case),
   line filter applies to every test case before the given line number, thus more
   than one test might be taken for the run.
 
@@ -163,40 +170,57 @@ defmodule Mix.Tasks.Test do
   been changed since the last run with `--stale`.
   """
 
-  @switches [force: :boolean, color: :boolean, cover: :boolean,
-             trace: :boolean, max_cases: :integer, include: :keep,
-             exclude: :keep, seed: :integer, only: :keep, compile: :boolean,
-             start: :boolean, timeout: :integer, raise: :boolean,
-             deps_check: :boolean, archives_check: :boolean, elixir_version_check: :boolean,
-             stale: :boolean, listen_on_stdin: :boolean, formatter: :keep]
+  @switches [
+    force: :boolean,
+    color: :boolean,
+    cover: :boolean,
+    trace: :boolean,
+    max_cases: :integer,
+    include: :keep,
+    exclude: :keep,
+    seed: :integer,
+    only: :keep,
+    compile: :boolean,
+    start: :boolean,
+    timeout: :integer,
+    raise: :boolean,
+    deps_check: :boolean,
+    archives_check: :boolean,
+    elixir_version_check: :boolean,
+    stale: :boolean,
+    listen_on_stdin: :boolean,
+    formatter: :keep,
+    slowest: :integer
+  ]
 
   @cover [output: "cover", tool: Cover]
 
-  @spec run(OptionParser.argv) :: :ok
   def run(args) do
     {opts, files} = OptionParser.parse!(args, strict: @switches)
 
     if opts[:listen_on_stdin] do
-      System.at_exit fn _ ->
+      System.at_exit(fn _ ->
         IO.gets(:stdio, "")
-        Mix.shell.info "Restarting..."
+        Mix.shell().info("Restarting...")
         :init.restart()
         Process.sleep(:infinity)
-      end
+      end)
     end
 
-    unless System.get_env("MIX_ENV") || Mix.env == :test do
-      Mix.raise "\"mix test\" is running on environment \"#{Mix.env}\". If you are " <>
-                                "running tests along another task, please set MIX_ENV explicitly"
+    unless System.get_env("MIX_ENV") || Mix.env() == :test do
+      Mix.raise(
+        "\"mix test\" is running on environment \"#{Mix.env()}\". If you are " <>
+          "running tests along another task, please set MIX_ENV explicitly"
+      )
     end
 
-    Mix.Task.run "loadpaths", args
+    Mix.Task.run("loadpaths", args)
 
     if Keyword.get(opts, :compile, true) do
       Mix.Project.compile(args)
     end
 
-    project = Mix.Project.config
+    project = Mix.Project.config()
 
     # Start cover after we load deps but before we start the app.
     cover =
@@ -210,8 +234,8 @@ defmodule Mix.Tasks.Test do
     # before requiring test_helper.exs so that the configuration is
     # available in test_helper.exs. Then configure exunit again so
     # that command line options override test_helper.exs
-    Mix.shell.print_app
-    Mix.Task.run "app.start", args
+    Mix.shell().print_app
+    Mix.Task.run("app.start", args)
 
     # Ensure ExUnit is loaded.
     case Application.load(:ex_unit) do
@@ -235,6 +259,7 @@ defmodule Mix.Tasks.Test do
     warn_test_pattern = project[:warn_test_pattern] || "*_test.ex"
 
     matched_test_files = Mix.Utils.extract_files(test_files, test_pattern)
+
     matched_warn_test_files =
       Mix.Utils.extract_files(test_files, warn_test_pattern) -- matched_test_files
 
@@ -246,9 +271,11 @@ defmodule Mix.Tasks.Test do
 
         cond do
           failures > 0 and opts[:raise] ->
-            Mix.raise "mix test failed"
+            Mix.raise("mix test failed")
+
           failures > 0 ->
-            System.at_exit fn _ -> exit({:shutdown, 1}) end
+            System.at_exit(fn _ -> exit({:shutdown, 1}) end)
+
           true ->
             :ok
         end
@@ -260,12 +287,21 @@ defmodule Mix.Tasks.Test do
 
   defp display_warn_test_pattern(files, pattern) do
     for file <- files do
-      Mix.shell.info "warning: #{file} does not match #{inspect pattern} and won't be loaded"
+      Mix.shell().info("warning: #{file} does not match #{inspect(pattern)} and won't be loaded")
     end
   end
 
-  @option_keys [:trace, :max_cases, :include, :exclude,
-                :seed, :timeout, :formatters, :colors]
+  @option_keys [
+    :trace,
+    :max_cases,
+    :include,
+    :exclude,
+    :seed,
+    :timeout,
+    :formatters,
+    :colors,
+    :slowest
+  ]
 
   @doc false
   def ex_unit_opts(opts) do
@@ -345,14 +381,15 @@ defmodule Mix.Tasks.Test do
   defp color_opts(opts) do
     case Keyword.fetch(opts, :color) do
       {:ok, enabled?} ->
-        Keyword.put(opts, :colors, [enabled: enabled?])
+        Keyword.put(opts, :colors, enabled: enabled?)
+
       :error ->
         opts
     end
   end
 
   defp merge_opts(opts, key) do
-    value = List.wrap Application.get_env(:ex_unit, key, [])
+    value = List.wrap(Application.get_env(:ex_unit, key, []))
     Keyword.update(opts, key, value, &Enum.uniq(&1 ++ value))
   end
 
@@ -360,9 +397,9 @@ defmodule Mix.Tasks.Test do
     file = Path.join(dir, "test_helper.exs")
 
     if File.exists?(file) do
-      Code.require_file file
+      Code.require_file(file)
     else
-      Mix.raise "Cannot run tests because test helper file #{inspect file} does not exist"
+      Mix.raise("Cannot run tests because test helper file #{inspect(file)} does not exist")
     end
   end
 

@@ -85,7 +85,12 @@ defmodule Mix.Tasks.Deps do
     * `:manager` - Mix can also compile Rebar, Rebar3 and makefile projects
       and can fetch sub dependencies of Rebar and Rebar3 projects. Mix will
       try to infer the type of project but it can be overridden with this
-      option by setting it to `:mix`, `:rebar`, `:rebar3` or `:make`
+      option by setting it to `:mix`, `:rebar3`, `:rebar` or `:make`. In case
+      there are conflicting definitions, the first manager in the list above
+      will be picked up. For example, if a dependency is found with `:rebar3`
+      and `:rebar` managers in different part of the trees, `:rebar3` will
+      be automatically picked. You can find the manager by running `mix deps`
+      and override it by setting the `:override` option in a top-level project.
 
     * `:runtime` - whether the dependency is part of runtime applications.
       Defaults to `true` which automatically adds the application to the list
@@ -108,11 +113,15 @@ defmodule Mix.Tasks.Deps do
     * `:in_umbrella` - when `true`, sets a path dependency pointing to
       "../#{app}", sharing the same environment as the current application
 
+  ### Hex options (`:hex`)
+
+  See the [Hex usage documentation](https://hex.pm/docs/usage) for Hex options.
+
   ## Deps task
 
   `mix deps` task lists all dependencies in the following format:
 
-      APP VERSION (SCM)
+      APP VERSION (SCM) (MANAGER)
       [locked at REF]
       STATUS
 
@@ -121,24 +130,26 @@ defmodule Mix.Tasks.Deps do
     * `--all` - checks all dependencies, regardless of specified environment
 
   """
-  @spec run(OptionParser.argv) :: :ok
+  @spec run(OptionParser.argv()) :: :ok
   def run(args) do
-    Mix.Project.get!
+    Mix.Project.get!()
     {opts, _, _} = OptionParser.parse(args)
-    loaded_opts  = if opts[:all], do: [], else: [env: Mix.env]
+    loaded_opts = if opts[:all], do: [], else: [env: Mix.env()]
 
-    shell = Mix.shell
+    shell = Mix.shell()
 
-    Enum.each loaded(loaded_opts), fn %Mix.Dep{scm: scm, manager: manager} = dep ->
-      dep   = check_lock(dep)
+    Enum.each(loaded(loaded_opts), fn dep ->
+      %Mix.Dep{scm: scm, manager: manager} = dep
+      dep = check_lock(dep)
       extra = if manager, do: " (#{manager})", else: ""
 
-      shell.info "* #{format_dep(dep)}#{extra}"
+      shell.info("* #{format_dep(dep)}#{extra}")
+
       if formatted = scm.format_lock(dep.opts) do
-        shell.info "  locked at #{formatted}"
+        shell.info("  locked at #{formatted}")
       end
 
-      shell.info "  #{format_status dep}"
-    end
+      shell.info("  #{format_status(dep)}")
+    end)
   end
 end

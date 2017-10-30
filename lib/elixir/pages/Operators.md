@@ -20,13 +20,13 @@ Operator                                                                        
 `==` `!=` `=~` `===` `!==`                                                               | Left to right
 `&&` `&&&` `and`                                                                         | Left to right
 `\|\|` `\|\|\|` `or`                                                                     | Left to right
+`&`                                                                                      | Unary
 `=`                                                                                      | Right to left
 `=>`                                                                                     | Right to left
 `\|`                                                                                     | Right to left
 `::`                                                                                     | Right to left
 `when`                                                                                   | Right to left
 `<-`, `\\`                                                                               | Left to right
-`&`                                                                                      | Unary
 
 ## Comparison operators
 
@@ -74,6 +74,7 @@ The collection types are compared using the following rules:
 * Tuples are compared by size then element by element.
 * Maps are compared by size then by keys in ascending term order then by values in key order. In the specific case of maps' key ordering, integers are always considered to be less than floats.
 * Lists are compared element by element.
+* Bitstrings are compared byte by byte, incomplete bytes are compared bit by bit.
 
 ## Custom and overridden operators
 
@@ -151,4 +152,4 @@ iex> 1 + 2
 
 ### Final note
 
-While it's possible to defined unused operators (such as `<~>`) and to "override" predefined operators (such as `+`), the Elixir community generally discourages this. Custom-defined operators can be really hard to read and even more to understand, as they don't have a descriptive name like functions do. That said, some specific cases or custom domain specific languages (DSLs) may justify these practices.
+While it's possible to define unused operators (such as `<~>`) and to "override" predefined operators (such as `+`), the Elixir community generally discourages this. Custom-defined operators can be really hard to read and even more to understand, as they don't have a descriptive name like functions do. That said, some specific cases or custom domain specific languages (DSLs) may justify these practices.

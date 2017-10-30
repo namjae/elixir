@@ -1,4 +1,4 @@
-Code.require_file "../test_helper.exs", __DIR__
+Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule Module.LocalsTrackerTest do
   use ExUnit.Case, async: true
@@ -6,7 +6,7 @@ defmodule Module.LocalsTrackerTest do
   alias Module.LocalsTracker, as: D
 
   setup do
-    {:ok, pid} = D.start_link
+    {:ok, pid} = D.start_link()
     {:ok, [pid: pid]}
   end
 
@@ -60,11 +60,11 @@ defmodule Module.LocalsTrackerTest do
     D.add_local(config[:pid], {:foo, 1}, {:bar, 1})
     D.add_definition(config[:pid], :defp, {:bar, 1})
 
-    {infoo, outfoo}   = D.yank(config[:pid], {:foo, 1})
+    {infoo, outfoo} = D.yank(config[:pid], {:foo, 1})
     {inbar, outbar} = D.yank(config[:pid], {:bar, 1})
 
-    D.reattach(config[:pid], :defp, {:bar, 1}, {inbar, outbar})
-    D.reattach(config[:pid], :def, {:foo, 1}, {infoo, outfoo})
+    D.reattach(config[:pid], {:bar, 1}, :defp, {:bar, 1}, {inbar, outbar})
+    D.reattach(config[:pid], {:foo, 1}, :def, {:foo, 1}, {infoo, outfoo})
     assert {:bar, 1} in D.reachable(config[:pid])
   end
 
@@ -172,6 +172,6 @@ defmodule Module.LocalsTrackerTest do
 
   test "does not include unreachable locals" do
     assert NoPrivate.module_info(:functions) ==
-           [__info__: 1, baz: 0, module_info: 0, module_info: 1]
+             [__info__: 1, baz: 0, module_info: 0, module_info: 1]
   end
 end

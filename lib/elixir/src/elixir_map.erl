@@ -1,6 +1,6 @@
 -module(elixir_map).
 -export([expand_map/3, expand_struct/4, format_error/1]).
--import(elixir_errors, [form_error/4]).
+-import(elixir_errors, [form_error/4, form_warn/4]).
 -include("elixir.hrl").
 
 expand_map(Meta, [{'|', UpdateMeta, [Left, Right]}], #{context := nil} = E) ->
@@ -27,8 +27,9 @@ expand_map(Meta, Args, E) ->
   validate_kv(Meta, EArgs, Args, E),
   {{'%{}', Meta, EArgs}, EE}.
 
-expand_struct(Meta, Left, Right, #{context := Context} = E) ->
-  {[ELeft, ERight], EE} = elixir_expand:expand_args([Left, Right], E),
+expand_struct(Meta, Left, {'%{}', MapMeta, MapArgs}, #{context := Context} = E) ->
+  CleanMapArgs = clean_struct_key_from_map_args(Meta, MapArgs, E),
+  {[ELeft, ERight], EE} = elixir_expand:expand_args([Left, {'%{}', MapMeta, CleanMapArgs}], E),
 
   case validate_struct(ELeft, Context) of
     true when is_atom(ELeft) ->
@@ -40,7 +41,7 @@ expand_struct(Meta, Left, Right, #{context := Context} = E) ->
       %% in context module in case the module name is defined dynamically.
       InContext = lists:member(ELeft, [?key(E, module) | ?key(E, context_modules)]),
 
-      case extract_assocs(Meta, ERight, E) of
+      case extract_struct_assocs(Meta, ERight, E) of
         {expand, MapMeta, Assocs} when Context /= match -> %% Expand
           Struct = load_struct(Meta, ELeft, [Assocs], InContext, EE),
           assert_struct_keys(Meta, ELeft, Struct, Assocs, EE),
@@ -55,15 +56,29 @@ expand_struct(Meta, Left, Right, #{context := Context} = E) ->
       end;
 
     true ->
-      %% A match without a compile time struct is treated as a regular map.
-      {expand, _, Assocs} = extract_assocs(Meta, ERight, E),
-      {{'%{}', Meta, Assocs ++ [{'__struct__', ELeft}]}, EE};
+      {{'%', Meta, [ELeft, ERight]}, EE};
 
     false when Context == match ->
       form_error(Meta, ?key(E, file), ?MODULE, {invalid_struct_name_in_match, ELeft});
 
     false ->
       form_error(Meta, ?key(E, file), ?MODULE, {invalid_struct_name, ELeft})
+  end;
+expand_struct(Meta, _Left, Right, E) ->
+  form_error(Meta, ?key(E, file), ?MODULE, {non_map_after_struct, Right}).
+
+clean_struct_key_from_map_args(Meta, [{'|', PipeMeta, [Left, MapAssocs]}], E) ->
+  [{'|', PipeMeta, [Left, clean_struct_key_from_map_assocs(Meta, MapAssocs, E)]}];
+clean_struct_key_from_map_args(Meta, MapAssocs, E) ->
+  clean_struct_key_from_map_assocs(Meta, MapAssocs, E).
+
+clean_struct_key_from_map_assocs(Meta, Assocs, E) ->
+  case lists:keytake('__struct__', 1, Assocs) of
+    {value, _, CleanAssocs} ->
+      form_warn(Meta, ?key(E, file), ?MODULE, ignored_struct_key_in_struct),
+      CleanAssocs;
+    false ->
+      Assocs
   end.
 
 validate_match_key(_Meta, {'^', _, [_]}, _E) ->
@@ -89,12 +104,15 @@ validate_kv(Meta, KV, Original, E) ->
       form_error(Meta, ?key(E, file), ?MODULE, {not_kv_pair, lists:nth(Acc, Original)})
   end, 1, KV).
 
-extract_assocs(_, {'%{}', Meta, [{'|', _, [_, Assocs]}]}, _) ->
-  {update, Meta, Assocs};
-extract_assocs(_, {'%{}', Meta, Assocs}, _) ->
-  {expand, Meta, Assocs};
-extract_assocs(Meta, Other, E) ->
+extract_struct_assocs(_, {'%{}', Meta, [{'|', _, [_, Assocs]}]}, _) ->
+  {update, Meta, delete_struct_key(Assocs)};
+extract_struct_assocs(_, {'%{}', Meta, Assocs}, _) ->
+  {expand, Meta, delete_struct_key(Assocs)};
+extract_struct_assocs(Meta, Other, E) ->
   form_error(Meta, ?key(E, file), ?MODULE, {non_map_after_struct, Other}).
+
+delete_struct_key(Assocs) ->
+  lists:keydelete('__struct__', 1, Assocs).
 
 validate_struct({'^', _, [{Var, _, Ctx}]}, match) when is_atom(Var), is_atom(Ctx) -> true;
 validate_struct({Var, _Meta, Ctx}, match) when is_atom(Var), is_atom(Ctx) -> true;
@@ -103,10 +121,7 @@ validate_struct(_, _) -> false.
 
 load_struct(Meta, Name, Args, InContext, E) ->
   Arity = length(Args),
-
-  Local =
-    not(ensure_loaded(Name)) andalso
-      (InContext orelse wait_for_struct(Name)),
+  Local = InContext orelse (not(ensure_loaded(Name)) andalso wait_for_struct(Name)),
 
   try
     case Local andalso elixir_def:local_for(Name, '__struct__', Arity, [def]) of
@@ -120,7 +135,7 @@ load_struct(Meta, Name, Args, InContext, E) ->
         %% local function will fail. In this case, we need to fallback to
         %% the regular dispatching since the module will be available if
         %% the table has not been deleted (unless compilation of that
-        %% module failed which then should cause this call to fail too).
+        %% module failed which should then cause this call to fail too).
         try
           apply(LocalFun, Args)
         catch
@@ -142,9 +157,10 @@ load_struct(Meta, Name, Args, InContext, E) ->
       end;
 
     Kind:Reason ->
+      Stacktrace = erlang:get_stacktrace(),
       Info = [{Name, '__struct__', Arity, [{file, "expanding struct"}]},
               elixir_utils:caller(?line(Meta), ?key(E, file), ?key(E, module), ?key(E, function))],
-      erlang:raise(Kind, Reason, prune_stacktrace(erlang:get_stacktrace(), Name, Arity) ++ Info)
+      erlang:raise(Kind, Reason, prune_stacktrace(Stacktrace, Name, Arity) ++ Info)
   end.
 
 prune_stacktrace([{Module, '__struct__', Arity, _} | _], Module, Arity) ->
@@ -202,4 +218,6 @@ format_error({undefined_struct, Module, Arity}) ->
                 [StringName, Arity, StringName]);
 format_error({unknown_key_for_struct, Module, Key}) ->
   io_lib:format("unknown key ~ts for struct ~ts",
-                ['Elixir.Macro':to_string(Key), 'Elixir.Macro':to_string(Module)]).
+                ['Elixir.Macro':to_string(Key), 'Elixir.Macro':to_string(Module)]);
+format_error(ignored_struct_key_in_struct) ->
+  "key :__struct__ is ignored when using structs".

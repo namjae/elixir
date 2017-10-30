@@ -8,12 +8,29 @@ defmodule Mix.Tasks.Escript.Build do
   Builds an escript for the project.
 
   An escript is an executable that can be invoked from the
-  command line.  An escript can run on any machine that has
+  command line. An escript can run on any machine that has
   Erlang installed and by default does not require Elixir to
   be installed, as Elixir is embedded as part of the escript.
 
   This task guarantees the project and its dependencies are
-  compiled and packages them inside an escript.
+  compiled and packages them inside an escript. Before invoking
+  `mix escript.build`, it is only necessary to define a `:escript`
+  key with a `:main_module` option in your `mix.exs` file:
+
+      escript: [main_module: MyApp.CLI]
+
+  Escripts should be used as a mechanism to share scripts between
+  developers and not as a deployment mechanism. For running live
+  systems, consider using `mix run` or building releases. See
+  the `Application` module for more information on systems life-
+  cycles.
+
+  By default, this task starts the current application. If this
+  is not desired, set the `:app` configuration to nil.
+
+  This task also removes documentation and debugging chunks from
+  the compiled `.beam` files to reduce the size of the escript.
+  If this is not desired, check the `:strip_beams` option.
 
   > Note: escripts do not support projects and dependencies
   > that need to store or read artifacts from the priv directory.
@@ -77,13 +94,15 @@ defmodule Mix.Tasks.Escript.Build do
 
   ## Example
 
-      defmodule MyApp.Mixfile do
+      defmodule MyApp.MixProject do
         use Mix.Project
 
         def project do
-          [app: :my_app,
-           version: "0.0.1",
-           escript: escript()]
+          [
+            app: :my_app,
+            version: "0.0.1",
+            escript: escript()
+          ]
         end
 
         def escript do
@@ -98,19 +117,23 @@ defmodule Mix.Tasks.Escript.Build do
       end
 
   """
-  @switches [force: :boolean, compile: :boolean,
-             deps_check: :boolean, archives_check: :boolean, elixir_version_check: :boolean]
+  @switches [
+    force: :boolean,
+    compile: :boolean,
+    deps_check: :boolean,
+    archives_check: :boolean,
+    elixir_version_check: :boolean
+  ]
 
-  @spec run(OptionParser.argv) :: :ok | :noop
   def run(args) do
-    Mix.Project.get!
+    Mix.Project.get!()
     {opts, _} = OptionParser.parse!(args, strict: @switches)
 
     if Keyword.get(opts, :compile, true) do
-      Mix.Task.run :compile, args
+      Mix.Task.run(:compile, args)
     end
 
-    project  = Mix.Project.config
+    project = Mix.Project.config()
     language = Keyword.get(project, :language, :elixir)
 
     escriptize(project, language, Keyword.get(opts, :force, false))
@@ -120,7 +143,7 @@ defmodule Mix.Tasks.Escript.Build do
     escript_opts = project[:escript] || []
 
     if Mix.Project.umbrella?() do
-      Mix.raise "Building escripts for umbrella projects is unsupported"
+      Mix.raise("Building escripts for umbrella projects is unsupported")
     end
 
     script_name = Mix.Local.name_for(:escript, project)
@@ -130,16 +153,25 @@ defmodule Mix.Tasks.Escript.Build do
 
     cond do
       !script_name ->
-        Mix.raise "Could not generate escript, no name given, " <>
-          "set :name escript option or :app in the project settings"
+        error_message =
+          "Could not generate escript, no name given, " <>
+            "set :name escript option or :app in the project settings"
+
+        Mix.raise(error_message)
 
       !main ->
-        Mix.raise "Could not generate escript, please set :main_module " <>
-          "in your project configuration (under :escript option) to a module that implements main/1"
+        error_message =
+          "Could not generate escript, please set :main_module " <>
+            "in your project configuration (under :escript option) to a module that implements main/1"
+
+        Mix.raise(error_message)
 
       not Code.ensure_loaded?(main) ->
-        Mix.raise "Could not generate escript, module #{main} defined as " <>
-          ":main_module could not be loaded"
+        error_message =
+          "Could not generate escript, module #{main} defined as " <>
+            ":main_module could not be loaded"
+
+        Mix.raise(error_message)
 
       force? or Mix.Utils.stale?(files, [filename]) ->
         app = Keyword.get(escript_opts, :app, project[:app])
@@ -148,12 +180,11 @@ defmodule Mix.Tasks.Escript.Build do
 
         beam_paths =
           [files, deps_files(), core_files(escript_opts, language)]
-          |> Stream.concat
+          |> Stream.concat()
           |> prepare_beam_paths()
           |> Map.merge(consolidated_paths(project))
 
-        tuples = gen_main(project, escript_mod, main, app, language) ++
-                 read_beams(beam_paths)
+        tuples = gen_main(project, escript_mod, main, app, language) ++ read_beams(beam_paths)
         tuples = if strip_beam?, do: strip_beams(tuples), else: tuples
 
         case :zip.create('mem', tuples, [:memory]) do
@@ -166,19 +197,21 @@ defmodule Mix.Tasks.Escript.Build do
             File.mkdir_p!(Path.dirname(filename))
             File.write!(filename, script)
             set_perms(filename)
+
           {:error, error} ->
-            Mix.raise "Error creating escript: #{error}"
+            Mix.raise("Error creating escript: #{error}")
         end
 
-        Mix.shell.info "Generated escript #{filename} with MIX_ENV=#{Mix.env}"
+        Mix.shell().info("Generated escript #{filename} with MIX_ENV=#{Mix.env()}")
         :ok
+
       true ->
         :noop
     end
   end
 
   defp project_files() do
-    get_files(Mix.Project.app_path)
+    get_files(Mix.Project.app_path())
   end
 
   defp get_files(app) do
@@ -188,7 +221,7 @@ defmodule Mix.Tasks.Escript.Build do
 
   defp set_perms(filename) do
     stat = File.stat!(filename)
-    :ok  = File.chmod(filename, stat.mode ||| 0o111)
+    :ok = File.chmod(filename, stat.mode ||| 0o111)
   end
 
   defp deps_files() do
@@ -198,7 +231,7 @@ defmodule Mix.Tasks.Escript.Build do
 
   defp core_files(escript_opts, language) do
     if Keyword.get(escript_opts, :embed_elixir, language == :elixir) do
-      Enum.flat_map [:elixir | extra_apps()], &app_files/1
+      Enum.flat_map([:elixir | extra_apps()], &app_files/1)
     else
       []
     end
@@ -220,19 +253,22 @@ defmodule Mix.Tasks.Escript.Build do
 
   defp extra_apps_in_app_tree(app) do
     _ = Application.load(app)
+
     case Application.spec(app) do
       nil ->
         []
+
       spec ->
-        applications = Keyword.get(spec, :applications, []) ++
-                       Keyword.get(spec, :included_applications, [])
+        applications =
+          Keyword.get(spec, :applications, []) ++ Keyword.get(spec, :included_applications, [])
+
         Enum.flat_map(applications, &extra_apps_in_app_tree/1)
     end
   end
 
   defp app_files(app) do
     case :code.where_is_file('#{app}.app') do
-      :non_existing -> Mix.raise "Could not find application #{app}"
+      :non_existing -> Mix.raise("Could not find application #{app}")
       file -> get_files(Path.dirname(Path.dirname(file)))
     end
   end
@@ -242,8 +278,7 @@ defmodule Mix.Tasks.Escript.Build do
   end
 
   defp read_beams(items) do
-    items
-    |> Enum.map(fn {basename, beam_path} ->
+    Enum.map(items, fn {basename, beam_path} ->
       {String.to_charlist(basename), File.read!(beam_path)}
     end)
   end
@@ -257,9 +292,20 @@ defmodule Mix.Tasks.Escript.Build do
     end
   end
 
-  defp strip_beam(beam) do
-    {:ok, {_, stripped_beam}} = :beam_lib.strip(beam)
-    stripped_beam
+  defp strip_beam(beam) when is_binary(beam) do
+    {:ok, _, all_chunks} = :beam_lib.all_chunks(beam)
+    strip_chunks = ['Abst', 'CInf', 'Dbgi', 'ExDc']
+    preserved_chunks = for {name, _} = chunk <- all_chunks, name not in strip_chunks, do: chunk
+    {:ok, content} = :beam_lib.build_module(preserved_chunks)
+    compress(content)
+  end
+
+  defp compress(binary) do
+    {:ok, file} = :ram_file.open(binary, [:write, :binary])
+    {:ok, _} = :ram_file.compress(file)
+    {:ok, binary} = :ram_file.get_file(file)
+    :ok = :ram_file.close(file)
+    binary
   end
 
   defp consolidated_paths(config) do
@@ -284,53 +330,66 @@ defmodule Mix.Tasks.Escript.Build do
   defp gen_main(project, name, module, app, language) do
     config =
       if File.regular?(project[:config_path]) do
-        Macro.escape Mix.Config.read!(project[:config_path])
+        Macro.escape(Mix.Config.read!(project[:config_path]))
       else
         []
       end
 
-    module_body = quote do
-      @module unquote(module)
-      @config unquote(config)
-      @app unquote(app)
+    module_body =
+      quote do
+        @module unquote(module)
+        @config unquote(config)
+        @app unquote(app)
 
-      @spec main(OptionParser.argv) :: any
-      def main(args) do
-        unquote(main_body_for(language))
-      end
+        @spec main(OptionParser.argv()) :: any
+        def main(args) do
+          unquote(main_body_for(language))
+        end
 
-      defp load_config(config) do
-        :lists.foreach(fn {app, kw} ->
-          :lists.foreach(fn {k, v} ->
-            :application.set_env(app, k, v, persistent: true)
-          end, kw)
-        end, config)
-        :ok
-      end
+        defp load_config(config) do
+          each_fun = fn {app, kw} ->
+            set_env_fun = fn {k, v} -> :application.set_env(app, k, v, persistent: true) end
+            :lists.foreach(set_env_fun, kw)
+          end
 
-      defp start_app(nil) do
-        :ok
-      end
+          :lists.foreach(each_fun, config)
+          :ok
+        end
 
-      defp start_app(app) do
-        case :application.ensure_all_started(app) do
-          {:ok, _} -> :ok
-          {:error, {app, reason}} ->
-            formatted_error = case :code.ensure_loaded(Application) do
-              {:module, Application} -> Application.format_error(reason)
-              {:error, _} -> :io_lib.format('~p', [reason])
-            end
-            io_error ["Could not start application ",
-                      :erlang.atom_to_binary(app, :utf8),
-                      ": ", formatted_error, ?\n]
-            :erlang.halt(1)
+        defp start_app(nil) do
+          :ok
+        end
+
+        defp start_app(app) do
+          case :application.ensure_all_started(app) do
+            {:ok, _} ->
+              :ok
+
+            {:error, {app, reason}} ->
+              formatted_error =
+                case :code.ensure_loaded(Application) do
+                  {:module, Application} -> Application.format_error(reason)
+                  {:error, _} -> :io_lib.format('~p', [reason])
+                end
+
+              error_message = [
+                "Could not start application ",
+                :erlang.atom_to_binary(app, :utf8),
+                ": ",
+                formatted_error,
+                ?\n
+              ]
+
+              io_error(error_message)
+
+              :erlang.halt(1)
+          end
+        end
+
+        defp io_error(message) do
+          :io.put_chars(:standard_error, message)
         end
       end
-
-      defp io_error(message) do
-        :io.put_chars(:standard_error, message)
-      end
-    end
 
     {:module, ^name, binary, _} = Module.create(name, module_body, Macro.Env.location(__ENV__))
     [{'#{name}.beam', binary}]
@@ -341,10 +400,18 @@ defmodule Mix.Tasks.Escript.Build do
       erl_version = :erlang.system_info(:otp_release)
 
       case :string.to_integer(erl_version) do
-        {num, _} when num >= 18 -> nil
+        {num, _} when num >= 19 ->
+          nil
+
         _ ->
-          io_error ["Incompatible Erlang/OTP release: ", erl_version,
-                    ".\nThis escript requires at least Erlang/OTP 18.0\n"]
+          error_message = [
+            "Incompatible Erlang/OTP release: ",
+            erl_version,
+            ".\nThis escript requires at least Erlang/OTP 19.0\n"
+          ]
+
+          io_error(error_message)
+
           :erlang.halt(1)
       end
 
@@ -353,9 +420,10 @@ defmodule Mix.Tasks.Escript.Build do
           load_config(@config)
           start_app(@app)
           args = Enum.map(args, &List.to_string(&1))
-          Kernel.CLI.run fn _ -> @module.main(args) end, true
+          Kernel.CLI.run(fn _ -> @module.main(args) end, true)
+
         error ->
-          io_error ["Failed to start Elixir.\n", :io_lib.format('error: ~p~n', [error])]
+          io_error(["Failed to start Elixir.\n", :io_lib.format('error: ~p~n', [error])])
           :erlang.halt(1)
       end
     end

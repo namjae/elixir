@@ -34,7 +34,7 @@
 defmodule Module.LocalsTracker do
   @moduledoc false
 
-  @timeout   30_000
+  @timeout 30000
   @behaviour :gen_server
 
   @type ref :: pid | module
@@ -73,18 +73,19 @@ defmodule Module.LocalsTracker do
   end
 
   defp reachable_from(d, starting) do
-    reduce_reachable(d, starting, :sets.new)
+    reduce_reachable(d, starting, :sets.new())
   end
 
   defp reduce_reachable(d, vertex, vertices) do
     neighbours = :digraph.out_neighbours(d, vertex)
-    neighbours = (for {_, _} = t <- neighbours, do: t) |> :sets.from_list
-    remaining  = :sets.subtract(neighbours, vertices)
-    vertices   = :sets.union(neighbours, vertices)
+    neighbours = for({_, _} = t <- neighbours, do: t) |> :sets.from_list()
+    remaining = :sets.subtract(neighbours, vertices)
+    vertices = :sets.union(neighbours, vertices)
     :sets.fold(&reduce_reachable(d, &1, &2), vertices, remaining)
   end
 
-  defp to_pid(pid) when is_pid(pid),  do: pid
+  defp to_pid(pid) when is_pid(pid), do: pid
+
   defp to_pid(mod) when is_atom(mod) do
     table = :elixir_module.data_table(mod)
     :ets.lookup_element(table, {:elixir, :locals_tracker}, 2)
@@ -138,8 +139,8 @@ defmodule Module.LocalsTracker do
 
   # Reattach a previously yanked node
   @doc false
-  def reattach(pid, kind, tuple, neighbours) do
-    :gen_server.cast(to_pid(pid), {:reattach, kind, tuple, neighbours})
+  def reattach(pid, tuple, kind, function, neighbours) do
+    :gen_server.cast(to_pid(pid), {:reattach, tuple, kind, function, neighbours})
   end
 
   # Collecting all conflicting imports with the given functions
@@ -156,19 +157,30 @@ defmodule Module.LocalsTracker do
   end
 
   # Collect all unused definitions based on the private
-  # given also accounting the expected amount of default
+  # given, also accounting the expected number of default
   # clauses a private function have.
   @doc false
   def collect_unused_locals(ref, private) do
     d = :gen_server.call(to_pid(ref), :digraph, @timeout)
     reachable = reachable_from(d, :local)
-    {unreachable(reachable, private), collect_warnings(reachable, private)}
+    reattached = :digraph.out_neighbours(d, :reattach)
+    {unreachable(reachable, reattached, private), collect_warnings(reachable, private)}
   end
 
-  defp unreachable(reachable, private) do
+  defp unreachable(reachable, reattached, private) do
     for {tuple, kind, _, _} <- private,
-        kind == :defmacrop or not :sets.is_element(tuple, reachable),
+        not reachable?(tuple, kind, reachable, reattached),
         do: tuple
+  end
+
+  defp reachable?(tuple, :defmacrop, reachable, reattached) do
+    # All private micros are unreachable unless they have been
+    # reattached and they are reachable.
+    :lists.member(tuple, reattached) and :sets.is_element(tuple, reachable)
+  end
+
+  defp reachable?(tuple, :defp, reachable, _reattached) do
+    :sets.is_element(tuple, reachable)
   end
 
   defp collect_warnings(reachable, private) do
@@ -206,18 +218,9 @@ defmodule Module.LocalsTracker do
       false -> min_reachable_default(max - 1, min, last, name, reachable)
     end
   end
+
   defp min_reachable_default(_max, _min, last, _name, _reachable) do
     last
-  end
-
-  @doc false
-  def cache_env(pid, env) do
-    :gen_server.call(pid, {:cache_env, env}, @timeout)
-  end
-
-  @doc false
-  def get_cached_env(pid, ref) do
-    :gen_server.call(pid, {:get_cached_env, ref}, @timeout)
   end
 
   # Stops the gen server
@@ -231,79 +234,77 @@ defmodule Module.LocalsTracker do
   def init([]) do
     d = :digraph.new([:protected])
     :digraph.add_vertex(d, :local)
-    {:ok, {d, []}}
+    :digraph.add_vertex(d, :reattach)
+    {:ok, d}
   end
 
-  @doc false
-  def handle_call({:cache_env, env}, _from, {d, cache}) do
-    case cache do
-      [{i, ^env} | _] ->
-        {:reply, i, {d, cache}}
-      t ->
-        i = length(t)
-        {:reply, i, {d, [{i, env} | t]}}
-    end
-  end
-
-  def handle_call({:get_cached_env, ref}, _from, {_, cache} = state) do
-    {^ref, env} = :lists.keyfind(ref, 1, cache)
-    {:reply, env, state}
-  end
-
-  def handle_call({:yank, local}, _from, {d, _} = state) do
+  def handle_call({:yank, local}, _from, d) do
     out_vertices = :digraph.out_neighbours(d, local)
     :digraph.del_edges(d, :digraph.out_edges(d, local))
-    {:reply, {[], out_vertices}, state}
+    {:reply, {[], out_vertices}, d}
   end
 
-  def handle_call(:digraph, _from, {d, _} = state) do
-    {:reply, d, state}
+  def handle_call(:digraph, _from, d) do
+    {:reply, d, d}
   end
 
   @doc false
-  def handle_info(_msg, state) do
-    {:noreply, state}
+  def handle_info(_msg, d) do
+    {:noreply, d}
   end
 
-  def handle_cast({:add_local, from, to}, {d, _} = state) do
+  def handle_cast({:add_local, from, to}, d) do
     handle_add_local(d, from, to)
-    {:noreply, state}
+    {:noreply, d}
   end
 
-  def handle_cast({:add_import, function, module, {name, arity}}, {d, _} = state) do
+  def handle_cast({:add_import, function, module, {name, arity}}, d) do
     handle_import(d, function, module, name, arity)
-    {:noreply, state}
+    {:noreply, d}
   end
 
-  def handle_cast({:add_definition, kind, tuple}, {d, _} = state) do
+  def handle_cast({:add_definition, kind, tuple}, d) do
     handle_add_definition(d, kind, tuple)
-    {:noreply, state}
+    {:noreply, d}
   end
 
-  def handle_cast({:add_defaults, kind, {name, arity}, defaults}, {d, _} = state) do
+  def handle_cast({:add_defaults, kind, {name, arity}, defaults}, d) do
     for i <- :lists.seq(arity - defaults, arity - 1) do
       handle_add_definition(d, kind, {name, i})
       handle_add_local(d, {name, i}, {name, arity})
     end
-    {:noreply, state}
+
+    {:noreply, d}
   end
 
-  def handle_cast({:reattach, _kind, tuple, {in_neigh, out_neigh}}, {d, _} = state) do
+  def handle_cast({:reattach, tuple, kind, function, {in_neigh, out_neigh}}, d) do
+    # Reattach the old function
     for from <- in_neigh do
       :digraph.add_vertex(d, from)
-      replace_edge!(d, from, tuple)
+      replace_edge!(d, from, function)
     end
 
     for to <- out_neigh do
       :digraph.add_vertex(d, to)
-      replace_edge!(d, tuple, to)
+      replace_edge!(d, function, to)
     end
 
-    {:noreply, state}
+    # Add the new definition
+    handle_add_definition(d, kind, tuple)
+
+    # Make a call from the old function to the new one
+    if function != tuple do
+      handle_add_local(d, function, tuple)
+    end
+
+    # Finally marked the new one as reattached
+    replace_edge!(d, :reattach, tuple)
+
+    {:noreply, d}
   end
 
-  def handle_cast(:stop, state) do
-    {:stop, :normal, state}
+  def handle_cast(:stop, d) do
+    {:stop, :normal, d}
   end
 
   @doc false
@@ -345,9 +346,10 @@ defmodule Module.LocalsTracker do
   end
 
   defp replace_edge!(d, from, to) do
-    _ = unless :lists.member(to, :digraph.out_neighbours(d, from)) do
+    unless :lists.member(to, :digraph.out_neighbours(d, from)) do
       [:"$e" | _] = :digraph.add_edge(d, from, to)
     end
+
     :ok
   end
 end

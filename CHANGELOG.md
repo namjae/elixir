@@ -1,65 +1,96 @@
-# Changelog for Elixir v1.5
+# Changelog for Elixir v1.6
 
-## v1.5.0-dev
+## Compiler diagnostics
+
+TODO.
+
+## Code formatter
+
+TODO.
+
+## Stream data and property testing
+
+TODO.
+
+## v1.6.0-dev
 
 ### 1. Enhancements
 
+#### EEx
+
+  * [EEx] Allow markers `/` and `|` to be used in a custom EEx engine
+
 #### Elixir
 
-  * [Calendar] Limit `Calendar.ISO` up to year 10000
-  * [Calendar] Add Rata Die format for conversions between Calendars and `Date.convert/2`, `Time.convert/2`, `NaiveDateTime.convert/2` and `DateTime.convert/2` (as well as bang variants)
-  * [Calendar] Add `:calendar` field to `Time` struct
-  * [Calendar] Add `Date.diff/2`
-  * [File] Add `File.read_link/1` and `File.read_link!/1`
-  * [File] Introduce `:trim_bom` option for `File.stream!/2`
-  * [Keyword] Add `replace/3` and `replace!/3` for replacing an existing key
-  * [List] `List.starts_with?/2`
-  * [Macro] Introduce `Macro.generate_arguments/2`
-  * [Map] Optimize `Map.merge/3` by choosing merge direction
-  * [Map] Add `replace/3` and `replace!/3` for replacing an existing key
-  * [Registry] Support ETS guard conditions in `Registry.match/3`
+  * [Code] Add `format_string!/2` and `format_file!/2` for automatic code formatting
+  * [Inspect.Algebra] Add `:strict` and `:flex` breaks
+  * [Inspect.Algebra] Allow a group to inherit the parent group break
+  * [Inspect.Algebra] Add `force_break/1` and `next_break_fits/2` which give more control over document fitting
+  * [Inspect.Algebra] Add `collapse_lines/1` for collapsing multiple lines to a maximum value
+  * [Inspect.Algebra] Allow `nest/2` to be `:reset` or be set to the current `:cursor` position
+  * [Kernel] Prefix variables with V when emitting Erlang code. This improves the integration with tools such as Erlang code formatters and the GUI debugger
+  * [Kernel] Warn on the use of `length(x) == 0` in guards
+  * [Kernel] Warn if `catch` comes before `rescue` in try
+  * [Kernel.ParallelCompiler] Add `compile/2`, `compile_to_path/3` and `require/2` which provide detailed information about warnings and errors
+  * [Stream] Add `Stream.intersperse/2`
+  * [String] Update to Unicode 10
+  * [String] Allow passing empty string `match` to `String.replace/4`
+  * [Task] Allow a custom supervisor to be given to `Task.Supervisor.async_stream/3`
+  * [Time] Add `Time.add/3`
 
-#### IEx
+#### ExUnit
 
-  * [IEx.Helpers] Add `e/1` IEx helper to list all exports in a module
-  * [IEx.Info] Implement `IEx.Info` protocol for calendar types
-
-#### Logger
-
-  * [Logger] Add `metadata: :all` option
+  * [ExUnit.Callbacks] Add `ExUnit.Callbacks.start_supervised!/2`
+  * [ExUnit.Case] Generate a random seed per test based on the test suite seed
 
 #### Mix
 
-  * [Mix.Hex] Add `--if-missing` flag to `local.hex` mix task
-  * [Mix.Tasks] Strip debug information from escripts by default and add option `:strip_beam` which defaults to true
-  * [Mix.Tasks] Add `Mix.Tasks.Profile.Cprof` for count-based profiling
+  * [mix archive.build] Allow `mix archive.build` to bundle dot files via an option
+  * [mix compile] Define a behavior for Mix compiler tasks and return diagnostics from compiler tasks
+  * [mix deps] Support `:system_env` option when specifying dependencies
+  * [mix format] Add a `mix format` task that formats the given files (or the files specified in a `.formatter.exs` file)
+  * [mix profile.eprof] Add a new task for time-based profiling with eprof
+  * [mix test] Run all functions in a describe block by giving the `file:line` the describe block starts
+  * [mix test] Report the top N slowest tests with the `--slowest N` flag
 
 ### 2. Bug fixes
 
 #### Elixir
 
-  * [Kernel] Support guards on anonymous functions of zero arity
-  * [Kernel] Fix compilation of maps used as maps keys inside matches
+  * [CLI] Support path with spaces as argument to elixir.bat
+  * [Kernel] Solve a precedence issue between `&` and `|`, such as `[&Foo.bar/1 | &Baz.bat/2]`
+  * [Kernel] Do not load dynamic Elixir modules as `:in_memory` as this value is not officially supported by the code server. Instead, use an empty list, which is the same value used by Erlang.
+  * [Kernel] Validate variable struct name is atom when used in pattern matching
+  * [Macro] Fix `Macro.to_string/2` for tuple calls, such as `alias Foo.{Bar, Baz}`
+  * [MapSet] Return valid MapSet when unioning a legacy MapSet
+  * [URI] Preserve empty fragments in `URI.parse/1`
+
+#### Mix
+
+  * [mix deps] Ensure optional dependencies in umbrella applications are loaded
+  * [mix xref] Take compile dependencies with higher priority that runtime ones when building a graph
 
 ### 3. Soft deprecations (no warnings emitted)
 
 #### Elixir
 
-  * [Kernel] `not left in right` is soft-deprecated in favor of `left not in right`
+  * [Inspect.Algebra] `surround/3` and `surround_many/6` are deprecated in favor of `container_doc/6`
+  * [Kernel.ParallelCompiler] `files/2` and `files_to_path/3` are deprecated in favor of `compile/2` and `compile_to_path/3`
+  * [Kernel.ParallelRequire] `files/2` is deprecated in favor of `Kernel.ParallelCompiler.require/2`
+
+#### ExUnit
+
+  * [ExUnit.Formatter] `:case_started` and `:case_finished` events are deprecated in favor of `:module_started` and `:module_finished`
 
 ### 4. Deprecations
 
 #### Elixir
 
-  * [Calendar] Deprecate `NaiveDateTime` and `DateTime` in `Date.to_iso8601/1`, `Date.to_erl/1`, `Time.to_iso8601/1` and `Time.to_erl/1` to avoid loss of precision
-  * [GenEvent] Hard deprecate `GenEvent` and provide alternatives in its docs
-  * [Kernel] Using `()` to mean `nil` is deprecated
-  * [Kernel] `Atom.to_char_list/1`, `Float.to_char_list/1`, `Integer.to_char_list/1`, `Kernel.to_char_list/1`, `String.to_char_list/1` have been deprecated in favor of their `to_charlist/1` version. This aligns with the naming conventions in both Erlang and Elixir
-  * [Kernel] `:as_char_lists value` in `Inspect.Opts.t/0` type, in favor of `:as_charlists`
-  * [Kernel] `:char_lists` key in `Inspect.Opts.t/0` type, in favor of `:charlists`
-  * [Module] Using Erlang parse transforms via `@compile {:parse_transform, _}` is deprecated
-  * [Typespec] `char_list/0` type is deprecated in favor of `charlist/0`
+  * [Enum] `Enum.partition/2` is deprecated in favor of `Enum.split_with/2`
+  * [Keyword] `Keyword.replace/3` is deprecated in favor of `Keyword.fetch/2` and `Keyword.put/3`
+  * [Map] `Map.replace/3` is deprecated in favor of `Map.fetch/2` and `Map.put/3`
+  * [Range] Deprecate `Range.range?/1` in favor of pattern matching on `_ .. _`
 
-## v1.4
+## v1.5
 
-The CHANGELOG for v1.4 releases can be found [in the v1.4 branch](https://github.com/elixir-lang/elixir/blob/v1.4/CHANGELOG.md).
+The CHANGELOG for v1.5 releases can be found [in the v1.5 branch](https://github.com/elixir-lang/elixir/blob/v1.5/CHANGELOG.md).

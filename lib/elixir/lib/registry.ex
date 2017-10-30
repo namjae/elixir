@@ -24,10 +24,10 @@ defmodule Registry do
   ## Using in `:via`
 
   Once the registry is started with a given name using
-  `Registry.start_link/3`, it can be used to register and access named
+  `Registry.start_link/1`, it can be used to register and access named
   processes using the `{:via, Registry, {registry, key}}` tuple:
 
-      {:ok, _} = Registry.start_link(:unique, Registry.ViaTest)
+      {:ok, _} = Registry.start_link(keys: :unique, name: Registry.ViaTest)
       name = {:via, Registry, {Registry.ViaTest, "agent"}}
       {:ok, _} = Agent.start_link(fn -> 0 end, name: name)
       Agent.get(name, & &1)
@@ -38,7 +38,7 @@ defmodule Registry do
 
   Typically the registry is started as part of a supervision tree though:
 
-      supervisor(Registry, [:unique, Registry.ViaTest])
+      {Registry, keys: :unique, name: Registry.ViaTest}
 
   Only registries with unique keys can be used in `:via`. If the name is
   already taken, the case-specific `start_link` function (`Agent.start_link/2`
@@ -50,7 +50,7 @@ defmodule Registry do
   dispatch logic triggered from the caller. For example, let's say we have a
   duplicate registry started as so:
 
-      {:ok, _} = Registry.start_link(:duplicate, Registry.DispatcherTest)
+      {:ok, _} = Registry.start_link(keys: :duplicate, name: Registry.DispatcherTest)
 
   By calling `register/3`, different processes can register under a given key
   and associate any value under that key. In this case, let's register the
@@ -109,10 +109,9 @@ defmodule Registry do
 
   In this example, we will also set the number of partitions to the number of
   schedulers online, which will make the registry more performant on highly
-  concurrent environments as each partition will spawn a new process, allowing
-  dispatching to happen in parallel:
+  concurrent environments:
 
-      {:ok, _} = Registry.start_link(:duplicate, Registry.PubSubTest,
+      {:ok, _} = Registry.start_link(keys: :duplicate, name: Registry.PubSubTest,
                                      partitions: System.schedulers_online)
       {:ok, _} = Registry.register(Registry.PubSubTest, "hello", [])
       Registry.dispatch(Registry.PubSubTest, "hello", fn entries ->
@@ -150,9 +149,7 @@ defmodule Registry do
   Note that the registry uses one ETS table plus two ETS tables per partition.
   """
 
-  # TODO: Decide if it should be started as part of Elixir's supervision tree.
-
-  @kind [:unique, :duplicate]
+  @keys [:unique, :duplicate]
   @all_info -1
   @key_info -2
 
@@ -160,7 +157,7 @@ defmodule Registry do
   @type registry :: atom
 
   @typedoc "The type of the registry"
-  @type kind :: :unique | :duplicate
+  @type keys :: :unique | :duplicate
 
   @typedoc "The type of keys allowed on registration"
   @type key :: term
@@ -181,12 +178,15 @@ defmodule Registry do
     case key_info!(registry) do
       {:unique, partitions, key_ets} ->
         key_ets = key_ets || key_ets!(registry, key, partitions)
+
         case safe_lookup_second(key_ets, key) do
           {pid, _} ->
             if Process.alive?(pid), do: pid, else: :undefined
+
           _ ->
             :undefined
         end
+
       {kind, _, _} ->
         raise ArgumentError, ":via is not supported for #{kind} registries"
     end
@@ -220,25 +220,36 @@ defmodule Registry do
 
   Manually it can be started as:
 
-      Registry.start_link(:unique, MyApp.Registry)
+      Registry.start_link(keys: :unique, name: MyApp.Registry)
 
   In your supervisor tree, you would write:
 
-      supervisor(Registry, [:unique, MyApp.Registry])
+      Supervisor.start_link([
+        {Registry, keys: :unique, name: MyApp.Registry}
+      ])
 
   For intensive workloads, the registry may also be partitioned (by specifying
   the `:partitions` option). If partitioning is required then a good default is to
   set the number of partitions to the number of schedulers available:
 
-      Registry.start_link(:unique, MyApp.Registry, partitions: System.schedulers_online())
+      Registry.start_link(keys: :unique, name: MyApp.Registry,
+                          partitions: System.schedulers_online())
 
   or:
 
-      supervisor(Registry, [:unique, MyApp.Registry, [partitions: System.schedulers_online()]])
+      Supervisor.start_link([
+        {Registry, keys: :unique, name: MyApp.Registry,
+                   partitions: System.schedulers_online()}
+      ])
 
   ## Options
 
-  The registry supports the following options:
+  The registry requires the following keys:
+
+    * `:keys` - choose if keys are `:unique` or `:duplicate`
+    * `:name` - the name of the registry and its tables
+
+  The following keys are optional:
 
     * `:partitions` - the number of partitions in the registry. Defaults to `1`.
     * `:listeners` - a list of named processes which are notified of `:register`
@@ -248,28 +259,75 @@ defmodule Registry do
     * `:meta` - a keyword list of metadata to be attached to the registry.
 
   """
-  @spec start_link(kind, registry, options) :: {:ok, pid} | {:error, term}
-        when options: [partitions: pos_integer, listeners: [atom], meta: [{meta_key, meta_value}]]
-  def start_link(kind, registry, options \\ []) when kind in @kind and is_atom(registry) do
+  @spec start_link(
+          keys: keys,
+          name: registry,
+          partitions: pos_integer,
+          listeners: [atom],
+          meta: meta
+        ) :: {:ok, pid} | {:error, term}
+        when meta: [{meta_key, meta_value}]
+  def start_link(options) do
+    keys = Keyword.get(options, :keys)
+
+    unless keys in @keys do
+      raise ArgumentError,
+            "expected :keys to be given and be one of :unique or :duplicate, got: #{inspect(keys)}"
+    end
+
+    name = Keyword.get(options, :name)
+
+    unless is_atom(name) do
+      raise ArgumentError, "expected :name to be given and to be an atom, got: #{inspect(name)}"
+    end
+
     meta = Keyword.get(options, :meta, [])
+
     unless Keyword.keyword?(meta) do
-      raise ArgumentError, "expected :meta to be a keyword list, got: #{inspect meta}"
+      raise ArgumentError, "expected :meta to be a keyword list, got: #{inspect(meta)}"
     end
 
     partitions = Keyword.get(options, :partitions, 1)
+
     unless is_integer(partitions) and partitions >= 1 do
-      raise ArgumentError, "expected :partitions to be a positive integer, got: #{inspect partitions}"
+      raise ArgumentError,
+            "expected :partitions to be a positive integer, got: #{inspect(partitions)}"
     end
 
     listeners = Keyword.get(options, :listeners, [])
+
     unless is_list(listeners) and Enum.all?(listeners, &is_atom/1) do
-      raise ArgumentError, "expected :listeners to be a list of named processes, got: #{inspect listeners}"
+      raise ArgumentError,
+            "expected :listeners to be a list of named processes, got: #{inspect(listeners)}"
     end
 
     # The @info format must be kept in sync with Registry.Partition optimization.
-    entries = [{@all_info, {kind, partitions, nil, nil, listeners}},
-               {@key_info, {kind, partitions, nil}} | meta]
-    Registry.Supervisor.start_link(kind, registry, partitions, listeners, entries)
+    entries = [
+      {@all_info, {keys, partitions, nil, nil, listeners}},
+      {@key_info, {keys, partitions, nil}} | meta
+    ]
+
+    Registry.Supervisor.start_link(keys, name, partitions, listeners, entries)
+  end
+
+  @doc """
+  Starts the registry as a supervisor process.
+
+  Similar to `start_link/1` except the required options,
+  `keys` and `name` are given as arguments.
+  """
+  @spec start_link(keys, registry, keyword) :: {:ok, pid} | {:error, term}
+  def start_link(keys, name, options \\ []) when keys in @keys and is_atom(name) do
+    start_link([keys: keys, name: name] ++ options)
+  end
+
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: Keyword.get(opts, :name, Registry),
+      start: {Registry, :start_link, [opts]},
+      type: :supervisor
+    }
   end
 
   @doc """
@@ -292,11 +350,13 @@ defmodule Registry do
       [{self(), 2}]
 
   """
-  @spec update_value(registry, key, (value -> value)) :: {new_value :: term, old_value :: term} | :error
+  @spec update_value(registry, key, (value -> value)) ::
+          {new_value :: term, old_value :: term} | :error
   def update_value(registry, key, callback) when is_atom(registry) and is_function(callback, 1) do
     case key_info!(registry) do
       {:unique, partitions, key_ets} ->
         key_ets = key_ets || key_ets!(registry, key, partitions)
+
         try do
           :ets.lookup_element(key_ets, key, 2)
         catch
@@ -306,9 +366,11 @@ defmodule Registry do
             new_value = callback.(old_value)
             :ets.insert(key_ets, {key, {pid, new_value}})
             {new_value, old_value}
+
           {_, _} ->
             :error
         end
+
       {kind, _, _} ->
         raise ArgumentError, "Registry.update_value/3 is not supported for #{kind} registries"
     end
@@ -323,17 +385,16 @@ defmodule Registry do
   associated to the pid. If there are no entries for the given key,
   the callback is never invoked.
 
-  If the registry is not partitioned, the callback is invoked in the process
-  that calls `dispatch/3`. If the registry is partitioned, the callback is
-  invoked concurrently per partition by starting a task linked to the
-  caller. The callback, however, is only invoked if there are entries for that
-  partition.
+  If the registry is partitioned, the callback is invoked multiple times
+  per partition. If the registry is partitioned and `parallel: true` is
+  given as an option, the dispatching happens in parallel. In both cases,
+  the callback is only invoked if there are entries for that partition.
 
   See the module documentation for examples of using the `dispatch/3`
   function for building custom dispatching or a pubsub system.
   """
-  @spec dispatch(registry, key, (entries :: [{pid, value}] -> term)) :: :ok
-  def dispatch(registry, key, mfa_or_fun)
+  @spec dispatch(registry, key, (entries :: [{pid, value}] -> term), keyword) :: :ok
+  def dispatch(registry, key, mfa_or_fun, opts \\ [])
       when is_atom(registry) and is_function(mfa_or_fun, 1)
       when is_atom(registry) and tuple_size(mfa_or_fun) == 3 do
     case key_info!(registry) do
@@ -342,39 +403,70 @@ defmodule Registry do
         |> safe_lookup_second(key)
         |> List.wrap()
         |> apply_non_empty_to_mfa_or_fun(mfa_or_fun)
+
       {:duplicate, 1, key_ets} ->
         key_ets
         |> safe_lookup_second(key)
         |> apply_non_empty_to_mfa_or_fun(mfa_or_fun)
+
       {:duplicate, partitions, _} ->
-        registry
-        |> dispatch_task(key, mfa_or_fun, partitions)
-        |> Enum.each(&Task.await(&1, :infinity))
+        if Keyword.get(opts, :parallel, false) do
+          registry
+          |> dispatch_parallel(key, mfa_or_fun, partitions)
+          |> Enum.each(&Task.await(&1, :infinity))
+        else
+          dispatch_serial(registry, key, mfa_or_fun, partitions)
+        end
     end
+
     :ok
   end
 
-  defp dispatch_task(_registry, _key, _mfa_or_fun, 0) do
+  defp dispatch_serial(_registry, _key, _mfa_or_fun, 0) do
+    :ok
+  end
+
+  defp dispatch_serial(registry, key, mfa_or_fun, partition) do
+    partition = partition - 1
+
+    registry
+    |> key_ets!(partition)
+    |> safe_lookup_second(key)
+    |> apply_non_empty_to_mfa_or_fun(mfa_or_fun)
+
+    dispatch_serial(registry, key, mfa_or_fun, partition)
+  end
+
+  defp dispatch_parallel(_registry, _key, _mfa_or_fun, 0) do
     []
   end
-  defp dispatch_task(registry, key, mfa_or_fun, partition) do
+
+  defp dispatch_parallel(registry, key, mfa_or_fun, partition) do
     partition = partition - 1
-    task = Task.async(fn ->
-      registry
-      |> key_ets!(partition)
-      |> safe_lookup_second(key)
-      |> apply_non_empty_to_mfa_or_fun(mfa_or_fun)
-      :ok
-    end)
-    [task | dispatch_task(registry, key, mfa_or_fun, partition)]
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        registry
+        |> key_ets!(partition)
+        |> safe_lookup_second(key)
+        |> apply_non_empty_to_mfa_or_fun(mfa_or_fun)
+
+        Process.unlink(parent)
+        :ok
+      end)
+
+    [task | dispatch_parallel(registry, key, mfa_or_fun, partition)]
   end
 
   defp apply_non_empty_to_mfa_or_fun([], _mfa_or_fun) do
     :ok
   end
+
   defp apply_non_empty_to_mfa_or_fun(entries, {module, function, args}) do
     apply(module, function, [entries | args])
   end
+
   defp apply_non_empty_to_mfa_or_fun(entries, fun) do
     fun.(entries)
   end
@@ -419,9 +511,11 @@ defmodule Registry do
     case key_info!(registry) do
       {:unique, partitions, key_ets} ->
         key_ets = key_ets || key_ets!(registry, key, partitions)
+
         case safe_lookup_second(key_ets, key) do
           {_, _} = pair ->
             [pair]
+
           _ ->
             []
         end
@@ -477,9 +571,10 @@ defmodule Registry do
       [{self(), {1, :atom, 1}}, {self(), {2, :atom, 2}}]
 
   """
-  @spec match(registry, key, match_pattern :: atom() | tuple(), guards :: list()) :: [{pid, term}]
+  @spec match(registry, key, match_pattern :: term, guards :: list()) :: [{pid, term}]
   def match(registry, key, pattern, guards \\ []) when is_atom(registry) and is_list(guards) do
-    spec = [{{key, {:_, pattern}}, guards, [{:element, 2, :"$_"}]}]
+    guards = [{:"=:=", {:element, 1, :"$_"}, {:const, key}} | guards]
+    spec = [{{:_, {:_, pattern}}, guards, [{:element, 2, :"$_"}]}]
 
     case key_info!(registry) do
       {:unique, partitions, key_ets} ->
@@ -532,12 +627,38 @@ defmodule Registry do
   def keys(registry, pid) when is_atom(registry) and is_pid(pid) do
     {kind, partitions, _, pid_ets, _} = info!(registry)
     {_, pid_ets} = pid_ets || pid_ets!(registry, pid, partitions)
-    keys = safe_lookup_second(pid_ets, pid)
+
+    keys =
+      try do
+        spec = [{{pid, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}]
+        :ets.select(pid_ets, spec)
+      catch
+        :error, :badarg -> []
+      end
+
+    # Handle the possibility of fake keys
+    keys = gather_keys(keys, [], false)
 
     cond do
       kind == :unique -> Enum.uniq(keys)
       true -> keys
     end
+  end
+
+  defp gather_keys([{key, {_, remaining}} | rest], acc, _fake) do
+    gather_keys(rest, [key | acc], {key, remaining})
+  end
+
+  defp gather_keys([{key, _} | rest], acc, fake) do
+    gather_keys(rest, [key | acc], fake)
+  end
+
+  defp gather_keys([], acc, {key, remaining}) do
+    List.duplicate(key, remaining) ++ Enum.reject(acc, &(&1 === key))
+  end
+
+  defp gather_keys([], acc, false) do
+    acc
   end
 
   @doc """
@@ -598,6 +719,96 @@ defmodule Registry do
   end
 
   @doc """
+  Unregister entries for a given key matching a pattern.
+
+  ## Examples
+
+  For unique registries it can be used to conditionally unregister a key on
+  the basis of whether or not it matches a particular value.
+
+      iex> Registry.start_link(:unique, Registry.UniqueUnregisterMatchTest)
+      iex> Registry.register(Registry.UniqueUnregisterMatchTest, "hello", :world)
+      iex> Registry.keys(Registry.UniqueUnregisterMatchTest, self())
+      ["hello"]
+      iex> Registry.unregister_match(Registry.UniqueUnregisterMatchTest, "hello", :foo)
+      :ok
+      iex> Registry.keys(Registry.UniqueUnregisterMatchTest, self())
+      ["hello"]
+      iex> Registry.unregister_match(Registry.UniqueUnregisterMatchTest, "hello", :world)
+      :ok
+      iex> Registry.keys(Registry.UniqueUnregisterMatchTest, self())
+      []
+
+  For duplicate registries:
+
+      iex> Registry.start_link(:duplicate, Registry.DuplicateUnregisterMatchTest)
+      iex> Registry.register(Registry.DuplicateUnregisterMatchTest, "hello", :world_a)
+      iex> Registry.register(Registry.DuplicateUnregisterMatchTest, "hello", :world_b)
+      iex> Registry.register(Registry.DuplicateUnregisterMatchTest, "hello", :world_c)
+      iex> Registry.keys(Registry.DuplicateUnregisterMatchTest, self())
+      ["hello", "hello", "hello"]
+      iex> Registry.unregister_match(Registry.DuplicateUnregisterMatchTest, "hello", :world_a)
+      :ok
+      iex> Registry.keys(Registry.DuplicateUnregisterMatchTest, self())
+      ["hello", "hello"]
+      iex> Registry.lookup(Registry.DuplicateUnregisterMatchTest, "hello")
+      [{self(), :world_b}, {self(), :world_c}]
+  """
+  def unregister_match(registry, key, pattern, guards \\ []) when is_list(guards) do
+    self = self()
+
+    {kind, partitions, key_ets, pid_ets, listeners} = info!(registry)
+    {key_partition, pid_partition} = partitions(kind, key, self, partitions)
+    key_ets = key_ets || key_ets!(registry, key_partition)
+    {pid_server, pid_ets} = pid_ets || pid_ets!(registry, pid_partition)
+
+    # Remove first from the key_ets because in case of crashes
+    # the pid_ets will still be able to clean up. The last step is
+    # to clean if we have no more entries.
+
+    # Here we want to count all entries for this pid under this key, regardless
+    # of pattern.
+    underscore_guard = {:"=:=", {:element, 1, :"$_"}, {:const, key}}
+    total_spec = [{{:_, {self, :_}}, [underscore_guard], [true]}]
+    total = :ets.select_count(key_ets, total_spec)
+
+    # We only want to delete things that match the pattern
+    delete_spec = [{{:_, {self, pattern}}, [underscore_guard | guards], [true]}]
+
+    case :ets.select_delete(key_ets, delete_spec) do
+      # We deleted everything, we can just delete the object
+      ^total ->
+        true = :ets.delete_object(pid_ets, {self, key, key_ets})
+
+        unlink_if_unregistered(pid_server, pid_ets, self)
+
+        for listener <- listeners do
+          Kernel.send(listener, {:unregister, registry, key, self})
+        end
+
+      0 ->
+        :ok
+
+      deleted ->
+        # There are still entries remaining for this pid. delete_object/2 with
+        # duplicate_bag tables will remove every entry, but we only want to
+        # remove those we have deleted. The solution is to introduce a temp_entry
+        # that indicates how many keys WILL be remaining after the delete operation.
+        remaining = total - deleted
+        temp_entry = {self, key, {key_ets, remaining}}
+        true = :ets.insert(pid_ets, temp_entry)
+        true = :ets.delete_object(pid_ets, {self, key, key_ets})
+        real_keys = List.duplicate({self, key, key_ets}, remaining)
+        true = :ets.insert(pid_ets, real_keys)
+        # We've recreated the real remaining key entries, so we can now delete
+        # our temporary entry.
+        true = :ets.delete_object(pid_ets, temp_entry)
+    end
+
+    :ok
+  end
+
+  @doc """
   Registers the current process under the given `key` in `registry`.
 
   A value to be associated with this registration must also be given.
@@ -644,18 +855,22 @@ defmodule Registry do
     {pid_server, pid_ets} = pid_ets || pid_ets!(registry, pid_partition)
 
     # Notice we write first to the pid ets table because it will
-    # always be able to do the clean up. If we register first to the
+    # always be able to do the cleanup. If we register first to the
     # key one and the process crashes, the key will stay there forever.
     Process.link(pid_server)
     true = :ets.insert(pid_ets, {self, key, key_ets})
+
     case register_key(kind, pid_server, key_ets, key, {key, {self, value}}) do
       {:ok, _} = ok ->
         for listener <- listeners do
           Kernel.send(listener, {:register, registry, key, self, value})
         end
+
         ok
+
       {:error, {:already_registered, ^self}} = error ->
         error
+
       {:error, _} = error ->
         true = :ets.delete_object(pid_ets, {self, key, key_ets})
         unlink_if_unregistered(pid_server, pid_ets, self)
@@ -667,6 +882,7 @@ defmodule Registry do
     true = :ets.insert(key_ets, entry)
     {:ok, pid_server}
   end
+
   defp register_key(:unique, pid_server, key_ets, key, entry) do
     if :ets.insert_new(key_ets, entry) do
       {:ok, pid_server}
@@ -681,6 +897,7 @@ defmodule Registry do
             :ets.delete_object(key_ets, current)
             register_key(:unique, pid_server, key_ets, key, entry)
           end
+
         [] ->
           register_key(:unique, pid_server, key_ets, key, entry)
       end
@@ -707,7 +924,7 @@ defmodule Registry do
       :ets.lookup(registry, key)
     catch
       :error, :badarg ->
-        raise ArgumentError, "unknown registry: #{inspect registry}"
+        raise ArgumentError, "unknown registry: #{inspect(registry)}"
     else
       [{^key, value}] -> {:ok, value}
       _ -> :error
@@ -739,7 +956,7 @@ defmodule Registry do
       :ok
     catch
       :error, :badarg ->
-        raise ArgumentError, "unknown registry: #{inspect registry}"
+        raise ArgumentError, "unknown registry: #{inspect(registry)}"
     end
   end
 
@@ -756,7 +973,7 @@ defmodule Registry do
       :ets.lookup_element(registry, @all_info, 2)
     catch
       :error, :badarg ->
-        raise ArgumentError, "unknown registry: #{inspect registry}"
+        raise ArgumentError, "unknown registry: #{inspect(registry)}"
     end
   end
 
@@ -765,7 +982,7 @@ defmodule Registry do
       :ets.lookup_element(registry, @key_info, 2)
     catch
       :error, :badarg ->
-        raise ArgumentError, "unknown registry: #{inspect registry}"
+        raise ArgumentError, "unknown registry: #{inspect(registry)}"
     end
   end
 
@@ -796,6 +1013,7 @@ defmodule Registry do
   defp partitions(:unique, key, pid, partitions) do
     {hash(key, partitions), hash(pid, partitions)}
   end
+
   defp partitions(:duplicate, _key, pid, partitions) do
     partition = hash(pid, partitions)
     {partition, partition}
@@ -813,7 +1031,8 @@ defmodule Registry.Supervisor do
   use Supervisor
 
   def start_link(kind, registry, partitions, listeners, entries) do
-    Supervisor.start_link(__MODULE__, {kind, registry, partitions, listeners, entries}, name: registry)
+    arg = {kind, registry, partitions, listeners, entries}
+    Supervisor.start_link(__MODULE__, arg, name: registry)
   end
 
   def init({kind, registry, partitions, listeners, entries}) do
@@ -821,7 +1040,7 @@ defmodule Registry.Supervisor do
     true = :ets.insert(registry, entries)
 
     children =
-      for i <- 0..partitions - 1 do
+      for i <- 0..(partitions - 1) do
         key_partition = Registry.Partition.key_name(registry, i)
         pid_partition = Registry.Partition.pid_name(registry, i)
         arg = {kind, registry, i, partitions, key_partition, pid_partition, listeners}
@@ -888,9 +1107,11 @@ defmodule Registry.Partition do
     # If we have only one partition, we do an optimization which
     # is to write the table information alongside the registry info.
     if partitions == 1 do
-      entries =
-        [{@key_info, {kind, partitions, key_ets}},
-         {@all_info, {kind, partitions, key_ets, {self(), pid_ets}, listeners}}]
+      entries = [
+        {@key_info, {kind, partitions, key_ets}},
+        {@all_info, {kind, partitions, key_ets, {self(), pid_ets}, listeners}}
+      ]
+
       true = :ets.insert(registry, entries)
     else
       true = :ets.insert(registry, {i, key_ets, {self(), pid_ets}})
@@ -904,14 +1125,25 @@ defmodule Registry.Partition do
   defp init_key_ets(:unique, key_partition) do
     :ets.new(key_partition, [:set, :public, read_concurrency: true, write_concurrency: true])
   end
+
   defp init_key_ets(:duplicate, key_partition) do
-    :ets.new(key_partition, [:duplicate_bag, :public, read_concurrency: true, write_concurrency: true])
+    :ets.new(key_partition, [
+      :duplicate_bag,
+      :public,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
   end
 
   # A process can always have multiple keys, so the
   # pid partition is always a duplicate bag.
   defp init_pid_ets(_, pid_partition) do
-    :ets.new(pid_partition, [:duplicate_bag, :public, read_concurrency: true, write_concurrency: true])
+    :ets.new(pid_partition, [
+      :duplicate_bag,
+      :public,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
   end
 
   def handle_call(:sync, _, state) do
@@ -920,15 +1152,28 @@ defmodule Registry.Partition do
 
   def handle_info({:EXIT, pid, _reason}, ets) do
     entries = :ets.take(ets, pid)
+
     for {_pid, key, key_ets} <- entries do
+      key_ets =
+        case key_ets do
+          # In case the fake key ets is being used. See unregister_match/2.
+          {key_ets, _} ->
+            key_ets
+
+          _ ->
+            key_ets
+        end
+
       try do
         :ets.match_delete(key_ets, {key, {pid, :_}})
       catch
         :error, :badarg -> :badarg
       end
     end
+
     {:noreply, ets}
   end
+
   def handle_info(msg, state) do
     super(msg, state)
   end

@@ -3,16 +3,17 @@
 -export([
   setup/1, cleanup/1, cache_env/1, get_cached_env/1,
   record_local/2, record_local/3, record_import/4,
-  record_definition/3, record_defaults/4,
+  record_definition/3, record_defaults/4, reattach/5,
   ensure_no_import_conflict/3, warn_unused_local/3, format_error/1
 ]).
 
 -include("elixir.hrl").
 -define(attr, {elixir, locals_tracker}).
+-define(cache, {elixir, cache_env}).
 -define(tracker, 'Elixir.Module.LocalsTracker').
 
 setup(Module) ->
-  case elixir_compiler:get_opt(internal) of
+  case elixir_config:get(bootstrap) of
     false ->
       {ok, Pid} = ?tracker:start_link(),
       ets:insert(elixir_module:data_table(Module), {?attr, Pid}),
@@ -23,6 +24,9 @@ setup(Module) ->
 
 cleanup(Module) ->
   if_tracker(Module, fun(Pid) -> unlink(Pid), ?tracker:stop(Pid), ok end).
+
+reattach(Tuple, Kind, Module, Function, Neighbours) ->
+  if_tracker(Module, fun(Pid) -> ?tracker:reattach(Pid, Tuple, Kind, Function, Neighbours) end).
 
 record_local(Tuple, Module) when is_atom(Module) ->
   if_tracker(Module, fun(Pid) -> ?tracker:add_local(Pid, Tuple), ok end).
@@ -56,19 +60,27 @@ if_tracker(Module, Default, Callback) ->
 
 %% CACHING
 
-cache_env(#{module := Module} = RE) ->
-  E = RE#{line := nil, vars := []},
-  try ets:lookup_element(elixir_module:data_table(Module), ?attr, 2) of
-    Pid ->
-      {Pid, ?tracker:cache_env(Pid, E)}
-  catch
-    error:badarg ->
-      {Escaped, _} = elixir_quote:escape(E, false),
-      Escaped
-  end.
+cache_env(#{line := Line, module := Module} = E) ->
+  Table = elixir_module:data_table(Module),
+  Cache = E#{line := nil, vars := []},
 
-get_cached_env({Pid, Ref}) -> ?tracker:get_cached_env(Pid, Ref);
-get_cached_env(Env) -> Env.
+  Pos =
+    case ets:lookup(Table, ?cache) of
+      [{_, Key, Cache}] ->
+        Key;
+      [{_, PrevKey, _}] ->
+        Key = PrevKey + 1,
+        ets:insert(Table, {{cache_env, Key}, Cache}),
+        ets:insert(Table, {?cache, Key, Cache}),
+        Key
+    end,
+
+  {Module, {Line, Pos}}.
+
+get_cached_env({Module, {Line, Pos}}) ->
+  (ets:lookup_element(elixir_module:data_table(Module), {cache_env, Pos}, 2))#{line := Line};
+get_cached_env(Env) ->
+  Env.
 
 %% ERROR HANDLING
 

@@ -9,17 +9,57 @@ defmodule Application do
   Applications are defined with an application file named `APP.app` where
   `APP` is the application name, usually in `underscore_case`. The application
   file must reside in the same `ebin` directory as the compiled modules of the
-  application.
+  application. In Elixir, the Mix build tool is responsible for compiling your
+  source code and generating your application `.app` file. You can learn more
+  about the generation of `.app` files by typing `mix help compile.app`.
 
-  In Elixir, Mix is responsible for compiling your source code and
-  generating your application `.app` file. Furthermore, Mix is also
-  responsible for configuring, starting and stopping your application
-  and its dependencies. For this reason, this documentation will focus
-  on the remaining aspects of your application: the application environment
-  and the application callback module.
+  Once your application is compiled, running your system is a matter of starting
+  your current application and its dependencies. Differently from other languages,
+  Elixir does not have a `main` procedure that is responsible for starting your
+  system. Instead, you start one or more applications, each with their own
+  initialization and termination logic.
 
-  You can learn more about Mix generation of `.app` files by typing
-  `mix help compile.app`.
+  Starting an application is done via the "application module callback", which
+  is a module that defines the `start/2` function. The `start/2` function should
+  then start a supervisor, which is often called as the top-level supervisor, since
+  it sits at the root of a potentially long supervision tree. When the system is
+  shutting down, all applications shut down their top-level supervisor, which
+  terminates children in the opposite order they are started.
+
+  We have mentioned the Mix build tool is responsible for compiling applications,
+  but it is also capable of running applications. For example, `mix test`
+  automatically starts your application dependencies and your application itself
+  before your test runs. `mix run --no-halt` also boots your current project and
+  can be used to start a long running system. See `mix help run`.
+
+  Developers can also use tools like [Distillery](https://github.com/bitwalker/distillery)
+  that build **releases**. Releases are able to package all of your source code
+  as well as the Erlang VM into a single directory. Releases also give you explicit
+  control over how each application is started and in which order. They also provide
+  a more streamlined mechanism for starting and stopping systems, debugging, logging,
+  as well as system monitoring.
+
+  Finally, Elixir provides tools such as escripts and archives, which are
+  different mechanisms for packaging your application. Those are typically used
+  when tools must be shared between developers and not as deployment options.
+  See `mix help archive.build` and `mix help escript.build` for more detail.
+
+  Shutting down a live system cleanly can be done by calling `System.stop/1`.
+  It will shut down all applications in the opposite order they are started.
+  Each application will then shutdown its top-level supervisor, if one is
+  available, which then shuts down its children.
+
+  From Erlang/OTP 19.1, a SIGTERM from the operating system will automatically
+  translate to `System.stop/0`. Erlang/OTP 20 gives user more explicit control
+  over OS signals via the `:os.set_signal/2` function.
+
+  Applications also provide an "application environment", which is how
+  applications are configured. The application environment can either be set
+  statically, via a configuration file, or dynamically via `put_env/3` and
+  friends.
+
+  Over the next sections, we will cover the "application environment" and
+  the "application module callback" in more detail.
 
   ## Application environment
 
@@ -40,9 +80,13 @@ defmodule Application do
       Application.get_env(:APP_NAME, :hello)
       #=> :world
 
-  It is also possible to put and delete values from the application value,
-  including new values that are not defined in the environment file (although
-  this should be avoided).
+  Applications and dependencies in Mix projects are typically configured
+  via the `config/config.exs` file. For example, someone using your
+  application can configure the `:hello` key as follows:
+
+      config :APP_NAME, hello: :brand_new_world
+
+  It is also possible to configure applications dynamically via `put_env/3`.
 
   Keep in mind that each application is responsible for its environment.
   Do not use the functions in this module for directly accessing or modifying
@@ -68,7 +112,8 @@ defmodule Application do
         use Application
 
         def start(_type, _args) do
-          MyApp.Supervisor.start_link()
+          children = []
+          Supervisor.start_link(children, strategy: :one_for_one)
         end
       end
 
@@ -78,8 +123,8 @@ defmodule Application do
 
   The `type` argument passed to `start/2` is usually `:normal` unless in a
   distributed setup where application takeovers and failovers are configured.
-  This particular aspect of applications is explained in more detail in the
-  OTP documentation:
+  Distributed applications is beyond the scope of this documentation. For those
+  interested on the topic, please access the OTP documentation:
 
     * [`:application` module](http://www.erlang.org/doc/man/application.html)
     * [Applications – OTP Design Principles](http://www.erlang.org/doc/design_principles/applications.html)
@@ -131,9 +176,9 @@ defmodule Application do
   callback.
   """
   @callback start(start_type, start_args :: term) ::
-    {:ok, pid} |
-    {:ok, pid, state} |
-    {:error, reason :: term}
+              {:ok, pid}
+              | {:ok, pid, state}
+              | {:error, reason :: term}
 
   @doc """
   Called when an application is stopped.
@@ -160,8 +205,7 @@ defmodule Application do
   in the order they are listed in.
   """
   @callback start_phase(phase :: term, start_type, phase_args :: term) ::
-    :ok |
-    {:error, reason :: term}
+              :ok | {:error, reason :: term}
 
   @optional_callbacks start_phase: 3
 
@@ -175,7 +219,7 @@ defmodule Application do
         :ok
       end
 
-      defoverridable [stop: 1]
+      defoverridable Application
     end
   end
 
@@ -185,15 +229,26 @@ defmodule Application do
   @type state :: term
   @type start_type :: :permanent | :transient | :temporary
 
-  @application_keys [:description, :id, :vsn, :modules, :maxP, :maxT, :registered,
-                     :included_applications, :applications, :mod, :start_phases]
+  @application_keys [
+    :description,
+    :id,
+    :vsn,
+    :modules,
+    :maxP,
+    :maxT,
+    :registered,
+    :included_applications,
+    :applications,
+    :mod,
+    :start_phases
+  ]
 
   @doc """
   Returns the spec for `app`.
 
   The following keys are returned:
 
-    * #{Enum.map_join @application_keys, "\n  * ", &inspect/1}
+    * #{Enum.map_join(@application_keys, "\n  * ", &inspect/1)}
 
   Note the environment is not returned as it can be accessed via
   `fetch_env/2`. Returns `nil` if the application is not loaded.
@@ -202,7 +257,7 @@ defmodule Application do
   def spec(app) do
     case :application.get_all_key(app) do
       {:ok, info} -> :lists.keydelete(:env, 1, info)
-      :undefined  -> nil
+      :undefined -> nil
     end
   end
 
@@ -276,11 +331,27 @@ defmodule Application do
   @spec fetch_env!(app, key) :: value | no_return
   def fetch_env!(app, key) do
     case fetch_env(app, key) do
-      {:ok, value} -> value
+      {:ok, value} ->
+        value
+
       :error ->
-        raise ArgumentError,
-          "application #{inspect app} is not loaded, " <>
-          "or the configuration parameter #{inspect key} is not set"
+        vsn = :application.get_key(app, :vsn)
+        app = inspect(app)
+        key = inspect(key)
+
+        case vsn do
+          {:ok, _} ->
+            raise ArgumentError,
+                  "could not fetch application environment #{key} for application #{app} " <>
+                    "because configuration #{key} was not set"
+
+          :undefined ->
+            raise ArgumentError,
+                  "could not fetch application environment #{key} for application #{app} " <>
+                    "because the application was not loaded/started. If your application " <>
+                    "depends on #{app} at runtime, make sure to load/start it or list it " <>
+                    "under :extra_applications in your mix.exs file"
+        end
     end
   end
 
@@ -301,7 +372,7 @@ defmodule Application do
   in the application resource file on load. This means persistent values will
   stick after the application is loaded and also on application reload.
   """
-  @spec put_env(app, key, value, [timeout: timeout, persistent: boolean]) :: :ok
+  @spec put_env(app, key, value, timeout: timeout, persistent: boolean) :: :ok
   def put_env(app, key, value, opts \\ []) do
     :application.set_env(app, key, value, opts)
   end
@@ -311,7 +382,7 @@ defmodule Application do
 
   See `put_env/4` for a description of the options.
   """
-  @spec delete_env(app, key, [timeout: timeout, persistent: boolean]) :: :ok
+  @spec delete_env(app, key, timeout: timeout, persistent: boolean) :: :ok
   def delete_env(app, key, opts \\ []) do
     :application.unset_env(app, key, opts)
   end
@@ -441,21 +512,22 @@ defmodule Application do
   For more information on code paths, check the `Code` module in
   Elixir and also Erlang's [`:code` module](http://www.erlang.org/doc/man/code.html).
   """
-  @spec app_dir(app) :: String.t
+  @spec app_dir(app) :: String.t()
   def app_dir(app) when is_atom(app) do
     case :code.lib_dir(app) do
       lib when is_list(lib) -> IO.chardata_to_string(lib)
-      {:error, :bad_name} -> raise ArgumentError, "unknown application: #{inspect app}"
+      {:error, :bad_name} -> raise ArgumentError, "unknown application: #{inspect(app)}"
     end
   end
 
   @doc """
   Returns the given path inside `app_dir/1`.
   """
-  @spec app_dir(app, String.t | [String.t]) :: String.t
+  @spec app_dir(app, String.t() | [String.t()]) :: String.t()
   def app_dir(app, path) when is_binary(path) do
     Path.join(app_dir(app), path)
   end
+
   def app_dir(app, path) when is_list(path) do
     Path.join([app_dir(app) | path])
   end
@@ -473,7 +545,7 @@ defmodule Application do
   """
   @spec loaded_applications :: [tuple]
   def loaded_applications do
-    :application.loaded_applications
+    :application.loaded_applications()
   end
 
   @doc """
@@ -481,7 +553,7 @@ defmodule Application do
   `ensure_started/2`, `stop/1`, `load/1` and `unload/1`,
   returns a string.
   """
-  @spec format_error(any) :: String.t
+  @spec format_error(any) :: String.t()
   def format_error(reason) do
     try do
       do_format_error(reason)
@@ -500,8 +572,8 @@ defmodule Application do
 
   # {:error, reason} return value
   defp do_format_error({reason, {mod, :start, args}}) do
-    Exception.format_mfa(mod, :start, args) <> " returned an error: " <>
-      Exception.format_exit(reason)
+    Exception.format_mfa(mod, :start, args) <>
+      " returned an error: " <> Exception.format_exit(reason)
   end
 
   # error or exit(reason) call, use exit reason as reason.
@@ -511,8 +583,7 @@ defmodule Application do
 
   # bad return value
   defp do_format_error({:bad_return, {{mod, :start, args}, return}}) do
-    Exception.format_mfa(mod, :start, args) <>
-      " returned a bad value: " <> inspect(return)
+    Exception.format_mfa(mod, :start, args) <> " returned a bad value: " <> inspect(return)
   end
 
   defp do_format_error({:already_started, app}) when is_atom(app) do
