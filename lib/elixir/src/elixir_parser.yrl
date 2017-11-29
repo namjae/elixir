@@ -48,7 +48,7 @@ Rootsymbol grammar.
 %% one coming from empty_paren on stab.
 Expect 3.
 
-%% Changes in ops and precedence should be reflected on lib/elixir/lib/macro.ex
+%% Changes in ops and precedence should be reflected on lib/elixir/lib/code/identifier.ex
 %% Note though the operator => in practice has lower precedence than all others,
 %% its entry in the table is only to support the %{user | foo => bar} syntax.
 Left       5 do.
@@ -517,8 +517,8 @@ call_args_parens_expr -> no_parens_expr : throw_no_parens_many_strict('$1').
 call_args_parens_base -> call_args_parens_expr : ['$1'].
 call_args_parens_base -> call_args_parens_base ',' call_args_parens_expr : ['$3' | '$1'].
 
-call_args_parens -> empty_paren :
-                      {[], []}.
+call_args_parens -> open_paren ')' :
+                      {eol_pair('$1', '$2'), []}.
 call_args_parens -> open_paren no_parens_expr close_paren :
                       {eol_pair('$1', '$3'), ['$2']}.
 call_args_parens -> open_paren kw_base close_paren :

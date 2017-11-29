@@ -73,6 +73,11 @@ defmodule Kernel.LexicalTracker do
   end
 
   @doc false
+  def remote_struct(pid, module, line) when is_atom(module) do
+    :gen_server.cast(pid, {:remote_struct, module, line})
+  end
+
+  @doc false
   def import_dispatch(pid, module, fa, line, mode) when is_atom(module) do
     :gen_server.cast(pid, {:import_dispatch, module, fa, line, mode})
   end
@@ -126,6 +131,7 @@ defmodule Kernel.LexicalTracker do
       references: %{},
       compile: %{},
       runtime: %{},
+      structs: %{},
       dest: dest,
       cache: %{},
       file: nil
@@ -145,7 +151,8 @@ defmodule Kernel.LexicalTracker do
   end
 
   def handle_call(:remote_references, _from, state) do
-    {:reply, partition(Enum.to_list(state.references), [], []), state}
+    {compile, runtime} = partition(:maps.to_list(state.references), [], [])
+    {:reply, {compile, :maps.keys(state.structs), runtime}, state}
   end
 
   def handle_call(:remote_dispatches, _from, state) do
@@ -157,15 +164,21 @@ defmodule Kernel.LexicalTracker do
   end
 
   def handle_call({:read_cache, key}, _from, %{cache: cache} = state) do
-    {:reply, Map.fetch!(cache, key), state}
+    {:reply, :maps.get(key, cache), state}
   end
 
   def handle_cast({:write_cache, key, value}, %{cache: cache} = state) do
-    {:noreply, Map.put(state, :cache, Map.put(cache, key, value))}
+    {:noreply, %{state | cache: :maps.put(key, value, cache)}}
   end
 
   def handle_cast({:remote_reference, module, mode}, state) do
     {:noreply, %{state | references: add_reference(state.references, module, mode)}}
+  end
+
+  def handle_cast({:remote_struct, module, line}, state) do
+    state = add_remote_dispatch(state, module, {:__struct__, 1}, line, :compile)
+    structs = :maps.put(module, true, state.structs)
+    {:noreply, %{state | structs: structs}}
   end
 
   def handle_cast({:remote_dispatch, module, fa, line, mode}, state) do
@@ -243,11 +256,15 @@ defmodule Kernel.LexicalTracker do
 
   # Callbacks helpers
 
-  defp add_reference(references, module, :runtime) when is_atom(module),
-    do: map_put_new(module, :runtime, references)
-
   defp add_reference(references, module, :compile) when is_atom(module),
     do: :maps.put(module, :compile, references)
+
+  defp add_reference(references, module, :runtime) when is_atom(module) do
+    case :maps.find(module, references) do
+      {:ok, _} -> references
+      :error -> :maps.put(module, :runtime, references)
+    end
+  end
 
   defp add_remote_dispatch(state, module, fa, line, mode) when is_atom(module) do
     location = location(state.file, line)
@@ -290,13 +307,6 @@ defmodule Kernel.LexicalTracker do
     case :maps.find(key, map) do
       {:ok, val} -> :maps.put(key, fun.(val), map)
       :error -> :maps.put(key, initial, map)
-    end
-  end
-
-  defp map_put_new(key, value, map) do
-    case :maps.find(key, map) do
-      {:ok, _} -> map
-      :error -> :maps.put(key, value, map)
     end
   end
 end

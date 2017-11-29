@@ -128,6 +128,18 @@ defmodule Macro.Env do
   end
 
   @doc """
+  Returns a `Macro.Env` in the match context.
+  """
+  @spec to_match(t) :: t
+  def to_match(%{__struct__: Macro.Env, context: :match} = env) do
+    env
+  end
+
+  def to_match(%{__struct__: Macro.Env, prematch_vars: nil, vars: vars} = env) do
+    %{env | context: :match, match_vars: [], prematch_vars: vars}
+  end
+
+  @doc """
   Returns whether the compilation environment is currently
   inside a guard.
   """
@@ -162,6 +174,6 @@ defmodule Macro.Env do
   end
 
   defp relative_location(env) do
-    [file: Path.relative_to_cwd(env.file), line: env.line]
+    [file: String.to_charlist(Path.relative_to_cwd(env.file)), line: env.line]
   end
 end

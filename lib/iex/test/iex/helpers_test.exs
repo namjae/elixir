@@ -33,8 +33,18 @@ defmodule IEx.HelpersTest do
         on_exit(fn -> IEx.Pry.remove_breaks() end)
       end
 
-      test "sets up a breakpoint with macro syntax" do
+      test "sets up a breakpoint with capture syntax" do
         assert break!(URI.decode_query() / 2) == 1
+        assert IEx.Pry.breaks() == [{1, URI, {:decode_query, 2}, 1}]
+      end
+
+      test "sets up a breakpoint with call syntax" do
+        assert break!(URI.decode_query(_, %{})) == 1
+        assert IEx.Pry.breaks() == [{1, URI, {:decode_query, 2}, 1}]
+      end
+
+      test "sets up a breakpoint with guards syntax" do
+        assert break!(URI.decode_query(_, map) when is_map(map)) == 1
         assert IEx.Pry.breaks() == [{1, URI, {:decode_query, 2}, 1}]
       end
 
@@ -65,6 +75,12 @@ defmodule IEx.HelpersTest do
         assert break!(URI.decode_query() / 2) == 1
         assert remove_breaks() == :ok
         assert IEx.Pry.breaks() == []
+      end
+
+      test "errors when setting up a breakpoint with invalid guard" do
+        assert_raise CompileError, ~r"cannot invoke local is_whatever/1 inside guard", fn ->
+          break!(URI.decode_query(_, map) when is_whatever(map))
+        end
       end
 
       test "errors when setting up a break with no beam" do
@@ -308,7 +324,7 @@ defmodule IEx.HelpersTest do
                "Could not load module :whatever, got: nofile\n"
 
       assert capture_io(fn -> h(:lists) end) ==
-               ":lists is an Erlang module and, as such, it does not have Elixir-style docs\n"
+               "Documentation is not available for non-Elixir modules, got: :lists\n"
     end
 
     test "prints function documentation" do

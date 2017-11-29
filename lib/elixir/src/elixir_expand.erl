@@ -262,7 +262,7 @@ expand({for, Meta, [_ | _] = Args}, E) ->
         {Args, []}
     end,
 
-  validate_opts(Meta, for, [do, into], Block, E),
+  validate_opts(Meta, for, [do, into, uniq], Block, E),
   {Expr, Opts} =
     case lists:keytake(do, 1, Block) of
       {value, {do, Do}, DoOpts} ->
@@ -270,6 +270,12 @@ expand({for, Meta, [_ | _] = Args}, E) ->
       false ->
         form_error(Meta, ?key(E, file), ?MODULE, {missing_option, for, [do]})
     end,
+
+  case lists:keyfind(uniq, 1, Opts) of
+    false -> ok;
+    {uniq, Value} when is_boolean(Value) -> ok;
+    {uniq, Value} -> form_error(Meta, ?key(E, file), ?MODULE, {for_invalid_uniq, Value})
+  end,
 
   {EOpts, EO} = expand(Opts, E),
   {ECases, EC} = lists:mapfoldl(fun expand_for/2, EO, Cases),
@@ -351,6 +357,8 @@ expand({Name, Meta, Kind} = Var, #{vars := Vars} = E) when is_atom(Name), is_ato
       warn_underscored_var_access(Meta, Name, Kind, E),
       {Var, E};
     false ->
+      %% TODO: var true will no longer be necessary once we always raise for vars
+      %% The value comes from the var! macro in Kernel.
       case lists:keyfind(var, 1, Meta) of
         {var, true} ->
           form_error(Meta, ?key(E, file), ?MODULE, {undefined_var, Name, Kind});
@@ -379,18 +387,6 @@ expand({Atom, Meta, Args}, E) when is_atom(Atom), is_list(Meta), is_list(Args) -
   end);
 
 %% Remote calls
-
-expand({{'.', Meta, [erlang, 'orelse']}, _, [Left, Right]}, #{context := nil} = Env) ->
-  Generated = ?generated(Meta),
-  TrueClause = {'->', Generated, [[true], true]},
-  FalseClause = {'->', Generated, [[false], Right]},
-  expand_boolean_check('or', Left, TrueClause, FalseClause, Meta, Env);
-
-expand({{'.', Meta, [erlang, 'andalso']}, _, [Left, Right]}, #{context := nil} = Env) ->
-  Generated = ?generated(Meta),
-  TrueClause = {'->', Generated, [[true], Right]},
-  FalseClause = {'->', Generated, [[false], false]},
-  expand_boolean_check('and', Left, TrueClause, FalseClause, Meta, Env);
 
 expand({{'.', DotMeta, [Left, Right]}, Meta, Args}, E)
     when (is_tuple(Left) orelse is_atom(Left)), is_atom(Right), is_list(Meta), is_list(Args) ->
@@ -462,20 +458,6 @@ expand(Other, E) ->
   form_error([{line, 0}], ?key(E, file), ?MODULE, {invalid_quoted_expr, Other}).
 
 %% Helpers
-
-expand_boolean_check(Op, Expr, TrueClause, FalseClause, Meta, Env) ->
-  {EExpr, EnvExpr} = expand(Expr, Env),
-  Clauses =
-    case elixir_utils:returns_boolean(EExpr) of
-      true ->
-        [TrueClause, FalseClause];
-      false ->
-        Other = {other, Meta, ?var_context},
-        OtherExpr = {{'.', Meta, [erlang, error]}, Meta, [{'{}', [], [badbool, Op, Other]}]},
-        [TrueClause, FalseClause, {'->', ?generated(Meta), [[Other], OtherExpr]}]
-    end,
-  {EClauses, EnvCase} = elixir_clauses:'case'(Meta, [{do, Clauses}], EnvExpr),
-  {{'case', Meta, [EExpr, EClauses]}, EnvCase}.
 
 expand_multi_alias_call(Kind, Meta, Base, Refs, Opts, E) ->
   {BaseRef, EB} = expand_without_aliases_report(Base, E),
@@ -870,6 +852,8 @@ format_error({missing_option, Construct, Opts}) when is_list(Opts) ->
   io_lib:format("missing ~ts option in \"~ts\"", [string:join(StringOpts, "/"), Construct]);
 format_error({invalid_args, Construct}) ->
   io_lib:format("invalid arguments for \"~ts\"", [Construct]);
+format_error({for_invalid_uniq, Value}) ->
+  io_lib:format(":uniq option for comprehensions only accepts a boolean, got: ~ts", ['Elixir.Macro':to_string(Value)]);
 format_error(for_generator_start) ->
   "for comprehensions must start with a generator";
 format_error(unhandled_arrow_op) ->

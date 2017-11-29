@@ -289,6 +289,27 @@ defmodule NaiveDateTime do
   end
 
   @doc """
+  Returns the given naive datetime with the microsecond field truncated to the
+  given precision (`:microsecond`, `millisecond` or `:second`).
+
+  ## Examples
+
+      iex> NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :microsecond)
+      ~N[2017-11-06 00:23:51.123456]
+
+      iex> NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :millisecond)
+      ~N[2017-11-06 00:23:51.123]
+
+      iex> NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :second)
+      ~N[2017-11-06 00:23:51]
+
+  """
+  @spec truncate(t(), :microsecond | :millisecond | :second) :: t()
+  def truncate(%NaiveDateTime{microsecond: microsecond} = ndatetime, precision) do
+    %{ndatetime | microsecond: Calendar.truncate(microsecond, precision)}
+  end
+
+  @doc """
   Converts a `NaiveDateTime` into a `Date`.
 
   Because `Date` does not hold time information,
@@ -384,7 +405,7 @@ defmodule NaiveDateTime do
 
   Time representations with reduced accuracy are not supported.
 
-  Note that while ISO8601 allows datetimes to specify 24:00:00 as the
+  Note that while ISO 8601 allows datetimes to specify 24:00:00 as the
   zero hour of the next day, this notation is not supported by Elixir.
 
   ## Examples
@@ -499,7 +520,7 @@ defmodule NaiveDateTime do
       iex> NaiveDateTime.to_iso8601(~N[2000-02-28 23:00:13.001], :basic)
       "20000228T230013.001"
 
-  This function can also be used to convert a DateTime to ISO8601 without
+  This function can also be used to convert a DateTime to ISO 8601 without
   the time zone information:
 
       iex> dt = %DateTime{year: 2000, month: 2, day: 29, zone_abbr: "CET",
@@ -572,10 +593,7 @@ defmodule NaiveDateTime do
       {{2000, 2, 29}, {23, 00, 07}}
 
   """
-  @spec to_erl(t) :: :calendar.datetime()
-  def to_erl(naive_datetime)
-
-  @spec to_erl(Calendar.time()) :: :calendar.time()
+  @spec to_erl(Calendar.naive_datetime()) :: :calendar.datetime()
   def to_erl(%{calendar: _} = naive_datetime) do
     %{year: year, month: month, day: day, hour: hour, minute: minute, second: second} =
       convert!(naive_datetime, Calendar.ISO)
@@ -600,7 +618,8 @@ defmodule NaiveDateTime do
       {:error, :invalid_date}
 
   """
-  @spec from_erl(:calendar.datetime(), Calendar.microsecond()) :: {:ok, t} | {:error, atom}
+  @spec from_erl(:calendar.datetime(), Calendar.microsecond(), Calendar.calendar()) ::
+          {:ok, t} | {:error, atom}
   def from_erl(tuple, microsecond \\ {0, 0}, calendar \\ Calendar.ISO)
 
   def from_erl({{year, month, day}, {hour, minute, second}}, microsecond, calendar) do
@@ -624,9 +643,10 @@ defmodule NaiveDateTime do
       ** (ArgumentError) cannot convert {{2000, 13, 1}, {13, 30, 15}} to naive datetime, reason: :invalid_date
 
   """
-  @spec from_erl!(:calendar.datetime(), Calendar.microsecond()) :: t | no_return
-  def from_erl!(tuple, microsecond \\ {0, 0}) do
-    case from_erl(tuple, microsecond) do
+  @spec from_erl!(:calendar.datetime(), Calendar.microsecond(), Calendar.calendar()) ::
+          t | no_return
+  def from_erl!(tuple, microsecond \\ {0, 0}, calendar \\ Calendar.ISO) do
+    case from_erl(tuple, microsecond, calendar) do
       {:ok, value} ->
         value
 

@@ -1319,6 +1319,18 @@ defmodule Kernel.SpecialForms do
         String.upcase(line)
       end
 
+  ## Uniq
+
+  `uniq: true` can also be given to comprehensions to guarantee that
+  that results are only added to the collection if they were not returned
+  before. For example:
+
+      iex> for(x <- [1, 1, 2, 3], uniq: true, do: x * 2)
+      [2, 4, 6]
+
+      iex> for(<<x <- "abcabc">>, uniq: true, into: "", do: <<x-32>>)
+      "ABC"
+
   """
   defmacro for(args), do: error!([args])
 
@@ -1361,6 +1373,12 @@ defmodule Kernel.SpecialForms do
       {:ok, 300}
       iex> width
       nil
+
+  Note that if a "bare expression" fails to match, it will raise a `MatchError`
+  instead of returning the non-matched value:
+
+      with :foo = :bar, do: :ok
+      #=> ** (MatchError) no match of right hand side value: :bar
 
   An `else` option can be given to modify what is being returned from
   `with` in the case of a failed match:

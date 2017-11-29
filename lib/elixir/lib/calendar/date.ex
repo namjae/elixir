@@ -74,9 +74,6 @@ defmodule Date do
       iex> Date.range(~D[1999-01-01], ~D[2000-01-01])
       #DateRange<~D[1999-01-01], ~D[2000-01-01]>
 
-      iex> Date.range(~N[2000-01-01 09:00:00], ~D[1999-01-01])
-      #DateRange<~N[2000-01-01 09:00:00], ~D[1999-01-01]>
-
   A range of dates implements the `Enumerable` protocol, which means
   functions in the `Enum` module can be used to work with
   ranges:
@@ -90,8 +87,8 @@ defmodule Date do
       -366
   """
 
-  @spec range(Calendar.date(), Calendar.date()) :: Date.Range.t()
-  def range(%{calendar: calendar} = first, %{calendar: calendar} = last) do
+  @spec range(Date.t(), Date.t()) :: Date.Range.t()
+  def range(%Date{calendar: calendar} = first, %Date{calendar: calendar} = last) do
     {first_days, _} = to_iso_days(first)
     {last_days, _} = to_iso_days(last)
 
@@ -103,7 +100,7 @@ defmodule Date do
     }
   end
 
-  def range(%{calendar: _, year: _, month: _, day: _}, %{calendar: _, year: _, month: _, day: _}) do
+  def range(%Date{}, %Date{}) do
     raise ArgumentError, "both dates must have matching calendars"
   end
 
@@ -196,7 +193,8 @@ defmodule Date do
       {:error, :invalid_date}
 
   """
-  @spec new(Calendar.year(), Calendar.month(), Calendar.day()) :: {:ok, t} | {:error, atom}
+  @spec new(Calendar.year(), Calendar.month(), Calendar.day(), Calendar.calendar()) ::
+          {:ok, t} | {:error, atom}
   def new(year, month, day, calendar \\ Calendar.ISO) do
     if calendar.valid_date?(year, month, day) do
       {:ok, %Date{year: year, month: month, day: day, calendar: calendar}}
@@ -239,7 +237,7 @@ defmodule Date do
       {:error, :invalid_date}
 
   """
-  @spec from_iso8601(String.t()) :: {:ok, t} | {:error, atom}
+  @spec from_iso8601(String.t(), Calendar.calendar()) :: {:ok, t} | {:error, atom}
   def from_iso8601(string, calendar \\ Calendar.ISO)
 
   def from_iso8601(<<year::4-bytes, ?-, month::2-bytes, ?-, day::2-bytes>>, calendar) do
@@ -269,7 +267,7 @@ defmodule Date do
       iex> Date.from_iso8601!("2015:01:23")
       ** (ArgumentError) cannot parse "2015:01:23" as date, reason: :invalid_format
   """
-  @spec from_iso8601!(String.t()) :: t
+  @spec from_iso8601!(String.t(), Calendar.calendar()) :: t
   def from_iso8601!(string, calendar \\ Calendar.ISO) do
     case from_iso8601(string, calendar) do
       {:ok, value} ->
@@ -346,7 +344,7 @@ defmodule Date do
       {:error, :invalid_date}
 
   """
-  @spec from_erl(:calendar.date()) :: {:ok, t} | {:error, atom}
+  @spec from_erl(:calendar.date(), Calendar.calendar()) :: {:ok, t} | {:error, atom}
   def from_erl(tuple, calendar \\ Calendar.ISO)
 
   def from_erl({year, month, day}, calendar) do
@@ -364,9 +362,9 @@ defmodule Date do
       ** (ArgumentError) cannot convert {2000, 13, 1} to date, reason: :invalid_date
 
   """
-  @spec from_erl!(:calendar.date()) :: t
-  def from_erl!(tuple) do
-    case from_erl(tuple) do
+  @spec from_erl!(:calendar.date(), Calendar.calendar()) :: t
+  def from_erl!(tuple, calendar \\ Calendar.ISO) do
+    case from_erl(tuple, calendar) do
       {:ok, value} ->
         value
 

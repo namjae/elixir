@@ -8,11 +8,19 @@ defmodule IEx.Autocomplete do
   end
 
   def expand([h | t] = expr, server) do
+    helper = get_helper(expr)
+
     cond do
-      h === ?. and t != [] ->
+      helper == ?t ->
+        expand_custom(expr, server, &get_module_types/1)
+
+      helper == ?b ->
+        expand_custom(expr, server, &get_module_callbacks/1)
+
+      h == ?. and t != [] ->
         expand_dot(reduce(t), server)
 
-      h === ?: and t == [] ->
+      h == ?: and t == [] ->
         expand_erlang_modules()
 
       identifier?(h) ->
@@ -28,6 +36,22 @@ defmodule IEx.Autocomplete do
         no()
     end
   end
+
+  defp get_helper(expr) do
+    with [helper | rest] when helper in 'bt' <- Enum.reverse(expr),
+         [space_or_paren, char | _] <- squeeze_spaces(rest),
+         true <-
+           space_or_paren in ' (' and
+             (char in ?A..?Z or char in ?a..?z or char in ?0..?9 or char in '_:') do
+      helper
+    else
+      _ ->
+        nil
+    end
+  end
+
+  defp squeeze_spaces('  ' ++ rest), do: squeeze_spaces([?\s | rest])
+  defp squeeze_spaces(rest), do: rest
 
   @doc false
   def exports(mod) do
@@ -76,6 +100,52 @@ defmodule IEx.Autocomplete do
 
       {:ok, {{:., _, [ast_node, fun]}, _, []}} when is_atom(fun) ->
         expand_call(ast_node, Atom.to_string(fun), server)
+
+      _ ->
+        no()
+    end
+  end
+
+  defp expand_custom([?. | expr], server, fun) do
+    case Code.string_to_quoted(reduce(expr)) do
+      {:ok, atom} when is_atom(atom) ->
+        no()
+
+      {:ok, {:__aliases__, _, [h | _] = list}} when is_atom(h) ->
+        case expand_alias(list, server) do
+          {:ok, alias} ->
+            expand_elixir_module_custom(alias, "", fun)
+
+          :error ->
+            no()
+        end
+
+      _ ->
+        no()
+    end
+  end
+
+  defp expand_custom(expr, server, fun) do
+    case Code.string_to_quoted(reduce(expr)) do
+      {:ok, atom} when is_atom(atom) ->
+        expand_erlang_modules(Atom.to_string(atom))
+
+      {:ok, {:__aliases__, _, [root]}} ->
+        expand_elixir_modules([], Atom.to_string(root), server)
+
+      {:ok, {:__aliases__, _, [h | _] = list}} when is_atom(h) ->
+        hint = Atom.to_string(List.last(list))
+        list = Enum.take(list, length(list) - 1)
+        expand_elixir_modules(list, hint, server)
+
+      {:ok, {{:., _, [{:__aliases__, _, list}, type]}, _, []}} when is_atom(type) ->
+        case expand_alias(list, server) do
+          {:ok, alias} ->
+            expand_elixir_module_custom(alias, Atom.to_string(type), fun)
+
+          :error ->
+            no()
+        end
 
       _ ->
         no()
@@ -238,14 +308,13 @@ defmodule IEx.Autocomplete do
     depth = length(String.split(name, ".")) + 1
     base = name <> "." <> hint
 
-    for mod <- match_modules(base, module === Elixir),
+    for mod <- match_modules(base, module == Elixir),
         parts = String.split(mod, "."),
         depth <= length(parts),
         name = Enum.at(parts, depth - 1),
-        valid_alias_piece?("." <> name) do
-      %{kind: :module, type: :elixir, name: name}
-    end
-    |> Enum.uniq()
+        valid_alias_piece?("." <> name),
+        uniq: true,
+        do: %{kind: :module, type: :elixir, name: name}
   end
 
   defp valid_alias_piece?(<<?., char, rest::binary>>) when char in ?A..?Z,
@@ -262,6 +331,13 @@ defmodule IEx.Autocomplete do
 
   defp valid_alias_rest?(<<>>), do: true
   defp valid_alias_rest?(rest), do: valid_alias_piece?(rest)
+
+  ## Elixir Types
+
+  defp expand_elixir_module_custom(mod, hint, fun) do
+    types = match_module_funs(fun.(mod), hint)
+    format_expansion(types, hint)
+  end
 
   ## Helpers
 
@@ -337,6 +413,32 @@ defmodule IEx.Autocomplete do
         exports(mod)
         |> Kernel.--(default_arg_functions_with_doc_false(docs))
         |> Enum.reject(&hidden_fun?(&1, docs))
+
+      true ->
+        exports(mod)
+    end
+  end
+
+  defp get_module_types(mod) do
+    cond do
+      not ensure_loaded?(mod) ->
+        []
+
+      docs = Code.get_docs(mod, :type_docs) ->
+        Enum.map(docs, &elem(&1, 0))
+
+      true ->
+        exports(mod)
+    end
+  end
+
+  defp get_module_callbacks(mod) do
+    cond do
+      not ensure_loaded?(mod) ->
+        []
+
+      docs = Code.get_docs(mod, :callback_docs) ->
+        Enum.map(docs, &elem(&1, 0))
 
       true ->
         exports(mod)

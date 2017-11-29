@@ -505,7 +505,7 @@ defmodule Enum do
   @spec concat(t) :: t
   def concat(enumerables) do
     fun = &[&1 | &2]
-    reduce(enumerables, [], &reduce(&1, &2, fun)) |> :lists.reverse()
+    enumerables |> reduce([], &reduce(&1, &2, fun)) |> :lists.reverse()
   end
 
   @doc """
@@ -553,7 +553,7 @@ defmodule Enum do
         value
 
       {:error, module} ->
-        module.reduce(enumerable, {:cont, 0}, fn _, acc -> {:cont, acc + 1} end) |> elem(1)
+        enumerable |> module.reduce({:cont, 0}, fn _, acc -> {:cont, acc + 1} end) |> elem(1)
     end
   end
 
@@ -764,12 +764,13 @@ defmodule Enum do
   end
 
   def empty?(enumerable) do
-    case Enumerable.slice(enumerable) do
+    case backwards_compatible_slice(enumerable) do
       {:ok, value, _} ->
         value == 0
 
       {:error, module} ->
-        module.reduce(enumerable, {:cont, true}, fn _, _ -> {:halt, false} end)
+        enumerable
+        |> module.reduce({:cont, true}, fn _, _ -> {:halt, false} end)
         |> elem(1)
     end
   end
@@ -1120,18 +1121,14 @@ defmodule Enum do
   @spec intersperse(t, element) :: list
   def intersperse(enumerable, element) do
     list =
-      reduce(enumerable, [], fn x, acc ->
-        [x, element | acc]
-      end)
+      enumerable
+      |> reduce([], fn x, acc -> [x, element | acc] end)
       |> :lists.reverse()
 
+    # Head is a superfluous intersperser element
     case list do
-      [] ->
-        []
-
-      # Head is a superfluous intersperser element
-      [_ | t] ->
-        t
+      [] -> []
+      [_ | t] -> t
     end
   end
 
@@ -1784,7 +1781,7 @@ defmodule Enum do
 
   def random(enumerable) do
     result =
-      case Enumerable.slice(enumerable) do
+      case backwards_compatible_slice(enumerable) do
         {:ok, 0, _} ->
           []
 
@@ -1841,11 +1838,8 @@ defmodule Enum do
   def reduce(enumerable, fun) do
     result =
       Enumerable.reduce(enumerable, {:cont, :first}, fn
-        x, :first ->
-          {:cont, {:acc, x}}
-
-        x, {:acc, acc} ->
-          {:cont, {:acc, fun.(x, acc)}}
+        x, :first -> {:cont, {:acc, x}}
+        x, {:acc, acc} -> {:cont, {:acc, fun.(x, acc)}}
       end)
       |> elem(1)
 
@@ -2800,6 +2794,19 @@ defmodule Enum do
     lower_limit + :rand.uniform(upper_limit - lower_limit + 1) - 1
   end
 
+  # TODO: Remove me on Elixir v1.8
+  defp backwards_compatible_slice(args) do
+    try do
+      Enumerable.slice(args)
+    catch
+      :error, :undef ->
+        case System.stacktrace() do
+          [{module, :slice, [^args], _} | _] -> {:error, module}
+          stack -> :erlang.raise(:error, :undef, stack)
+        end
+    end
+  end
+
   ## Implementations
 
   ## all?
@@ -2990,7 +2997,7 @@ defmodule Enum do
   end
 
   defp slice_any(enumerable, start, amount) do
-    case Enumerable.slice(enumerable) do
+    case backwards_compatible_slice(enumerable) do
       {:ok, count, _} when start >= count ->
         []
 
@@ -3023,7 +3030,7 @@ defmodule Enum do
   end
 
   defp slice_count_and_fun(enumerable) do
-    case Enumerable.slice(enumerable) do
+    case backwards_compatible_slice(enumerable) do
       {:ok, count, fun} when is_function(fun) ->
         {count, fun}
 

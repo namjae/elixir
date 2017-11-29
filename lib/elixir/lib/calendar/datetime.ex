@@ -460,7 +460,7 @@ defmodule DateTime do
   Parses the extended "Date and time of day" format described by
   [ISO 8601:2004](https://en.wikipedia.org/wiki/ISO_8601).
 
-  Since ISO8601 does not include the proper time zone, the given
+  Since ISO 8601 does not include the proper time zone, the given
   string will be converted to UTC and its offset in seconds will be
   returned as part of this function. Therefore offset information
   must be present in the string.
@@ -470,7 +470,7 @@ defmodule DateTime do
 
   Time representations with reduced accuracy are not supported.
 
-  Note that while ISO8601 allows datetimes to specify 24:00:00 as the
+  Note that while ISO 8601 allows datetimes to specify 24:00:00 as the
   zero hour of the next day, this notation is not supported by Elixir.
 
   ## Examples
@@ -610,11 +610,11 @@ defmodule DateTime do
   @doc """
   Compares two datetime structs.
 
-  Returns `:gt` if first datetime is later than the second
+  Returns `:gt` if the first datetime is later than the second
   and `:lt` for vice versa. If the two datetimes are equal
   `:eq` is returned.
 
-  Note that both utc and stc offsets will be taken into
+  Note that both UTC and Standard offsets will be taken into
   account when comparison is done.
 
   ## Examples
@@ -631,8 +631,8 @@ defmodule DateTime do
   """
   @spec compare(Calendar.datetime(), Calendar.datetime()) :: :lt | :eq | :gt
   def compare(
-        %DateTime{utc_offset: utc_offset1, std_offset: std_offset1} = datetime1,
-        %DateTime{utc_offset: utc_offset2, std_offset: std_offset2} = datetime2
+        %{calendar: _, utc_offset: utc_offset1, std_offset: std_offset1} = datetime1,
+        %{calendar: _, utc_offset: utc_offset2, std_offset: std_offset2} = datetime2
       ) do
     {days1, {parts1, ppd1}} =
       datetime1
@@ -689,6 +689,36 @@ defmodule DateTime do
 
     offset_diff = utc_offset2 + std_offset2 - (utc_offset1 + std_offset1)
     naive_diff + System.convert_time_unit(offset_diff, :second, unit)
+  end
+
+  @doc """
+  Returns the given datetime with the microsecond field truncated to the given
+  precision (`:microsecond`, `millisecond` or `:second`).
+
+  ## Examples
+
+      iex> dt1 = %DateTime{year: 2017, month: 11, day: 7, zone_abbr: "CET",
+      ...>                 hour: 11, minute: 45, second: 18, microsecond: {123456, 6},
+      ...>                 utc_offset: 3600, std_offset: 0, time_zone: "Europe/Paris"}
+      iex> DateTime.truncate(dt1, :microsecond)
+      #DateTime<2017-11-07 11:45:18.123456+01:00 CET Europe/Paris>
+
+      iex> dt2 = %DateTime{year: 2017, month: 11, day: 7, zone_abbr: "CET",
+      ...>                 hour: 11, minute: 45, second: 18, microsecond: {123456, 6},
+      ...>                 utc_offset: 3600, std_offset: 0, time_zone: "Europe/Paris"}
+      iex> DateTime.truncate(dt2, :millisecond)
+      #DateTime<2017-11-07 11:45:18.123+01:00 CET Europe/Paris>
+
+      iex> dt3 = %DateTime{year: 2017, month: 11, day: 7, zone_abbr: "CET",
+      ...>                 hour: 11, minute: 45, second: 18, microsecond: {123456, 6},
+      ...>                 utc_offset: 3600, std_offset: 0, time_zone: "Europe/Paris"}
+      iex> DateTime.truncate(dt3, :second)
+      #DateTime<2017-11-07 11:45:18+01:00 CET Europe/Paris>
+
+  """
+  @spec truncate(t(), :microsecond | :millisecond | :second) :: t()
+  def truncate(%DateTime{microsecond: microsecond} = datetime, precision) do
+    %{datetime | microsecond: Calendar.truncate(microsecond, precision)}
   end
 
   @doc """

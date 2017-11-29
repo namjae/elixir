@@ -73,7 +73,7 @@ defmodule Mix.Tasks.Compile.ElixirTest do
       assert Mix.Dep.ElixirSCM.read() == {:ok, @elixir_otp_version, Mix.SCM.Path}
 
       Mix.Task.clear()
-      manifest_data = :erlang.term_to_binary({:v2, @elixir_otp_version, :another})
+      manifest_data = :erlang.term_to_binary({1, @elixir_otp_version, :another})
       File.write!("_build/dev/lib/sample/.compile.elixir_scm", manifest_data)
       File.touch!("_build/dev/lib/sample/.compile.elixir_scm", {{2010, 1, 1}, {0, 0, 0}})
 
@@ -247,6 +247,97 @@ defmodule Mix.Tasks.Compile.ElixirTest do
     File.rm(tmp_path("c.eex"))
   end
 
+  test "recompiles modules with structs tracking" do
+    in_fixture "no_mixfile", fn ->
+      File.write!("lib/a.ex", """
+      defmodule A do
+        defstruct [:foo]
+      end
+      """)
+
+      File.write!("lib/b.ex", """
+      defmodule B do
+        def fun do
+          %A{foo: 1}
+        end
+      end
+      """)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+
+      File.write!("lib/a.ex", """
+      defmodule A do
+        defstruct [:foo]
+        def some_fun, do: :ok
+      end
+      """)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      refute_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+
+      File.write!("lib/a.ex", """
+      defmodule A do
+        defstruct [:foo, :bar]
+        def some_fun, do: :ok
+      end
+      """)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+
+      File.write!("lib/a.ex", """
+      defmodule A do
+        @enforce_keys [:foo]
+        defstruct [:foo, :bar]
+        def some_fun, do: :ok
+      end
+      """)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+    end
+  end
+
+  test "recompiles modules with async tracking" do
+    in_fixture "no_mixfile", fn ->
+      File.write!("lib/a.ex", """
+      Kernel.ParallelCompiler.async(fn ->
+        defmodule A do
+          def fun, do: :ok
+        end
+      end) |> Task.await()
+      """)
+
+      File.write!("lib/b.ex", """
+      defmodule B do
+        A.fun()
+      end
+      """)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+
+      future = {{2020, 1, 1}, {0, 0, 0}}
+      File.touch!("lib/a.ex", future)
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      assert_received {:mix_shell, :info, ["Compiled lib/b.ex"]}
+      purge([A, B])
+    end
+  end
+
   test "recompiles modules with multiple sources" do
     in_fixture "no_mixfile", fn ->
       File.write!("lib/a.ex", """
@@ -282,15 +373,17 @@ defmodule Mix.Tasks.Compile.ElixirTest do
     end
   end
 
-  test "does not recompile empty files" do
+  test "recompiles with --force" do
     in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", "")
-
       assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
-      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+      purge([A, B])
 
+      # Now we have a noop
       assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:noop, []}
-      refute_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+
+      # --force
+      assert Mix.Tasks.Compile.Elixir.run(["--force", "--verbose"]) == {:ok, []}
+      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
     end
   end
 
@@ -307,17 +400,15 @@ defmodule Mix.Tasks.Compile.ElixirTest do
     end
   end
 
-  test "recompiles with --force" do
+  test "does not recompile empty files" do
     in_fixture "no_mixfile", fn ->
+      File.write!("lib/a.ex", "")
+
       assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
-      purge([A, B])
-
-      # Now we have a noop
-      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:noop, []}
-
-      # --force
-      assert Mix.Tasks.Compile.Elixir.run(["--force", "--verbose"]) == {:ok, []}
       assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
+
+      assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:noop, []}
+      refute_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
     end
   end
 

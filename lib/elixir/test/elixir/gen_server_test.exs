@@ -6,12 +6,21 @@ defmodule GenServerTest do
   defmodule Stack do
     use GenServer
 
+    def init(args) do
+      {:ok, args}
+    end
+
     def handle_call(:pop, _from, [h | t]) do
       {:reply, h, t}
     end
 
     def handle_call(:noreply, _from, h) do
       {:noreply, h}
+    end
+
+    def handle_call(:stop_self, _from, state) do
+      reason = catch_exit(GenServer.stop(self()))
+      {:reply, reason, state}
     end
 
     def handle_call(request, from, state) do
@@ -47,6 +56,10 @@ defmodule GenServerTest do
 
     defmodule CustomStack do
       use GenServer, id: :id, restart: :temporary, shutdown: :infinity, start: {:foo, :bar, []}
+
+      def init(args) do
+        {:ok, args}
+      end
     end
 
     assert CustomStack.child_spec([:hello]) == %{
@@ -195,6 +208,19 @@ defmodule GenServerTest do
   test "stop/3" do
     {:ok, pid} = GenServer.start(Stack, [])
     assert GenServer.stop(pid, :normal) == :ok
+
+    stopped_pid = pid
+
+    assert catch_exit(GenServer.stop(stopped_pid)) ==
+             {:noproc, {GenServer, :stop, [stopped_pid, :normal, :infinity]}}
+
+    assert catch_exit(GenServer.stop(nil)) ==
+             {:noproc, {GenServer, :stop, [nil, :normal, :infinity]}}
+
+    {:ok, pid} = GenServer.start(Stack, [])
+
+    assert GenServer.call(pid, :stop_self) ==
+             {:calling_self, {GenServer, :stop, [pid, :normal, :infinity]}}
 
     {:ok, _} = GenServer.start(Stack, [], name: :stack_for_stop)
     assert GenServer.stop(:stack_for_stop, :normal) == :ok

@@ -30,6 +30,78 @@ defmodule Kernel.WarningTest do
     purge(Sample)
   end
 
+  test "unsafe variable" do
+    message = "variable \"x\" is unsafe"
+
+    capture_err(fn ->
+      Code.eval_string("""
+      case false do
+        true -> x = 1
+        _ -> 1
+      end
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      false and (x = 1)
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      true or (x = 1)
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      if false do
+        x = 1
+      end
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      cond do
+        false -> x = 1
+        true -> 1
+      end
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      receive do
+        :foo -> x = 1
+      after
+        0 -> 1
+      end
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      false && (x = 1)
+      x
+      """)
+    end) =~ message
+
+    capture_err(fn ->
+      Code.eval_string("""
+      true || (x = 1)
+      x
+      """)
+    end) =~ message
+  end
+
   test "unused variable in redefined function in different file" do
     output =
       capture_err(fn ->
@@ -500,6 +572,27 @@ defmodule Kernel.WarningTest do
     purge(Sample)
   end
 
+  test "generated clause not match" do
+    assert capture_err(fn ->
+             Code.eval_string("""
+             defmodule Sample do
+               defmacro __using__(_) do
+                 quote do
+                   def hello, do: nil
+                   def hello, do: nil
+                 end
+               end
+             end
+             defmodule UseSample do
+               use Sample
+             end
+             """)
+           end) =~ "this clause cannot match because a previous clause at line 10 always matches"
+  after
+    purge(Sample)
+    purge(UseSample)
+  end
+
   test "clause with defaults should be first" do
     assert capture_err(fn ->
              Code.eval_string(~S"""
@@ -722,21 +815,6 @@ defmodule Kernel.WarningTest do
   after
     purge(Sample)
     purge(EmptyBehaviour)
-  end
-
-  @tag :skip
-  test "warn on unknown optional callback" do
-    assert capture_err(fn ->
-             Code.eval_string("""
-             defmodule IllDefinedOptionalBehaviour do
-               @callback foo() :: any
-               @optional_callbacks foo: 1
-             end
-             """)
-           end) =~
-             "The foo/1 optional callback specified in \"IllDefinedOptionalBehaviour\" is not defined"
-  after
-    purge(IllDefinedOptionalBehaviour)
   end
 
   test "undefined behavior" do
@@ -975,6 +1053,107 @@ defmodule Kernel.WarningTest do
       end)
 
     assert output =~ ~s("catch" should always come after "rescue" in try)
+  end
+
+  test "unused variable in defguard" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+        defguard foo(bar, baz) when bar
+      end
+      """)
+    end) =~ "variable \"baz\" is unused"
+  after
+    purge(Sample)
+  end
+
+  test "unused import in defguard" do
+    assert capture_err(fn ->
+             Code.compile_string("""
+             defmodule Sample do
+               import Record
+               defguard is_record(baz) when baz
+             end
+             """)
+           end) =~ "unused import Record\n"
+  after
+    purge(Sample)
+  end
+
+  test "unused private guard" do
+    assert capture_err(fn ->
+             Code.compile_string("""
+             defmodule Sample do
+               defguardp foo(bar, baz) when bar + baz
+             end
+             """)
+           end) =~ "macro foo/2 is unused\n"
+  after
+    purge(Sample)
+  end
+
+  test "defguard overriding defmacro" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+        defmacro foo(bar), do: bar == :bar
+        defguard foo(baz) when baz == :baz
+      end
+      """)
+    end) =~ "this clause cannot match because a previous clause at line 2 always matches"
+  after
+    purge(Sample)
+  end
+
+  test "defmacro overriding defguard" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+        defguard foo(baz) when baz == :baz
+        defmacro foo(bar), do: bar == :bar
+      end
+      """)
+    end) =~ "this clause cannot match because a previous clause at line 2 always matches"
+  after
+    purge(Sample)
+  end
+
+  test "defguardp overriding defmacrop" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+        defmacrop foo(bar), do: bar == :bar
+        defguardp foo(baz) when baz == :baz
+      end
+      """)
+    end) =~ "this clause cannot match because a previous clause at line 2 always matches"
+  after
+    purge(Sample)
+  end
+
+  test "defmacrop overriding defguardp" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+      defguardp foo(baz) when baz == :baz
+        defmacrop foo(bar), do: bar == :bar
+      end
+      """)
+    end) =~ "this clause cannot match because a previous clause at line 2 always matches"
+  after
+    purge(Sample)
+  end
+
+  test "defguard needs an implementation" do
+    capture_err(fn ->
+      Code.eval_string("""
+      defmodule Sample do
+        defguard foo(bar)
+      end
+      """)
+    end) =~ "implementation not provided for predefined defguard"
+  after
+    purge(Sample)
   end
 
   defp purge(list) when is_list(list) do

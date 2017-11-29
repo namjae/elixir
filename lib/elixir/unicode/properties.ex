@@ -11,12 +11,27 @@ to_binary = fn
     |> IO.iodata_to_binary()
 end
 
-{codes, non_breakable, decompositions, combining_classes} =
-  Enum.reduce(File.stream!(data_path), {[], [], %{}, %{}}, fn line, {cacc, wacc, dacc, kacc} ->
+rangify = fn [head | tail] ->
+  {first, last, acc} =
+    Enum.reduce(tail, {head, head, []}, fn
+      number, {first, last, acc} when number == first - 1 ->
+        {number, last, acc}
+
+      number, {first, last, acc} ->
+        {number, number, [{first, last} | acc]}
+    end)
+
+  [{first, last} | acc]
+end
+
+acc = {[], [], [], %{}, %{}}
+
+{codes, letters, non_breakable, decompositions, combining_classes} =
+  Enum.reduce(File.stream!(data_path), acc, fn line, {cacc, lacc, wacc, dacc, kacc} ->
     [
       codepoint,
       _name,
-      _category,
+      category,
       class,
       _bidi,
       decomposition,
@@ -38,6 +53,12 @@ end
         [{to_binary.(codepoint), to_binary.(upper), to_binary.(lower), to_binary.(title)} | cacc]
       else
         cacc
+      end
+
+    lacc =
+      case category do
+        "L" <> _ -> [String.to_integer(codepoint, 16) | lacc]
+        _ -> lacc
       end
 
     wacc =
@@ -67,7 +88,7 @@ end
         {n, ""} -> Map.put(kacc, String.to_integer(codepoint, 16), n)
       end
 
-    {cacc, wacc, dacc, kacc}
+    {cacc, lacc, wacc, dacc, kacc}
   end)
 
 defmodule String.Casing do
@@ -86,6 +107,20 @@ defmodule String.Casing do
 
   def downcase(string) when is_binary(string), do: downcase(string, "")
 
+  defp downcase(<<0x03A3::utf8, codepoint::utf8, rest::bits>>, acc) do
+    downcased =
+      case letter?(codepoint) do
+        true -> 0x03C3
+        false -> 0x03C2
+      end
+
+    downcase(<<codepoint::utf8, rest::bits>>, <<acc::binary, downcased::utf8>>)
+  end
+
+  defp downcase(<<0x03A3::utf8, rest::bits>>, acc) do
+    downcase(rest, <<acc::binary, 0x03C2::utf8>>)
+  end
+
   for {codepoint, _upper, lower, _title} <- codes, lower && lower != codepoint do
     defp downcase(<<unquote(codepoint), rest::bits>>, acc) do
       downcase(rest, acc <> unquote(lower))
@@ -97,6 +132,20 @@ defmodule String.Casing do
   end
 
   defp downcase("", acc), do: acc
+
+  # Sigma handling
+
+  for {first, last} <- rangify.(letters) do
+    if first == last do
+      defp letter?(unquote(first)), do: true
+    else
+      defp letter?(codepoint)
+           when codepoint >= unquote(first) and codepoint <= unquote(last),
+           do: true
+    end
+  end
+
+  defp letter?(_), do: false
 
   # Upcase
 

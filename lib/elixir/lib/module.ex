@@ -220,6 +220,8 @@ defmodule Module do
         end
       end
 
+  Modules compiled with HiPE would not call this hook.
+
   ### `@vsn`
 
   Specify the module version. Accepts any valid Elixir value, for example:
@@ -492,6 +494,15 @@ defmodule Module do
   The line where the module is defined and its file **must**
   be passed as options.
 
+  It returns a tuple of shape `{:module, module, binary, term}`
+  where `module` is the module name, `binary` is the module
+  byte code and `term` is the result of the last expression in
+  `quoted`.
+
+  Similar to `Kernel.defmodule/2`, the binary will only be
+  written to disk as a `.beam` file if `Module.create/3` is
+  invoked in a file that is currently being compiled.
+
   ## Examples
 
       contents =
@@ -505,16 +516,16 @@ defmodule Module do
 
   ## Differences from `defmodule`
 
-  `Module.create/3` works similarly to `defmodule` and
-  return the same results. While one could also use
-  `defmodule` to define modules dynamically, this
-  function is preferred when the module body is given
-  by a quoted expression.
+  `Module.create/3` works similarly to `Kernel.defmodule/2`
+  and return the same results. While one could also use
+  `defmodule` to define modules dynamically, this function
+  is preferred when the module body is given by a quoted
+  expression.
 
   Another important distinction is that `Module.create/3`
   allows you to control the environment variables used
-  when defining the module, while `defmodule` automatically
-  shares the same environment.
+  when defining the module, while `Kernel.defmodule/2`
+  automatically uses the environment it is invoked at.
   """
   @spec create(module, Macro.t(), Macro.Env.t() | keyword) :: {:module, module, binary, term}
   def create(module, quoted, opts)
@@ -951,7 +962,7 @@ defmodule Module do
     end
 
     behaviour_callbacks =
-      for callback <- behaviour.behaviour_info(:callbacks) do
+      for callback <- behaviour_info(behaviour, :callbacks) do
         {pair, _kind} = normalize_macro_or_function_callback(callback)
         pair
       end
@@ -967,7 +978,7 @@ defmodule Module do
     impls = :ets.lookup_element(table, {:elixir, :impls}, 2)
 
     {overridable_impls, impls} =
-      :lists.splitwith(fn {pair, _, _, _, _} -> pair in tuples end, impls)
+      :lists.splitwith(fn {pair, _, _, _, _, _} -> pair in tuples end, impls)
 
     if overridable_impls != [] do
       :ets.insert(table, {{:elixir, :impls}, impls})
@@ -976,7 +987,7 @@ defmodule Module do
       callbacks =
         for behaviour <- behaviours,
             function_exported?(behaviour, :behaviour_info, 1),
-            callback <- behaviour.behaviour_info(:callbacks),
+            callback <- behaviour_info(behaviour, :callbacks),
             {callback, kind} = normalize_macro_or_function_callback(callback),
             do: {callback, {kind, behaviour, true}},
             into: %{}
@@ -1015,6 +1026,13 @@ defmodule Module do
 
       _ ->
         {{function_name, arity}, :def}
+    end
+  end
+
+  defp behaviour_info(module, key) do
+    case module.behaviour_info(key) do
+      list when is_list(list) -> list
+      :undefined -> []
     end
   end
 
@@ -1246,12 +1264,9 @@ defmodule Module do
         impls = :ets.lookup_element(table, {:elixir, :impls}, 2)
         {total, defaults} = args_count(args, 0, 0)
 
-        impl =
-          for arity <- total..(total - defaults), into: impls do
-            {{name, arity}, kind, line, file, value}
-          end
+        impl = {{name, total}, defaults, kind, line, file, value}
 
-        :ets.insert(table, {{:elixir, :impls}, impl})
+        :ets.insert(table, {{:elixir, :impls}, [impl | impls]})
 
       [] ->
         :ok
@@ -1289,7 +1304,7 @@ defmodule Module do
     :ok
   end
 
-  defp check_behaviours(env, behaviours) do
+  defp check_behaviours(%{lexical_tracker: pid} = env, behaviours) do
     Enum.reduce(behaviours, %{}, fn behaviour, acc ->
       cond do
         not is_atom(behaviour) ->
@@ -1320,8 +1335,9 @@ defmodule Module do
           acc
 
         true ->
-          optional_callbacks = behaviour.behaviour_info(:optional_callbacks)
-          callbacks = behaviour.behaviour_info(:callbacks)
+          :elixir_lexical.record_remote(behaviour, nil, pid)
+          optional_callbacks = behaviour_info(behaviour, :optional_callbacks)
+          callbacks = behaviour_info(behaviour, :callbacks)
           Enum.reduce(callbacks, acc, &add_callback(&1, behaviour, env, optional_callbacks, &2))
       end
     end)
@@ -1394,54 +1410,113 @@ defmodule Module do
   end
 
   defp check_impls(behaviours, callbacks, impls) do
-    Enum.reduce(impls, callbacks, fn {pair, kind, line, file, value}, acc ->
-      if message = impl_warning(pair, kind, value, behaviours, callbacks) do
-        :elixir_errors.warn(line, file, message)
-      end
+    Enum.reduce(impls, callbacks, fn {fa, defaults, kind, line, file, value}, acc ->
+      case impl_behaviours(fa, defaults, kind, value, behaviours, callbacks) do
+        {:ok, impl_behaviours} ->
+          Enum.reduce(impl_behaviours, acc, fn {fa, _}, acc -> Map.delete(acc, fa) end)
 
-      Map.delete(acc, pair)
+        {:error, message} ->
+          :elixir_errors.warn(line, file, format_impl_warning(fa, kind, message))
+          acc
+      end
     end)
   end
 
-  defp impl_warning(pair, kind, _, _, _) when kind in [:defp, :defmacrop] do
-    "#{format_definition(kind, pair)} is private, @impl attribute is always discarded for private functions/macros"
+  defp impl_behaviours({function, arity}, defaults, kind, value, behaviours, callbacks) do
+    impls = for n <- arity..(arity - defaults), do: {function, n}
+    impl_behaviours(impls, kind, value, behaviours, callbacks)
   end
 
-  defp impl_warning(pair, kind, value, [], _callbacks) do
-    "got \"@impl #{inspect(value)}\" for #{format_definition(kind, pair)} but no behaviour was declared"
+  defp impl_behaviours(_, kind, _, _, _) when kind in [:defp, :defmacrop] do
+    {:error, :private_function}
   end
 
-  defp impl_warning(pair, kind, false, _behaviours, callbacks) do
-    case Map.fetch(callbacks, pair) do
-      {:ok, {_, behaviour, _}} ->
-        "got \"@impl false\" for #{format_definition(kind, pair)} " <>
-          "but it is a callback specified in #{inspect(behaviour)}"
+  defp impl_behaviours(_, _, value, [], _) do
+    {:error, {:no_behaviours, value}}
+  end
 
-      :error ->
-        nil
+  defp impl_behaviours(impls, _, false, _, callbacks) do
+    case impl_callbacks(impls, callbacks) do
+      [] -> {:ok, []}
+      [impl | _] -> {:error, {:impl_not_defined, impl}}
     end
   end
 
-  defp impl_warning(pair, kind, true, _, callbacks) do
-    if not Map.has_key?(callbacks, pair) do
-      "got \"@impl true\" for #{format_definition(kind, pair)} " <>
-        "but no behaviour specifies such callback#{known_callbacks(callbacks)}"
+  defp impl_behaviours(impls, _, true, _, callbacks) do
+    case impl_callbacks(impls, callbacks) do
+      [] -> {:error, {:impl_defined, callbacks}}
+      impls -> {:ok, impls}
     end
   end
 
-  defp impl_warning(pair, kind, behaviour, behaviours, callbacks) do
+  defp impl_behaviours(impls, _, behaviour, behaviours, callbacks) do
+    filtered = impl_behaviours(impls, behaviour, callbacks)
+
     cond do
-      match?({:ok, {_, ^behaviour, _}}, Map.fetch(callbacks, pair)) ->
-        nil
+      filtered != [] ->
+        {:ok, filtered}
 
       behaviour not in behaviours ->
-        "got \"@impl #{inspect(behaviour)}\" for #{format_definition(kind, pair)} " <>
-          "but this behaviour was not declared with @behaviour"
+        {:error, {:behaviour_not_declared, behaviour}}
 
       true ->
-        "got \"@impl #{inspect(behaviour)}\" for #{format_definition(kind, pair)} " <>
-          "but this behaviour does not specify such callback#{known_callbacks(callbacks)}"
+        {:error, {:behaviour_not_defined, behaviour, callbacks}}
     end
+  end
+
+  defp impl_behaviours(impls, behaviour, callbacks) do
+    impl_behaviours(impl_callbacks(impls, callbacks), behaviour)
+  end
+
+  defp impl_behaviours([], _) do
+    []
+  end
+
+  defp impl_behaviours([{_, behaviour} = impl | tail], behaviour) do
+    [impl | impl_behaviours(tail, behaviour)]
+  end
+
+  defp impl_behaviours([_ | tail], behaviour) do
+    impl_behaviours(tail, behaviour)
+  end
+
+  defp impl_callbacks([], _) do
+    []
+  end
+
+  defp impl_callbacks([fa | tail], callbacks) do
+    case callbacks[fa] do
+      nil -> impl_callbacks(tail, callbacks)
+      {_, behaviour, _} -> [{fa, behaviour} | impl_callbacks(tail, callbacks)]
+    end
+  end
+
+  defp format_impl_warning(fa, kind, :private_function) do
+    "#{format_definition(kind, fa)} is private, @impl attribute is always discarded for private functions/macros"
+  end
+
+  defp format_impl_warning(fa, kind, {:no_behaviours, value}) do
+    "got \"@impl #{inspect(value)}\" for #{format_definition(kind, fa)} but no behaviour was declared"
+  end
+
+  defp format_impl_warning(_, kind, {:impl_not_defined, {fa, behaviour}}) do
+    "got \"@impl false\" for #{format_definition(kind, fa)} " <>
+      "but it is a callback specified in #{inspect(behaviour)}"
+  end
+
+  defp format_impl_warning(fa, kind, {:impl_defined, callbacks}) do
+    "got \"@impl true\" for #{format_definition(kind, fa)} " <>
+      "but no behaviour specifies such callback#{known_callbacks(callbacks)}"
+  end
+
+  defp format_impl_warning(fa, kind, {:behaviour_not_declared, behaviour}) do
+    "got \"@impl #{inspect(behaviour)}\" for #{format_definition(kind, fa)} " <>
+      "but this behaviour was not declared with @behaviour"
+  end
+
+  defp format_impl_warning(fa, kind, {:behaviour_not_defined, behaviour, callbacks}) do
+    "got \"@impl #{inspect(behaviour)}\" for #{format_definition(kind, fa)} " <>
+      "but this behaviour does not specify such callback#{known_callbacks(callbacks)}"
   end
 
   defp warn_missing_impls(_env, callbacks, _defs, _) when map_size(callbacks) == 0 do

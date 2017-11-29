@@ -59,6 +59,35 @@ defmodule IEx.AutocompleteTest do
     assert expand('Enumera') == {:yes, 'ble', []}
   end
 
+  test "Elixir type completion" do
+    assert expand('t :gen_ser') == {:yes, 'ver', []}
+    assert expand('t String') == {:yes, '', ['String', 'StringIO']}
+    assert expand('t String.') == {:yes, '', ['codepoint/0', 'grapheme/0', 'pattern/0', 't/0']}
+    assert expand('t String.grap') == {:yes, 'heme', []}
+    assert expand('t  String.grap') == {:yes, 'heme', []}
+  end
+
+  test "Elixir callback completion" do
+    assert expand('b :strin') == {:yes, 'g', []}
+    assert expand('b String') == {:yes, '', ['String', 'StringIO']}
+    assert expand('b String.') == {:no, '', []}
+    assert expand('b Access.') == {:yes, '', ['fetch/2', 'get/3', 'get_and_update/3', 'pop/2']}
+    assert expand('b GenServer.term') == {:yes, 'inate', []}
+    assert expand('b   GenServer.term') == {:yes, 'inate', []}
+  end
+
+  test "Elixir helper completion with parentheses" do
+    assert expand('t(:gen_ser') == {:yes, 'ver', []}
+    assert expand('t(String') == {:yes, '', ['String', 'StringIO']}
+    assert expand('t(String.') == {:yes, '', ['codepoint/0', 'grapheme/0', 'pattern/0', 't/0']}
+    assert expand('t(String.grap') == {:yes, 'heme', []}
+  end
+
+  test "do not activate Elixir helper completion no operators" do
+    assert expand('t = String.co') == {:yes, '', ['codepoints/1', 'contains?/2']}
+    assert expand('t > String.grap') == {:yes, 'hemes', []}
+  end
+
   test "Elixir completion with self" do
     assert expand('Enumerable') == {:yes, '.', []}
   end

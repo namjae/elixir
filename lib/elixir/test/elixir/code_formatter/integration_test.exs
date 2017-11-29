@@ -345,6 +345,43 @@ defmodule Code.Formatter.IntegrationTest do
     """
   end
 
+  test "no parens keywords right on line limit" do
+    bad = """
+    defmodule Mod do
+      defp token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char), do: token_list_downcase(rest, acc)
+      defp token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33), do: token_list_downcase(rest, acc)
+    end
+    """
+
+    assert_format bad, """
+    defmodule Mod do
+      defp token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char),
+        do: token_list_downcase(rest, acc)
+
+      defp token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33),
+        do: token_list_downcase(rest, acc)
+    end
+    """
+  end
+
+  test "do at the end of the line" do
+    bad = """
+    foo bar, baz, quux do
+      :ok
+    end
+    """
+
+    good = """
+    foo bar,
+        baz,
+        quux do
+      :ok
+    end
+    """
+
+    assert_format bad, good, line_length: 18
+  end
+
   test "tuples as trees" do
     bad = """
     @document Parser.parse(

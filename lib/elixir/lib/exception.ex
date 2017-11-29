@@ -40,9 +40,7 @@ defmodule Exception do
   Returns `true` if the given `term` is an exception.
   """
   def exception?(term)
-
   def exception?(%_{__exception__: true}), do: true
-
   def exception?(_), do: false
 
   @doc """
@@ -481,6 +479,14 @@ defmodule Exception do
 
   defp format_sup_data({:invalid_period, period}) do
     "invalid max_seconds (period): " <> inspect(period)
+  end
+
+  defp format_sup_data({:invalid_max_children, max_children}) do
+    "invalid max_children: " <> inspect(max_children)
+  end
+
+  defp format_sup_data({:invalid_extra_arguments, extra}) do
+    "invalid extra_arguments: " <> inspect(extra)
   end
 
   defp format_sup_data(other), do: "got: #{inspect(other)}"

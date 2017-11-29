@@ -184,7 +184,7 @@ defmodule Time do
 
   Time representations with reduced accuracy are not supported.
 
-  Note that while ISO8601 allows times to specify 24:00:00 as the
+  Note that while ISO 8601 allows times to specify 24:00:00 as the
   zero hour of the next day, this notation is not supported by Elixir.
 
   ## Examples
@@ -213,7 +213,7 @@ defmodule Time do
       {:error, :invalid_time}
 
   """
-  @spec from_iso8601(String.t()) :: {:ok, t} | {:error, atom}
+  @spec from_iso8601(String.t(), Calendar.calendar()) :: {:ok, t} | {:error, atom}
   def from_iso8601(string, calendar \\ Calendar.ISO)
 
   def from_iso8601(<<?T, h, rest::binary>>, calendar) when h in ?0..?9 do
@@ -252,9 +252,9 @@ defmodule Time do
       iex> Time.from_iso8601!("2015:01:23 23-50-07")
       ** (ArgumentError) cannot parse "2015:01:23 23-50-07" as time, reason: :invalid_format
   """
-  @spec from_iso8601!(String.t()) :: t
-  def from_iso8601!(string) do
-    case from_iso8601(string) do
+  @spec from_iso8601!(String.t(), Calendar.calendar()) :: t
+  def from_iso8601!(string, calendar \\ Calendar.ISO) do
+    case from_iso8601(string, calendar) do
       {:ok, value} ->
         value
 
@@ -584,6 +584,27 @@ defmodule Time do
 
     Calendar.ISO.iso_days_to_unit({0, fraction1}, unit) -
       Calendar.ISO.iso_days_to_unit({0, fraction2}, unit)
+  end
+
+  @doc """
+  Returns the given time with the microsecond field truncated to the given
+  precision (`:microsecond`, `millisecond` or `:second`).
+
+  ## Examples
+
+      iex> Time.truncate(~T[01:01:01.123456], :microsecond)
+      ~T[01:01:01.123456]
+
+      iex> Time.truncate(~T[01:01:01.123456], :millisecond)
+      ~T[01:01:01.123]
+
+      iex> Time.truncate(~T[01:01:01.123456], :second)
+      ~T[01:01:01]
+
+  """
+  @spec truncate(t(), :microsecond | :millisecond | :second) :: t()
+  def truncate(%Time{microsecond: microsecond} = time, precision) do
+    %{time | microsecond: Calendar.truncate(microsecond, precision)}
   end
 
   ## Helpers
