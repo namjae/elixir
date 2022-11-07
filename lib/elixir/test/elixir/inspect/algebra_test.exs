@@ -1,5 +1,28 @@
 Code.require_file("../test_helper.exs", __DIR__)
 
+defmodule Inspect.OptsTest do
+  use ExUnit.Case
+
+  test "new" do
+    opts = Inspect.Opts.new(limit: 13, pretty: true)
+    assert opts.limit == 13
+    assert opts.pretty
+  end
+
+  test "default_inspect_fun" do
+    assert Inspect.Opts.default_inspect_fun() == (&Inspect.inspect/2)
+
+    assert Inspect.Opts.default_inspect_fun(fn
+             :rewrite_atom, _ -> "rewritten_atom"
+             value, opts -> Inspect.inspect(value, opts)
+           end) == :ok
+
+    assert inspect(:rewrite_atom) == "rewritten_atom"
+  after
+    Inspect.Opts.default_inspect_fun(&Inspect.inspect/2)
+  end
+end
+
 defmodule Inspect.AlgebraTest do
   use ExUnit.Case, async: true
 
@@ -123,10 +146,10 @@ defmodule Inspect.AlgebraTest do
 
   test "reset nest doc" do
     # Consistent with definitions
-    assert nest(empty(), :cursor) == {:doc_nest, empty(), :cursor, :always}
+    assert nest(empty(), :reset) == {:doc_nest, empty(), :reset, :always}
 
     # Consistent formatting
-    assert render(nest("a", :cursor), 80) == "a"
+    assert render(nest("a", :reset), 80) == "a"
     assert render(nest(nest(glue("a", "b"), :reset), 10), 2) == "a\nb"
     assert render(nest(nest(line("a", "b"), :reset), 10), 2) == "a\nb"
   end
@@ -190,6 +213,12 @@ defmodule Inspect.AlgebraTest do
     assert render(group(doc), 5) == "a\nb\nc\ndhello"
   end
 
+  test "no limit doc" do
+    doc = no_limit(group(glue(glue("hello", "a"), "b")))
+    assert render(doc, 5) == "hello a b"
+    assert render(doc, :infinity) == "hello a b"
+  end
+
   test "collapse lines" do
     # Consistent with definitions
     assert collapse_lines(3) == {:doc_collapse, 3}
@@ -222,8 +251,8 @@ defmodule Inspect.AlgebraTest do
 
   test "force doc and cancel doc" do
     # Consistent with definitions
-    assert force_break("ab") == {:doc_force, "ab"}
-    assert force_break(empty()) == {:doc_force, empty()}
+    assert force_unfit("ab") == {:doc_force, "ab"}
+    assert force_unfit(empty()) == {:doc_force, empty()}
 
     # Consistent with definitions
     assert next_break_fits("ab") == {:doc_fits, "ab", :enabled}
@@ -232,7 +261,7 @@ defmodule Inspect.AlgebraTest do
     assert next_break_fits(empty(), :disabled) == {:doc_fits, empty(), :disabled}
 
     # Consistent formatting
-    doc = force_break(concat(glue(glue(glue("hello", "a"), "b"), "c"), "d"))
+    doc = force_unfit(concat(glue(glue(glue("hello", "a"), "b"), "c"), "d"))
     assert render(doc, 20) == "hello\na\nb\ncd"
     assert render(next_break_fits(doc, :enabled), 20) == "hello a b cd"
 
@@ -247,11 +276,19 @@ defmodule Inspect.AlgebraTest do
   end
 
   test "formatting with infinity" do
-    s = String.duplicate("x", 50)
-    g = ";"
-    doc = glue(s, g, s) |> glue(g, s) |> glue(g, s) |> glue(g, s) |> group
+    str = String.duplicate("x", 50)
+    colon = ";"
 
-    assert render(doc, :infinity) == s <> g <> s <> g <> s <> g <> s <> g <> s
+    doc =
+      str
+      |> glue(colon, str)
+      |> glue(colon, str)
+      |> glue(colon, str)
+      |> glue(colon, str)
+      |> group()
+
+    assert render(doc, :infinity) ==
+             str <> colon <> str <> colon <> str <> colon <> str <> colon <> str
   end
 
   test "formatting container_doc with empty" do
@@ -270,5 +307,13 @@ defmodule Inspect.AlgebraTest do
     assert sm.(["a" | "b"]) |> render(80) == "[a | b]"
     assert sm.(["a" | empty()]) |> render(80) == "[a]"
     assert sm.([empty() | "b"]) |> render(80) == "[b]"
+  end
+
+  test "formatting container_doc with empty and limit" do
+    opts = %Inspect.Opts{limit: 2}
+    value = ["a", empty(), "b"]
+
+    assert container_doc("[", value, "]", opts, fn d, _ -> d end, separator: ",") |> render(80) ==
+             "[a, b]"
   end
 end

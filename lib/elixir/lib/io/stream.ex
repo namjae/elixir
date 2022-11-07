@@ -1,6 +1,7 @@
 defmodule IO.StreamError do
   defexception [:reason, :message]
 
+  @impl true
   def exception(opts) do
     reason = opts[:reason]
     formatted = IO.iodata_to_binary(:file.format_error(reason))
@@ -25,7 +26,11 @@ defmodule IO.Stream do
 
   defstruct device: nil, raw: true, line_or_bytes: :line
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          device: IO.device(),
+          raw: boolean(),
+          line_or_bytes: :line | non_neg_integer()
+        }
 
   @doc false
   def __build__(device, raw, line_or_bytes) do

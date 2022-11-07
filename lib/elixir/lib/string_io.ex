@@ -13,17 +13,77 @@ defmodule StringIO do
 
   """
 
-  use GenServer
+  # We're implementing the GenServer behaviour instead of using the
+  # `use GenServer` macro, because we don't want the `child_spec/1`
+  # function as it doesn't make sense to be started under a supervisor.
+  @behaviour GenServer
 
-  @doc """
+  @doc ~S"""
   Creates an IO device.
 
   `string` will be the initial input of the newly created
   device.
 
-  If the `:capture_prompt` option is set to `true`,
-  prompts (specified as arguments to `IO.get*` functions)
-  are captured.
+  The device will be created and sent to the function given.
+  When the function returns, the device will be closed. The final
+  result will be a tuple with `:ok` and the result of the function.
+
+  ## Options
+
+    * `:capture_prompt` - if set to `true`, prompts (specified as
+      arguments to `IO.get*` functions) are captured in the output.
+      Defaults to `false`.
+
+    * `:encoding` (since v1.10.0) - encoding of the IO device. Allowed
+      values are `:unicode` (default) and `:latin1`.
+
+  ## Examples
+
+      iex> StringIO.open("foo", [], fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", "The input was foo"}}
+
+      iex> StringIO.open("foo", [capture_prompt: true], fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", ">The input was foo"}}
+
+  """
+  @doc since: "1.7.0"
+  @spec open(binary, keyword, (pid -> res)) :: {:ok, res} when res: var
+  def open(string, options, function)
+      when is_binary(string) and is_list(options) and is_function(function, 1) do
+    {:ok, pid} = GenServer.start_link(__MODULE__, {string, options}, [])
+
+    try do
+      {:ok, function.(pid)}
+    after
+      {:ok, {_input, _output}} = close(pid)
+    end
+  end
+
+  @doc ~S"""
+  Creates an IO device.
+
+  `string` will be the initial input of the newly created
+  device.
+
+  `options_or_function` can be a keyword list of options or
+  a function.
+
+  If options are provided, the result will be `{:ok, pid}`, returning the
+  IO device created. The option `:capture_prompt`, when set to `true`, causes
+  prompts (which are specified as arguments to `IO.get*` functions) to be
+  included in the device's output.
+
+  If a function is provided, the device will be created and sent to the
+  function. When the function returns, the device will be closed. The final
+  result will be a tuple with `:ok` and the result of the function.
 
   ## Examples
 
@@ -39,10 +99,25 @@ defmodule StringIO do
       iex> StringIO.contents(pid)
       {"", ">"}
 
+      iex> StringIO.open("foo", fn pid ->
+      ...>   input = IO.gets(pid, ">")
+      ...>   IO.write(pid, "The input was #{input}")
+      ...>   StringIO.contents(pid)
+      ...> end)
+      {:ok, {"", "The input was foo"}}
+
   """
   @spec open(binary, keyword) :: {:ok, pid}
-  def open(string, options \\ []) when is_binary(string) do
-    GenServer.start_link(__MODULE__, {string, options}, [])
+  @spec open(binary, (pid -> res)) :: {:ok, res} when res: var
+  def open(string, options_or_function \\ [])
+
+  def open(string, options_or_function) when is_binary(string) and is_list(options_or_function) do
+    GenServer.start_link(__MODULE__, {string, options_or_function}, [])
+  end
+
+  def open(string, options_or_function)
+      when is_binary(string) and is_function(options_or_function, 1) do
+    open(string, [], options_or_function)
   end
 
   @doc """
@@ -99,20 +174,24 @@ defmodule StringIO do
 
   ## callbacks
 
+  @impl true
   def init({string, options}) do
     capture_prompt = options[:capture_prompt] || false
-    {:ok, %{input: string, output: "", capture_prompt: capture_prompt}}
+    encoding = options[:encoding] || :unicode
+    {:ok, %{encoding: encoding, input: string, output: "", capture_prompt: capture_prompt}}
   end
 
+  @impl true
   def handle_info({:io_request, from, reply_as, req}, state) do
     state = io_request(from, reply_as, req, state)
     {:noreply, state}
   end
 
-  def handle_info(message, state) do
-    super(message, state)
+  def handle_info(_message, state) do
+    {:noreply, state}
   end
 
+  @impl true
   def handle_call(:contents, _from, %{input: input, output: output} = state) do
     {:reply, {input, output}, state}
   end
@@ -125,13 +204,9 @@ defmodule StringIO do
     {:stop, :normal, {:ok, {input, output}}, state}
   end
 
-  def handle_call(request, from, state) do
-    super(request, from, state)
-  end
-
   defp io_request(from, reply_as, req, state) do
     {reply, state} = io_request(req, state)
-    io_reply(from, reply_as, to_reply(reply))
+    io_reply(from, reply_as, reply)
     state
   end
 
@@ -179,12 +254,16 @@ defmodule StringIO do
     get_line(encoding, "", state)
   end
 
+  defp io_request({:setopts, [encoding: encoding]}, state) when encoding in [:latin1, :unicode] do
+    {:ok, %{state | encoding: encoding}}
+  end
+
   defp io_request({:setopts, _opts}, state) do
     {{:error, :enotsup}, state}
   end
 
   defp io_request(:getopts, state) do
-    {{:ok, [binary: true, encoding: :unicode]}, state}
+    {[binary: true, encoding: state.encoding], state}
   end
 
   defp io_request({:get_geometry, :columns}, state) do
@@ -205,14 +284,16 @@ defmodule StringIO do
 
   ## put_chars
 
-  defp put_chars(encoding, chars, req, %{output: output} = state) do
-    case :unicode.characters_to_binary(chars, encoding, :unicode) do
+  defp put_chars(encoding, chars, req, state) do
+    case :unicode.characters_to_binary(chars, encoding, state.encoding) do
       string when is_binary(string) ->
-        {:ok, %{state | output: output <> string}}
+        {:ok, %{state | output: state.output <> string}}
 
       {_, _, _} ->
-        {{:error, req}, state}
+        {{:error, {:no_translation, encoding, state.encoding}}, state}
     end
+  rescue
+    ArgumentError -> {{:error, req}, state}
   end
 
   ## get_chars
@@ -240,21 +321,24 @@ defmodule StringIO do
     {chars, rest}
   end
 
-  defp get_chars(input, encoding, count) do
-    try do
-      case :file_io_server.count_and_find(input, count, encoding) do
-        {buf_count, split_pos} when buf_count < count or split_pos == :none ->
-          {input, ""}
-
-        {_buf_count, split_pos} ->
-          <<chars::binary-size(split_pos), rest::binary>> = input
-          {chars, rest}
-      end
-    catch
-      :exit, :invalid_unicode ->
-        {:error, :invalid_unicode}
+  defp get_chars(input, :unicode, count) do
+    with {:ok, count} <- split_at(input, count, 0) do
+      <<chars::binary-size(count), rest::binary>> = input
+      {chars, rest}
     end
   end
+
+  defp split_at(_, 0, acc),
+    do: {:ok, acc}
+
+  defp split_at(<<h::utf8, t::binary>>, count, acc),
+    do: split_at(t, count - 1, acc + byte_size(<<h::utf8>>))
+
+  defp split_at(<<_, _::binary>>, _count, _acc),
+    do: {:error, :invalid_unicode}
+
+  defp split_at(<<>>, _count, acc),
+    do: {:ok, acc}
 
   ## get_line
 
@@ -326,7 +410,6 @@ defmodule StringIO do
     end
   end
 
-  defp binary_to_list(data, _) when is_list(data), do: data
   defp binary_to_list(data, :unicode) when is_binary(data), do: String.to_charlist(data)
   defp binary_to_list(data, :latin1) when is_binary(data), do: :erlang.binary_to_list(data)
 
@@ -334,7 +417,7 @@ defmodule StringIO do
   defp list_to_binary(data, :unicode) when is_list(data), do: List.to_string(data)
   defp list_to_binary(data, :latin1) when is_list(data), do: :erlang.list_to_binary(data)
 
-  # From http://erlang.org/doc/apps/stdlib/io_protocol.html: result can be any
+  # From https://www.erlang.org/doc/apps/stdlib/io_protocol.html: result can be any
   # Erlang term, but if it is a list(), the I/O server can convert it to a binary().
   defp get_until_result(data, encoding) when is_list(data), do: list_to_binary(data, encoding)
   defp get_until_result(data, _), do: data
@@ -377,7 +460,4 @@ defmodule StringIO do
   defp io_reply(from, reply_as, reply) do
     send(from, {:io_reply, reply_as, reply})
   end
-
-  defp to_reply(list) when is_list(list), do: IO.chardata_to_string(list)
-  defp to_reply(other), do: other
 end

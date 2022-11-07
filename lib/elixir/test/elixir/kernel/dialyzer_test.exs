@@ -27,31 +27,40 @@ defmodule Kernel.DialyzerTest do
     dialyzer_run(analysis_type: :plt_build, output_plt: plt, apps: [:erts], files: files)
 
     # Compile Dialyzer fixtures
-    assert '' = elixirc("#{fixture_path("dialyzer")} -o #{dir}")
+    source_files = Path.wildcard(Path.join(fixture_path("dialyzer"), "*"))
+    {:ok, _, _} = Kernel.ParallelCompiler.compile_to_path(source_files, dir)
 
     {:ok, [base_dir: dir, base_plt: plt]}
   end
 
   setup context do
-    # Set up a per-test temporary directory, so we can run these with async: true.
-    # We use the test's line number as the directory name, so they won't conflict.
-    dir =
-      context[:base_dir]
-      |> Path.join("line#{context[:line]}")
-      |> String.to_charlist()
-
-    File.mkdir_p!(dir)
+    dir = String.to_charlist(context.tmp_dir)
 
     plt =
       dir
       |> Path.join("plt")
       |> String.to_charlist()
 
-    File.cp!(context[:base_plt], plt)
+    File.cp!(context.base_plt, plt)
+    warnings = Map.get(context, :warnings, [])
 
-    dialyzer = [analysis_type: :succ_typings, check_plt: false, files_rec: [dir], plts: [plt]]
+    dialyzer = [
+      analysis_type: :succ_typings,
+      check_plt: false,
+      files_rec: [dir],
+      plts: [plt],
+      warnings: warnings
+    ]
 
     {:ok, [outdir: dir, dialyzer: dialyzer]}
+  end
+
+  @moduletag :tmp_dir
+
+  @tag warnings: [:specdiffs]
+  test "no warnings on specdiffs", context do
+    copy_beam!(context, Dialyzer.RemoteCall)
+    assert_dialyze_no_warnings!(context)
   end
 
   test "no warnings on valid remote calls", context do
@@ -87,10 +96,19 @@ defmodule Kernel.DialyzerTest do
     assert_dialyze_no_warnings!(context)
   end
 
+  @tag warnings: [:specdiffs]
   test "no warnings on protocol calls with opaque types", context do
-    copy_beam!(context, Dialyzer.ProtocolOpaque)
-    copy_beam!(context, Dialyzer.ProtocolOpaque.Entity)
-    copy_beam!(context, Dialyzer.ProtocolOpaque.Duck)
+    alias Dialyzer.ProtocolOpaque
+
+    copy_beam!(context, ProtocolOpaque)
+    copy_beam!(context, ProtocolOpaque.Entity)
+    copy_beam!(context, ProtocolOpaque.Duck)
+    assert_dialyze_no_warnings!(context)
+
+    # Also ensure no warnings after consolidation.
+    Code.prepend_path(context.base_dir)
+    {:ok, binary} = Protocol.consolidate(ProtocolOpaque.Entity, [ProtocolOpaque.Duck, Any])
+    File.write!(Path.join(context.outdir, "#{ProtocolOpaque.Entity}.beam"), binary)
     assert_dialyze_no_warnings!(context)
   end
 
@@ -99,16 +117,24 @@ defmodule Kernel.DialyzerTest do
     assert_dialyze_no_warnings!(context)
   end
 
+  test "no warnings on cond", context do
+    copy_beam!(context, Dialyzer.Cond)
+    assert_dialyze_no_warnings!(context)
+  end
+
+  test "no warnings on for comprehensions with bitstrings", context do
+    copy_beam!(context, Dialyzer.ForBitstring)
+    assert_dialyze_no_warnings!(context)
+  end
+
   test "no warnings on for falsy check that always boolean", context do
     copy_beam!(context, Dialyzer.ForBooleanCheck)
     assert_dialyze_no_warnings!(context)
   end
 
-  if :erlang.system_info(:otp_release) >= '20' do
-    test "no warnings on with/else", context do
-      copy_beam!(context, Dialyzer.With)
-      assert_dialyze_no_warnings!(context)
-    end
+  test "no warnings on with/else", context do
+    copy_beam!(context, Dialyzer.With)
+    assert_dialyze_no_warnings!(context)
   end
 
   test "no warnings on defmacrop", context do
@@ -116,13 +142,28 @@ defmodule Kernel.DialyzerTest do
     assert_dialyze_no_warnings!(context)
   end
 
+  test "no warnings on try", context do
+    copy_beam!(context, Dialyzer.Try)
+    assert_dialyze_no_warnings!(context)
+  end
+
+  test "no warning on is_struct/2", context do
+    copy_beam!(context, Dialyzer.IsStruct)
+    assert_dialyze_no_warnings!(context)
+  end
+
+  test "no warning on ExUnit assertions", context do
+    copy_beam!(context, Dialyzer.Assertions)
+    assert_dialyze_no_warnings!(context)
+  end
+
   defp copy_beam!(context, module) do
     name = "#{module}.beam"
-    File.cp!(Path.join(context[:base_dir], name), Path.join(context[:outdir], name))
+    File.cp!(Path.join(context.base_dir, name), Path.join(context.outdir, name))
   end
 
   defp assert_dialyze_no_warnings!(context) do
-    case dialyzer_run(context[:dialyzer]) do
+    case dialyzer_run(context.dialyzer) do
       [] ->
         :ok
 

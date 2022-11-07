@@ -31,6 +31,7 @@ defmodule VersionTest do
     assert Version.compare("1.0.0", "1.0.0") == :eq
     assert Version.compare("1.0.0-dev", "1.0.0-dev") == :eq
     assert Version.compare("1.0.0-a", "1.0.0-a") == :eq
+    assert Version.compare("1.5.0-rc.0", "1.5.0-rc0") == :lt
   end
 
   test "compare/2 with invalid versions" do
@@ -48,19 +49,30 @@ defmodule VersionTest do
   end
 
   test "lexes specifications properly" do
-    assert Parser.lexer("== != > >= < <= ~>", []) == [:==, :!=, :>, :>=, :<, :<=, :~>]
-    assert Parser.lexer("2.3.0", []) == [:==, "2.3.0"]
-    assert Parser.lexer("!2.3.0", []) == [:!=, "2.3.0"]
-    assert Parser.lexer(">>=", []) == [:>, :>=]
-    assert Parser.lexer(">2.4.0", []) == [:>, "2.4.0"]
-    assert Parser.lexer("> 2.4.0", []) == [:>, "2.4.0"]
-    assert Parser.lexer("    >     2.4.0", []) == [:>, "2.4.0"]
+    assert Parser.lexer("== > >= < <= ~>") |> Enum.reverse() == [:==, :>, :>=, :<, :<=, :~>]
+    assert Parser.lexer("2.3.0") |> Enum.reverse() == [:==, "2.3.0"]
+    assert Parser.lexer(">>=") |> Enum.reverse() == [:>, :>=]
+    assert Parser.lexer(">2.4.0") |> Enum.reverse() == [:>, "2.4.0"]
+    assert Parser.lexer("> 2.4.0") |> Enum.reverse() == [:>, "2.4.0"]
+    assert Parser.lexer("    >     2.4.0") |> Enum.reverse() == [:>, "2.4.0"]
+    assert Parser.lexer(" or 2.1.0") |> Enum.reverse() == [:or, :==, "2.1.0"]
+    assert Parser.lexer(" and 2.1.0") |> Enum.reverse() == [:and, :==, "2.1.0"]
+
+    assert Parser.lexer(">= 2.0.0 and < 2.1.0") |> Enum.reverse() ==
+             [:>=, "2.0.0", :and, :<, "2.1.0"]
+
+    assert Parser.lexer(">= 2.0.0 or < 2.1.0") |> Enum.reverse() ==
+             [:>=, "2.0.0", :or, :<, "2.1.0"]
   end
 
   test "parse/1" do
     assert {:ok, %Version{major: 1, minor: 2, patch: 3}} = Version.parse("1.2.3")
-    assert {:ok, %Version{major: 1, minor: 4, patch: 5}} = Version.parse("1.4.5+ignore")
-    assert {:ok, %Version{major: 0, minor: 0, patch: 1}} = Version.parse("0.0.1+sha.0702245")
+
+    assert {:ok, %Version{major: 1, minor: 4, patch: 5, build: "ignore"}} =
+             Version.parse("1.4.5+ignore")
+
+    assert {:ok, %Version{major: 0, minor: 0, patch: 1, build: "sha.0702245"}} =
+             Version.parse("0.0.1+sha.0702245")
 
     assert {:ok, %Version{major: 1, minor: 4, patch: 5, pre: ["6-g3318bd5"]}} =
              Version.parse("1.4.5-6-g3318bd5")
@@ -87,15 +99,19 @@ defmodule VersionTest do
     assert Version.parse("2.3.00") == :error
     assert Version.parse("2.03.0") == :error
     assert Version.parse("02.3.0") == :error
+    assert Version.parse("0. 0.0") == :error
+    assert Version.parse("0.1.0-&&pre") == :error
   end
 
-  test "Kernel.to_string/1" do
-    assert Version.parse!("1.0.0") |> to_string == "1.0.0"
-    assert Version.parse!("1.0.0-dev") |> to_string == "1.0.0-dev"
-    assert Version.parse!("1.0.0+lol") |> to_string == "1.0.0+lol"
-    assert Version.parse!("1.0.0-dev+lol") |> to_string == "1.0.0-dev+lol"
-    assert Version.parse!("1.0.0-0") |> to_string == "1.0.0-0"
-    assert Version.parse!("1.0.0-rc.0") |> to_string == "1.0.0-rc.0"
+  test "to_string/1" do
+    assert Version.parse!("1.0.0") |> Version.to_string() == "1.0.0"
+    assert Version.parse!("1.0.0-dev") |> Version.to_string() == "1.0.0-dev"
+    assert Version.parse!("1.0.0+lol") |> Version.to_string() == "1.0.0+lol"
+    assert Version.parse!("1.0.0-dev+lol") |> Version.to_string() == "1.0.0-dev+lol"
+    assert Version.parse!("1.0.0-dev+lol.4") |> Version.to_string() == "1.0.0-dev+lol.4"
+    assert Version.parse!("1.0.0-0") |> Version.to_string() == "1.0.0-0"
+    assert Version.parse!("1.0.0-rc.0") |> Version.to_string() == "1.0.0-rc.0"
+    assert %Version{major: 1, minor: 0, patch: 0} |> Version.to_string() == "1.0.0"
   end
 
   test "match?/2 with invalid versions" do
@@ -135,11 +151,13 @@ defmodule VersionTest do
   end
 
   test "!=" do
-    assert Version.match?("2.4.0", "!2.3.0")
-    refute Version.match?("2.3.0", "!2.3.0")
+    ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      assert Version.match?("2.4.0", "!2.3.0")
+      refute Version.match?("2.3.0", "!2.3.0")
 
-    assert Version.match?("2.4.0", "!= 2.3.0")
-    refute Version.match?("2.3.0", "!= 2.3.0")
+      assert Version.match?("2.4.0", "!= 2.3.0")
+      refute Version.match?("2.3.0", "!= 2.3.0")
+    end)
   end
 
   test ">" do
@@ -152,6 +170,9 @@ defmodule VersionTest do
     assert Version.match?("1.2.3-alpha.beta.sigma", "> 1.2.3-alpha.beta")
     refute Version.match?("1.2.3-alpha.10", "< 1.2.3-alpha.1")
     refute Version.match?("0.10.2-dev", "> 0.10.2")
+
+    refute Version.match?("1.5.0-rc.0", "> 1.5.0-rc0")
+    assert Version.match?("1.5.0-rc0", "> 1.5.0-rc.0")
   end
 
   test ">=" do
@@ -161,6 +182,9 @@ defmodule VersionTest do
 
     assert Version.match?("2.0.0", ">= 1.0.0")
     assert Version.match?("1.0.0", ">= 1.0.0")
+
+    refute Version.match?("1.5.0-rc.0", ">= 1.5.0-rc0")
+    assert Version.match?("1.5.0-rc0", ">= 1.5.0-rc.0")
   end
 
   test "<" do
@@ -180,34 +204,52 @@ defmodule VersionTest do
     assert Version.match?("2.3.0", "<= 2.3.0")
   end
 
-  test "~>" do
-    assert Version.match?("3.0.0", "~> 3.0")
-    assert Version.match?("3.2.0", "~> 3.0")
-    refute Version.match?("4.0.0", "~> 3.0")
-    refute Version.match?("4.4.0", "~> 3.0")
+  describe "~>" do
+    test "regular cases" do
+      assert Version.match?("3.0.0", "~> 3.0")
+      assert Version.match?("3.2.0", "~> 3.0")
+      refute Version.match?("4.0.0", "~> 3.0")
+      refute Version.match?("4.4.0", "~> 3.0")
 
-    assert Version.match?("3.0.2", "~> 3.0.0")
-    assert Version.match?("3.0.0", "~> 3.0.0")
-    refute Version.match?("3.1.0", "~> 3.0.0")
-    refute Version.match?("3.4.0", "~> 3.0.0")
+      assert Version.match?("3.0.2", "~> 3.0.0")
+      assert Version.match?("3.0.0", "~> 3.0.0")
+      refute Version.match?("3.1.0", "~> 3.0.0")
+      refute Version.match?("3.4.0", "~> 3.0.0")
 
-    assert Version.match?("3.6.0", "~> 3.5")
-    assert Version.match?("3.5.0", "~> 3.5")
-    refute Version.match?("4.0.0", "~> 3.5")
-    refute Version.match?("5.0.0", "~> 3.5")
+      assert Version.match?("3.6.0", "~> 3.5")
+      assert Version.match?("3.5.0", "~> 3.5")
+      refute Version.match?("4.0.0", "~> 3.5")
+      refute Version.match?("5.0.0", "~> 3.5")
 
-    assert Version.match?("3.5.2", "~> 3.5.0")
-    assert Version.match?("3.5.4", "~> 3.5.0")
-    refute Version.match?("3.6.0", "~> 3.5.0")
-    refute Version.match?("3.6.3", "~> 3.5.0")
+      assert Version.match?("3.5.2", "~> 3.5.0")
+      assert Version.match?("3.5.4", "~> 3.5.0")
+      refute Version.match?("3.6.0", "~> 3.5.0")
+      refute Version.match?("3.6.3", "~> 3.5.0")
 
-    assert Version.match?("0.9.3", "~> 0.9.3-dev")
-    refute Version.match?("0.10.0", "~> 0.9.3-dev")
+      assert Version.match?("0.9.3", "~> 0.9.3-dev")
+      refute Version.match?("0.10.0", "~> 0.9.3-dev")
 
-    refute Version.match?("0.3.0-dev", "~> 0.2.0")
+      refute Version.match?("0.3.0-dev", "~> 0.2.0")
 
-    assert_raise Version.InvalidRequirementError, fn ->
-      Version.match?("3.0.0", "~> 3")
+      assert Version.match?("1.11.0-dev", "~> 1.11-dev")
+      assert Version.match?("1.11.0", "~> 1.11-dev")
+      assert Version.match?("1.12.0", "~> 1.11-dev")
+      refute Version.match?("1.10.0", "~> 1.11-dev")
+      refute Version.match?("2.0.0", "~> 1.11-dev")
+
+      refute Version.match?("1.5.0-rc.0", "~> 1.5.0-rc0")
+      assert Version.match?("1.5.0-rc0", "~> 1.5.0-rc.0")
+
+      assert_raise Version.InvalidRequirementError, fn ->
+        Version.match?("3.0.0", "~> 3")
+      end
+    end
+
+    test "~> will never include pre-release versions of its upper bound" do
+      refute Version.match?("2.2.0-dev", "~> 2.1.0")
+      refute Version.match?("2.2.0-dev", "~> 2.1.0", allow_pre: false)
+      refute Version.match?("2.2.0-dev", "~> 2.1.0-dev")
+      refute Version.match?("2.2.0-dev", "~> 2.1.0-dev", allow_pre: false)
     end
   end
 
@@ -234,8 +276,50 @@ defmodule VersionTest do
     assert Version.match?("0.9.1", "0.9.1 or 0.9.3 or 0.9.5")
     assert Version.match?("0.9.3", "0.9.1 or 0.9.3 or 0.9.5")
     assert Version.match?("0.9.5", "0.9.1 or 0.9.3 or 0.9.5")
-
     refute Version.match?("0.9.6", "0.9.1 or 0.9.3 or 0.9.5")
+  end
+
+  test "and/or" do
+    req = "< 0.2.0 and >= 0.1.0 or >= 0.7.0"
+    assert Version.match?("0.1.0", req)
+    assert Version.match?("0.1.5", req)
+    refute Version.match?("0.3.0", req)
+    refute Version.match?("0.6.0", req)
+    assert Version.match?("0.7.0", req)
+    assert Version.match?("0.7.5", req)
+
+    req = ">= 0.7.0 or < 0.2.0 and >= 0.1.0"
+    assert Version.match?("0.1.0", req)
+    assert Version.match?("0.1.5", req)
+    refute Version.match?("0.3.0", req)
+    refute Version.match?("0.6.0", req)
+    assert Version.match?("0.7.0", req)
+    assert Version.match?("0.7.5", req)
+
+    req = "< 0.2.0 and >= 0.1.0 or < 0.8.0 and >= 0.7.0"
+    assert Version.match?("0.1.0", req)
+    assert Version.match?("0.1.5", req)
+    refute Version.match?("0.3.0", req)
+    refute Version.match?("0.6.0", req)
+    assert Version.match?("0.7.0", req)
+    assert Version.match?("0.7.5", req)
+
+    req = "== 0.2.0 or >= 0.3.0 and < 0.4.0 or == 0.7.0"
+    assert Version.match?("0.2.0", req)
+    refute Version.match?("0.2.5", req)
+    assert Version.match?("0.3.0", req)
+    assert Version.match?("0.3.5", req)
+    refute Version.match?("0.4.0", req)
+    assert Version.match?("0.7.0", req)
+  end
+
+  test "compile_requirement/1" do
+    {:ok, req} = Version.parse_requirement("1.2.3")
+    assert req == Version.compile_requirement(req)
+
+    assert_raise(FunctionClauseError, fn ->
+      Version.compile_requirement("~> 1.2.3")
+    end)
   end
 
   test "compile requirement" do
@@ -244,5 +328,11 @@ defmodule VersionTest do
 
     assert Version.match?("1.2.3", req)
     refute Version.match?("1.2.4", req)
+
+    assert Version.parse_requirement("1 . 2 . 3") == :error
+    assert Version.parse_requirement("== >= 1.2.3") == :error
+    assert Version.parse_requirement("1.2.3 and or 4.5.6") == :error
+    assert Version.parse_requirement(">= 1") == :error
+    assert Version.parse_requirement("1.2.3 >=") == :error
   end
 end

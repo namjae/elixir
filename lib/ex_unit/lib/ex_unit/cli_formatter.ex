@@ -3,7 +3,7 @@ defmodule ExUnit.CLIFormatter do
   use GenServer
 
   import ExUnit.Formatter,
-    only: [format_time: 2, format_filters: 2, format_test_failure: 5, format_test_all_failure: 5]
+    only: [format_times: 1, format_filters: 2, format_test_failure: 5, format_test_all_failure: 5]
 
   ## Callbacks
 
@@ -13,13 +13,14 @@ defmodule ExUnit.CLIFormatter do
     config = %{
       seed: opts[:seed],
       trace: opts[:trace],
-      colors: Keyword.put_new(opts[:colors], :enabled, IO.ANSI.enabled?()),
+      colors: colors(opts),
       width: get_terminal_width(),
       slowest: opts[:slowest],
       test_counter: %{},
       test_timings: [],
       failure_counter: 0,
       skipped_counter: 0,
+      excluded_counter: 0,
       invalid_counter: 0
     }
 
@@ -30,32 +31,55 @@ defmodule ExUnit.CLIFormatter do
     {:noreply, config}
   end
 
-  def handle_cast({:suite_finished, run_us, load_us}, config) do
-    print_suite(config, run_us, load_us)
+  def handle_cast({:suite_finished, times_us}, config) do
+    test_type_counts = collect_test_type_counts(config)
+
+    if test_type_counts > 0 && config.excluded_counter == test_type_counts do
+      IO.puts(invalid("All tests have been excluded.", config))
+    end
+
+    IO.write("\n")
+    IO.puts(format_times(times_us))
+
+    if config.slowest > 0 do
+      IO.puts(format_slowest_tests(config, times_us.run))
+    end
+
+    print_summary(config, false)
     {:noreply, config}
   end
 
   def handle_cast({:test_started, %ExUnit.Test{} = test}, config) do
-    if config.trace, do: IO.write("  * #{test.name}")
+    if config.trace, do: IO.write("#{trace_test_started(test)} [#{trace_test_line(test)}]")
     {:noreply, config}
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: nil} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(success(trace_test_result(test), config))
     else
       IO.write(success(".", config))
     end
 
+    config = %{config | test_counter: update_test_counter(config.test_counter, test)}
+    {:noreply, update_test_timings(config, test)}
+  end
+
+  def handle_cast({:test_finished, %ExUnit.Test{state: {:excluded, _}} = test}, config) do
+    if config.trace, do: IO.puts(trace_test_excluded(test))
+
     test_counter = update_test_counter(config.test_counter, test)
-    test_timings = update_test_timings(config.test_timings, test)
-    config = %{config | test_counter: test_counter, test_timings: test_timings}
+    config = %{config | test_counter: test_counter, excluded_counter: config.excluded_counter + 1}
 
     {:noreply, config}
   end
 
-  def handle_cast({:test_finished, %ExUnit.Test{state: {:skip, _}} = test}, config) do
-    if config.trace, do: IO.puts(trace_test_skip(test))
+  def handle_cast({:test_finished, %ExUnit.Test{state: {:skipped, _}} = test}, config) do
+    if config.trace do
+      IO.puts(skipped(trace_test_skipped(test), config))
+    else
+      IO.write(skipped("*", config))
+    end
 
     test_counter = update_test_counter(config.test_counter, test)
     config = %{config | test_counter: test_counter, skipped_counter: config.skipped_counter + 1}
@@ -64,7 +88,7 @@ defmodule ExUnit.CLIFormatter do
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: {:invalid, _}} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(invalid(trace_test_result(test), config))
     else
       IO.write(invalid("?", config))
@@ -77,7 +101,7 @@ defmodule ExUnit.CLIFormatter do
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: {:failed, failures}} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(failure(trace_test_result(test), config))
     end
 
@@ -94,22 +118,15 @@ defmodule ExUnit.CLIFormatter do
     print_logs(test.logs)
 
     test_counter = update_test_counter(config.test_counter, test)
-    test_timings = update_test_timings(config.test_timings, test)
     failure_counter = config.failure_counter + 1
+    config = %{config | test_counter: test_counter, failure_counter: failure_counter}
 
-    config = %{
-      config
-      | test_counter: test_counter,
-        test_timings: test_timings,
-        failure_counter: failure_counter
-    }
-
-    {:noreply, config}
+    {:noreply, update_test_timings(config, test)}
   end
 
-  def handle_cast({:module_started, %ExUnit.TestModule{name: name}}, config) do
+  def handle_cast({:module_started, %ExUnit.TestModule{name: name, file: file}}, config) do
     if config.trace() do
-      IO.puts("\n#{inspect(name)}")
+      IO.puts("\n#{inspect(name)} [#{Path.relative_to_cwd(file)}]")
     end
 
     {:noreply, config}
@@ -123,25 +140,44 @@ defmodule ExUnit.CLIFormatter do
         {:module_finished, %ExUnit.TestModule{state: {:failed, failures}} = test_module},
         config
       ) do
-    tests_length = length(test_module.tests)
+    # The failed tests have already contributed to the counter,
+    # so we should only add the successful tests to the count
+    config =
+      update_in(config.failure_counter, fn counter ->
+        counter + Enum.count(test_module.tests, &is_nil(&1.state))
+      end)
 
     formatted =
       format_test_all_failure(
         test_module,
         failures,
-        config.failure_counter + tests_length,
+        config.failure_counter,
         config.width,
         &formatter(&1, &2, config)
       )
 
     print_failure(formatted, config)
 
-    test_counter =
-      Enum.reduce(test_module.tests, config.test_counter, &update_test_counter(&2, &1))
+    {:noreply, config}
+  end
 
-    failure_counter = config.failure_counter + tests_length
-    config = %{config | test_counter: test_counter, failure_counter: failure_counter}
+  def handle_cast(:max_failures_reached, config) do
+    IO.write(failure("--max-failures reached, aborting test suite", config))
+    {:noreply, config}
+  end
 
+  def handle_cast({:sigquit, current}, config) do
+    IO.write("\n\n")
+
+    if current == [] do
+      IO.write(failure("Aborting test suite, showing results so far...\n\n", config))
+    else
+      IO.write(failure("Aborting test suite, the following have not completed:\n\n", config))
+      Enum.each(current, &IO.puts(trace_aborted(&1)))
+      IO.write(failure("\nShowing results so far...\n\n", config))
+    end
+
+    print_summary(config, true)
     {:noreply, config}
   end
 
@@ -155,12 +191,36 @@ defmodule ExUnit.CLIFormatter do
     "#{format_us(time)}ms"
   end
 
-  defp trace_test_result(test) do
-    "\r  * #{test.name} (#{trace_test_time(test)})"
+  defp trace_test_line(%ExUnit.Test{tags: tags}) do
+    "L##{tags.line}"
   end
 
-  defp trace_test_skip(test) do
-    "\r  * #{test.name} (skipped)"
+  defp trace_test_file_line(%ExUnit.Test{tags: tags}) do
+    "#{Path.relative_to_cwd(tags.file)}:#{tags.line}"
+  end
+
+  defp trace_test_started(test) do
+    String.replace("  * #{test.name}", "\n", " ")
+  end
+
+  defp trace_test_result(test) do
+    "\r#{trace_test_started(test)} (#{trace_test_time(test)}) [#{trace_test_line(test)}]"
+  end
+
+  defp trace_test_excluded(test) do
+    "\r#{trace_test_started(test)} (excluded) [#{trace_test_line(test)}]"
+  end
+
+  defp trace_test_skipped(test) do
+    "\r#{trace_test_started(test)} (skipped) [#{trace_test_line(test)}]"
+  end
+
+  defp trace_aborted(%ExUnit.Test{} = test) do
+    "* #{test.name} [#{trace_test_file_line(test)}]"
+  end
+
+  defp trace_aborted(%ExUnit.TestModule{name: name, file: file}) do
+    "* #{inspect(name)} [#{Path.relative_to_cwd(file)}]"
   end
 
   defp normalize_us(us) do
@@ -178,73 +238,76 @@ defmodule ExUnit.CLIFormatter do
     end
   end
 
-  defp update_test_counter(test_counter, %{tags: %{type: type}}) do
-    Map.update(test_counter, type, 1, &(&1 + 1))
+  defp update_test_counter(test_counter, %{tags: %{test_type: test_type}}) do
+    Map.update(test_counter, test_type, 1, &(&1 + 1))
   end
 
   ## Slowest
 
-  defp format_slowest_total(%{slowest: slowest} = config, run_us) do
-    slowest_us =
-      config
-      |> extract_slowest_tests()
-      |> Enum.reduce(0, &(&1.time + &2))
+  defp format_slowest_tests(%{slowest: slowest, test_timings: timings}, run_us) do
+    slowest_tests =
+      timings
+      |> Enum.sort_by(fn %{time: time} -> -time end)
+      |> Enum.take(slowest)
 
-    slowest_time =
-      slowest_us
-      |> normalize_us()
-      |> format_us()
-
+    slowest_us = Enum.reduce(slowest_tests, 0, &(&1.time + &2))
+    slowest_time = slowest_us |> normalize_us() |> format_us()
     percentage = Float.round(slowest_us / run_us * 100, 1)
 
-    "Top #{slowest} slowest (#{slowest_time}s), #{percentage}% of total time:\n"
+    [
+      "\nTop #{slowest} slowest (#{slowest_time}s), #{percentage}% of total time:\n\n"
+      | Enum.map(slowest_tests, &format_slow_test/1)
+    ]
   end
 
-  defp format_slowest_times(config) do
-    config
-    |> extract_slowest_tests()
-    |> Enum.map(&format_slow_test/1)
+  defp format_slow_test(%ExUnit.Test{time: time, module: module} = test) do
+    "#{trace_test_started(test)} (#{inspect(module)}) (#{format_us(time)}ms) " <>
+      "[#{trace_test_file_line(test)}]\n"
   end
 
-  defp format_slow_test(%ExUnit.Test{name: name, time: time, module: module}) do
-    "  * #{name} (#{format_us(time)}ms) (#{inspect(module)})\n"
-  end
-
-  defp extract_slowest_tests(%{slowest: slowest, test_timings: timings} = _config) do
-    timings
-    |> Enum.sort_by(fn %{time: time} -> -time end)
-    |> Enum.take(slowest)
-  end
-
-  defp update_test_timings(timings, %ExUnit.Test{} = test) do
-    [test | timings]
+  defp update_test_timings(%{slowest: slowest} = config, %ExUnit.Test{} = test) do
+    if slowest > 0 do
+      # Do not store logs, as they are not used for timings and consume memory.
+      update_in(config.test_timings, &[%{test | logs: ""} | &1])
+    else
+      config
+    end
   end
 
   ## Printing
 
-  defp print_suite(config, run_us, load_us) do
-    IO.write("\n\n")
-    IO.puts(format_time(run_us, load_us))
-
-    if config.slowest > 0 do
-      IO.write("\n")
-      IO.puts(format_slowest_total(config, run_us))
-      IO.puts(format_slowest_times(config))
-    end
-
-    # singular/plural
-    test_type_counts = format_test_type_counts(config)
+  defp print_summary(config, force_failures?) do
+    formatted_test_type_counts = format_test_type_counts(config)
+    test_type_counts = collect_test_type_counts(config)
     failure_pl = pluralize(config.failure_counter, "failure", "failures")
 
     message =
-      "#{test_type_counts}#{config.failure_counter} #{failure_pl}"
-      |> if_true(config.skipped_counter > 0, &(&1 <> ", #{config.skipped_counter} skipped"))
-      |> if_true(config.invalid_counter > 0, &(&1 <> ", #{config.invalid_counter} invalid"))
+      "#{formatted_test_type_counts}#{config.failure_counter} #{failure_pl}"
+      |> if_true(
+        config.excluded_counter > 0,
+        &(&1 <> ", #{config.excluded_counter} excluded")
+      )
+      |> if_true(
+        config.invalid_counter > 0,
+        &(&1 <> ", #{config.invalid_counter} invalid")
+      )
+      |> if_true(
+        config.skipped_counter > 0,
+        &(&1 <> ", " <> skipped("#{config.skipped_counter} skipped", config))
+      )
 
     cond do
-      config.failure_counter > 0 -> IO.puts(failure(message, config))
-      config.invalid_counter > 0 -> IO.puts(invalid(message, config))
-      true -> IO.puts(success(message, config))
+      config.failure_counter > 0 or force_failures? ->
+        IO.puts(failure(message, config))
+
+      config.invalid_counter > 0 ->
+        IO.puts(invalid(message, config))
+
+      test_type_counts > 0 && config.excluded_counter == test_type_counts ->
+        IO.puts(invalid(message, config))
+
+      true ->
+        IO.puts(success(message, config))
     end
 
     IO.puts("\nRandomized with seed #{config.seed}")
@@ -258,8 +321,8 @@ defmodule ExUnit.CLIFormatter do
   end
 
   defp print_filters(include: include, exclude: exclude) do
-    if include != [], do: IO.puts(format_filters(include, :include))
     if exclude != [], do: IO.puts(format_filters(exclude, :exclude))
+    if include != [], do: IO.puts(format_filters(include, :include))
     IO.puts("")
     :ok
   end
@@ -274,16 +337,22 @@ defmodule ExUnit.CLIFormatter do
   end
 
   defp format_test_type_counts(%{test_counter: test_counter} = _config) do
-    Enum.map(test_counter, fn {type, count} ->
-      type_pluralized = pluralize(count, type, ExUnit.plural_rule(type |> to_string()))
+    Enum.map(test_counter, fn {test_type, count} ->
+      type_pluralized = pluralize(count, test_type, ExUnit.plural_rule(test_type |> to_string()))
       "#{count} #{type_pluralized}, "
+    end)
+  end
+
+  defp collect_test_type_counts(%{test_counter: test_counter} = _config) do
+    Enum.reduce(test_counter, 0, fn {_, count}, acc ->
+      acc + count
     end)
   end
 
   # Color styles
 
-  defp colorize(escape, string, %{colors: colors}) do
-    if colors[:enabled] do
+  defp colorize(key, string, %{colors: colors}) do
+    if escape = colors[:enabled] && colors[key] do
       [escape, string, :reset]
       |> IO.ANSI.format_fragment(true)
       |> IO.iodata_to_binary()
@@ -292,45 +361,56 @@ defmodule ExUnit.CLIFormatter do
     end
   end
 
+  defp colorize_doc(escape, doc, %{colors: colors}) do
+    if colors[:enabled] do
+      Inspect.Algebra.color(doc, escape, %Inspect.Opts{syntax_colors: colors})
+    else
+      doc
+    end
+  end
+
   defp success(msg, config) do
-    colorize(:green, msg, config)
+    colorize(:success, msg, config)
   end
 
   defp invalid(msg, config) do
-    colorize(:yellow, msg, config)
+    colorize(:invalid, msg, config)
+  end
+
+  defp skipped(msg, config) do
+    colorize(:skipped, msg, config)
   end
 
   defp failure(msg, config) do
-    colorize(:red, msg, config)
+    colorize(:failure, msg, config)
   end
 
-  defp formatter(:diff_enabled?, _, %{colors: colors}), do: colors[:enabled]
+  # Diff formatting
 
-  defp formatter(:error_info, msg, config), do: colorize(:red, msg, config)
+  defp formatter(:diff_enabled?, _, %{colors: colors}),
+    do: colors[:enabled]
 
-  defp formatter(:extra_info, msg, config), do: colorize(:cyan, msg, config)
+  defp formatter(:diff_delete, doc, config),
+    do: colorize_doc(:diff_delete, doc, config)
 
-  defp formatter(:location_info, msg, config), do: colorize([:bright, :black], msg, config)
+  defp formatter(:diff_delete_whitespace, doc, config),
+    do: colorize_doc(:diff_delete_whitespace, doc, config)
 
-  defp formatter(:diff_delete, msg, config), do: colorize(:red, msg, config)
+  defp formatter(:diff_insert, doc, config),
+    do: colorize_doc(:diff_insert, doc, config)
 
-  defp formatter(:diff_delete_whitespace, msg, config),
-    do: colorize(IO.ANSI.color_background(2, 0, 0), msg, config)
-
-  defp formatter(:diff_insert, msg, config), do: colorize(:green, msg, config)
-
-  defp formatter(:diff_insert_whitespace, msg, config),
-    do: colorize(IO.ANSI.color_background(0, 2, 0), msg, config)
+  defp formatter(:diff_insert_whitespace, doc, config),
+    do: colorize_doc(:diff_insert_whitespace, doc, config)
 
   defp formatter(:blame_diff, msg, %{colors: colors} = config) do
     if colors[:enabled] do
-      colorize(:red, msg, config)
+      colorize(:diff_delete, msg, config)
     else
       "-" <> msg <> "-"
     end
   end
 
-  defp formatter(_, msg, _config), do: msg
+  defp formatter(key, msg, config), do: colorize(key, msg, config)
 
   defp pluralize(1, singular, _plural), do: singular
   defp pluralize(_, _singular, plural), do: plural
@@ -340,6 +420,28 @@ defmodule ExUnit.CLIFormatter do
       {:ok, width} -> max(40, width)
       _ -> 80
     end
+  end
+
+  @default_colors [
+    diff_delete: :red,
+    diff_delete_whitespace: IO.ANSI.color_background(2, 0, 0),
+    diff_insert: :green,
+    diff_insert_whitespace: IO.ANSI.color_background(0, 2, 0),
+
+    # CLI formatter
+    success: :green,
+    invalid: :yellow,
+    skipped: :yellow,
+    failure: :red,
+    error_info: :red,
+    extra_info: :cyan,
+    location_info: [:bright, :black]
+  ]
+
+  defp colors(opts) do
+    @default_colors
+    |> Keyword.merge(opts[:colors])
+    |> Keyword.put_new(:enabled, IO.ANSI.enabled?())
   end
 
   defp print_logs(""), do: nil

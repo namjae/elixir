@@ -1,6 +1,5 @@
 defmodule Mix.Tasks.New do
   use Mix.Task
-
   import Mix.Generator
 
   @shortdoc "Creates a new Elixir project"
@@ -9,11 +8,17 @@ defmodule Mix.Tasks.New do
   Creates a new Elixir project.
   It expects the path of the project as argument.
 
-      mix new PATH [--sup] [--module MODULE] [--app APP] [--umbrella]
+      $ mix new PATH [--app APP] [--module MODULE] [--sup] [--umbrella]
 
   A project at the given PATH will be created. The
   application name and module name will be retrieved
   from the path, unless `--module` or `--app` is given.
+
+  An `--app` option can be given in order to
+  name the OTP application for the project.
+
+  A `--module` option can be given in order
+  to name the modules in the generated code skeleton.
 
   A `--sup` option can be given to generate an OTP application
   skeleton including a supervision tree. Normally an app is
@@ -22,23 +27,23 @@ defmodule Mix.Tasks.New do
   An `--umbrella` option can be given to generate an
   umbrella project.
 
-  An `--app` option can be given in order to
-  name the OTP application for the project.
-
-  A `--module` option can be given in order
-  to name the modules in the generated code skeleton.
-
   ## Examples
 
-      mix new hello_world
+      $ mix new hello_world
 
   Is equivalent to:
 
-      mix new hello_world --module HelloWorld
+      $ mix new hello_world --module HelloWorld
 
   To generate an app with a supervision tree and an application callback:
 
-      mix new hello_world --sup
+      $ mix new hello_world --sup
+
+  To generate an umbrella application with sub applications:
+
+      $ mix new hello_world --umbrella
+      $ cd hello_world/apps
+      $ mix new child_app
 
   """
 
@@ -49,6 +54,7 @@ defmodule Mix.Tasks.New do
     umbrella: :boolean
   ]
 
+  @impl true
   def run(argv) do
     {opts, argv} = OptionParser.parse!(argv, strict: @switches)
 
@@ -86,6 +92,8 @@ defmodule Mix.Tasks.New do
       version: get_version(System.version())
     ]
 
+    mod_filename = Macro.underscore(mod)
+
     create_file("README.md", readme_template(assigns))
     create_file(".formatter.exs", formatter_template(assigns))
     create_file(".gitignore", gitignore_template(assigns))
@@ -96,19 +104,16 @@ defmodule Mix.Tasks.New do
       create_file("mix.exs", mix_exs_template(assigns))
     end
 
-    create_directory("config")
-    create_file("config/config.exs", config_template(assigns))
-
     create_directory("lib")
-    create_file("lib/#{app}.ex", lib_template(assigns))
+    create_file("lib/#{mod_filename}.ex", lib_template(assigns))
 
     if opts[:sup] do
-      create_file("lib/#{app}/application.ex", lib_app_template(assigns))
+      create_file("lib/#{mod_filename}/application.ex", lib_app_template(assigns))
     end
 
     create_directory("test")
     create_file("test/test_helper.exs", test_helper_template(assigns))
-    create_file("test/#{app}_test.exs", test_template(assigns))
+    create_file("test/#{mod_filename}_test.exs", test_template(assigns))
 
     """
 
@@ -121,6 +126,22 @@ defmodule Mix.Tasks.New do
     """
     |> String.trim_trailing()
     |> Mix.shell().info()
+  end
+
+  @doc """
+  Returns a list of reserved application names.
+  """
+  def reserved_application_names do
+    # 1. Command line flags with multiple args can conflict with application names
+    # 2. OTP names
+    # 3. Elixir names
+    ~w(boot_var compile config configfd env pa pz path run s setcookie)a ++
+      ~w(otp asn1 common_test compiler crypto debugger dialyzer diameter
+         edoc eldap erl_docgen erl_interface erts et eunit ftp hipe
+         inets jinterface kernel megaco mnesia observer odbc os_mon
+         parsetools public_key reltool runtime_tools sasl snmp ssh
+         ssl stdlib syntax_tools toolbar tools typer wx xmerl)a ++
+      ~w(eex elixir ex_unit iex logger mix)a
   end
 
   defp sup_app(_mod, false), do: ""
@@ -160,10 +181,9 @@ defmodule Mix.Tasks.New do
   end
 
   defp check_application_name!(name, inferred?) do
-    unless name =~ Regex.recompile!(~r/^[a-z][a-z0-9_]*$/) do
+    if message = invalid_app(name) || reserved_app(name) do
       Mix.raise(
-        "Application name must start with a letter and have only lowercase " <>
-          "letters, numbers and underscore, got: #{inspect(name)}" <>
+        message <>
           if inferred? do
             ". The application name is inferred from the path, if you'd like to " <>
               "explicitly name the application then use the \"--app APP\" option"
@@ -174,8 +194,23 @@ defmodule Mix.Tasks.New do
     end
   end
 
+  defp invalid_app(name) do
+    unless name =~ ~r/^[a-z][a-z0-9_]*$/ do
+      "Application name must start with a lowercase ASCII letter, followed by " <>
+        "lowercase ASCII letters, numbers, or underscores, got: #{inspect(name)}"
+    end
+  end
+
+  defp reserved_app(name) do
+    atom_name = String.to_atom(name)
+
+    if atom_name in reserved_application_names() or Application.ensure_loaded(atom_name) == :ok do
+      "Cannot use application name #{inspect(name)} because it is already used by Erlang/OTP or Elixir"
+    end
+  end
+
   defp check_mod_name_validity!(name) do
-    unless name =~ Regex.recompile!(~r/^[A-Z]\w*(\.[A-Z]\w*)*$/) do
+    unless name =~ ~r/^[A-Z]\w*(\.[A-Z]\w*)*$/ do
       Mix.raise(
         "Module name must be a valid Elixir alias (for example: Foo.Bar), got: #{inspect(name)}"
       )
@@ -241,21 +276,22 @@ defmodule Mix.Tasks.New do
 
   Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
   and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-  be found at [https://hexdocs.pm/<%= @app %>](https://hexdocs.pm/<%= @app %>).
+  be found at <https://hexdocs.pm/<%= @app %>>.
   <% end %>
   """)
 
   embed_template(:formatter, """
   # Used by "mix format"
   [
-    inputs: ["mix.exs", "{config,lib,test}/**/*.{ex,exs}"]
+    inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
   ]
   """)
 
   embed_template(:formatter_umbrella, """
   # Used by "mix format"
   [
-    inputs: ["mix.exs", "apps/*/mix.exs", "apps/*/{config,lib,test}/**/*.{ex,exs}"]
+    inputs: ["mix.exs", "config/*.exs"],
+    subdirectories: ["apps/*"]
   ]
   """)
 
@@ -269,7 +305,7 @@ defmodule Mix.Tasks.New do
   # The directory Mix downloads your dependencies sources to.
   /deps/
 
-  # Where 3rd-party dependencies like ExDoc output generated docs.
+  # Where third-party dependencies like ExDoc output generated docs.
   /doc/
 
   # Ignore .fetch files in case you like to edit your project deps locally.
@@ -284,6 +320,8 @@ defmodule Mix.Tasks.New do
   # Ignore package tarball (built via "mix hex.build").
   <%= @app %>-*.tar
   <% end %>
+  # Temporary files, for example, from tests.
+  /tmp/
   """)
 
   embed_template(:mix_exs, """
@@ -311,7 +349,7 @@ defmodule Mix.Tasks.New do
     defp deps do
       [
         # {:dep_from_hexpm, "~> 0.3.0"},
-        # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
+        # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
       ]
     end
   end
@@ -347,7 +385,7 @@ defmodule Mix.Tasks.New do
       [
         # {:dep_from_hexpm, "~> 0.3.0"},
         # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
-        # {:sibling_app_in_umbrella, in_umbrella: true},
+        # {:sibling_app_in_umbrella, in_umbrella: true}
       ]
     end
   end
@@ -360,6 +398,7 @@ defmodule Mix.Tasks.New do
     def project do
       [
         apps_path: "apps",
+        version: "0.1.0",
         start_permanent: Mix.env() == :prod,
         deps: deps()
       ]
@@ -376,63 +415,31 @@ defmodule Mix.Tasks.New do
   end
   """)
 
-  embed_template(:config, ~S"""
-  # This file is responsible for configuring your application
-  # and its dependencies with the aid of the Mix.Config module.
-  use Mix.Config
-
-  # This configuration is loaded before any dependency and is restricted
-  # to this project. If another project depends on this project, this
-  # file won't be loaded nor affect the parent project. For this reason,
-  # if you want to provide default values for your application for
-  # 3rd-party users, it should be done in your "mix.exs" file.
-
-  # You can configure your application as:
-  #
-  #     config :<%= @app %>, key: :value
-  #
-  # and access this configuration in your application as:
-  #
-  #     Application.get_env(:<%= @app %>, :key)
-  #
-  # You can also configure a 3rd-party app:
-  #
-  #     config :logger, level: :info
-  #
-
-  # It is also possible to import configuration files, relative to this
-  # directory. For example, you can emulate configuration per environment
-  # by uncommenting the line below and defining dev.exs, test.exs and such.
-  # Configuration from the imported file will override the ones defined
-  # here (which is why it is important to import them last).
-  #
-  #     import_config "#{Mix.env}.exs"
-  """)
-
   embed_template(:config_umbrella, ~S"""
-  # This file is responsible for configuring your application
-  # and its dependencies with the aid of the Mix.Config module.
-  use Mix.Config
+  # This file is responsible for configuring your umbrella
+  # and **all applications** and their dependencies with the
+  # help of the Config module.
+  #
+  # Note that all applications in your umbrella share the
+  # same configuration and dependencies, which is why they
+  # all use the same configuration file. If you want different
+  # configurations or dependencies per app, it is best to
+  # move said applications out of the umbrella.
+  import Config
 
-  # By default, the umbrella project as well as each child
-  # application will require this configuration file, ensuring
-  # they all use the same configuration. While one could
-  # configure all applications here, we prefer to delegate
-  # back to each application for organization purposes.
-  import_config "../apps/*/config/config.exs"
-
-  # Sample configuration (overrides the imported configuration above):
+  # Sample configuration:
   #
   #     config :logger, :console,
   #       level: :info,
   #       format: "$date $time [$level] $metadata$message\n",
   #       metadata: [:user_id]
+  #
   """)
 
   embed_template(:lib, """
   defmodule <%= @mod %> do
     @moduledoc \"""
-    Documentation for <%= @mod %>.
+    Documentation for `<%= @mod %>`.
     \"""
 
     @doc \"""
@@ -440,7 +447,7 @@ defmodule Mix.Tasks.New do
 
     ## Examples
 
-        iex> <%= @mod %>.hello
+        iex> <%= @mod %>.hello()
         :world
 
     \"""
@@ -458,11 +465,11 @@ defmodule Mix.Tasks.New do
 
     use Application
 
+    @impl true
     def start(_type, _args) do
-      # List all child processes to be supervised
       children = [
         # Starts a worker by calling: <%= @mod %>.Worker.start_link(arg)
-        # {<%= @mod %>.Worker, arg},
+        # {<%= @mod %>.Worker, arg}
       ]
 
       # See https://hexdocs.pm/elixir/Supervisor.html

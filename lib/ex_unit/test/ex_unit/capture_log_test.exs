@@ -34,7 +34,7 @@ defmodule ExUnit.CaptureLogTest do
   end
 
   test "level aware" do
-    assert capture_log([level: :warn], fn ->
+    assert capture_log([level: :warning], fn ->
              Logger.info("here")
            end) == ""
   end
@@ -61,7 +61,7 @@ defmodule ExUnit.CaptureLogTest do
         logged = capture_log(fn -> Logger.error("one") end)
         send(test = self(), {:nested, logged})
 
-        Logger.warn("two")
+        Logger.warning("two")
 
         spawn(fn ->
           Logger.debug("three")
@@ -72,27 +72,26 @@ defmodule ExUnit.CaptureLogTest do
       end)
 
     assert logged
-    assert logged =~ "[info]  one\n"
-    assert logged =~ "[warn]  two\n"
+    assert logged =~ "[info] one\n"
+    assert logged =~ "[warning] two\n"
     assert logged =~ "[debug] three\n"
     assert logged =~ "[error] one\n"
 
     receive do
       {:nested, logged} ->
         assert logged =~ "[error] one\n"
-        refute logged =~ "[warn]  two\n"
+        refute logged =~ "[warning] two\n"
     end
   end
 
-  test "exit with noproc when the logger is down" do
-    Logger.App.stop()
-    on_exit(fn -> Logger.App.start() end)
+  test "with_log" do
+    {4, log} =
+      with_log(fn ->
+        Logger.error("calculating...")
+        2 + 2
+      end)
 
-    message = "cannot capture_log/2 because the :logger application was not started"
-
-    assert_raise RuntimeError, message, fn ->
-      capture_log(fn -> Logger.info("one") end)
-    end
+    assert log =~ "calculating..."
   end
 
   defp wait_capture_removal() do

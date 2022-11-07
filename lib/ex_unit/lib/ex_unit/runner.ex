@@ -4,45 +4,84 @@ defmodule ExUnit.Runner do
   alias ExUnit.EventManager, as: EM
 
   @rand_algorithm :exs1024
+  @current_key __MODULE__
 
-  def run(opts, load_us) do
-    {opts, config} = configure(opts)
+  def run(opts, load_us) when (is_integer(load_us) or is_nil(load_us)) and is_list(opts) do
+    runner = self()
+    id = {__MODULE__, runner}
 
-    :erlang.system_flag(:backtrace_depth, Keyword.fetch!(opts, :stacktrace_depth))
+    try do
+      # It may fail on Windows, so we ignore the result.
+      _ =
+        System.trap_signal(:sigquit, id, fn ->
+          ref = Process.monitor(runner)
+          send(runner, {ref, self(), :sigquit})
 
-    {run_us, _} =
-      :timer.tc(fn ->
-        EM.suite_started(config.manager, opts)
-        loop(config, 0)
-      end)
+          receive do
+            ^ref -> :ok
+            {:DOWN, ^ref, _, _, _} -> :ok
+          after
+            5_000 -> :ok
+          end
 
-    EM.suite_finished(config.manager, run_us, load_us)
-    result = ExUnit.RunnerStats.stats(config.stats)
-    EM.stop(config.manager)
-    result
+          Process.demonitor(ref, [:flush])
+          :ok
+        end)
+
+      run_with_trap(opts, load_us)
+    after
+      System.untrap_signal(:sigquit, id)
+    end
   end
 
-  defp configure(opts) do
+  defp run_with_trap(opts, load_us) do
     opts = normalize_opts(opts)
-
     {:ok, manager} = EM.start_link()
-    {:ok, stats} = EM.add_handler(manager, ExUnit.RunnerStats, opts)
+    {:ok, stats_pid} = EM.add_handler(manager, ExUnit.RunnerStats, opts)
+    config = configure(opts, manager, self(), stats_pid)
+    :erlang.system_flag(:backtrace_depth, Keyword.fetch!(opts, :stacktrace_depth))
+
+    start_time = System.monotonic_time()
+    EM.suite_started(config.manager, opts)
+    async_stop_time = async_loop(config, %{}, false)
+    stop_time = System.monotonic_time()
+
+    if max_failures_reached?(config) do
+      EM.max_failures_reached(config.manager)
+    end
+
+    async_us =
+      async_stop_time &&
+        System.convert_time_unit(async_stop_time - start_time, :native, :microsecond)
+
+    run_us = System.convert_time_unit(stop_time - start_time, :native, :microsecond)
+    times_us = %{async: async_us, load: load_us, run: run_us}
+    EM.suite_finished(config.manager, times_us)
+
+    stats = ExUnit.RunnerStats.stats(stats_pid)
+    EM.stop(config.manager)
+    after_suite_callbacks = Application.fetch_env!(:ex_unit, :after_suite)
+    Enum.each(after_suite_callbacks, fn callback -> callback.(stats) end)
+    stats
+  end
+
+  defp configure(opts, manager, runner_pid, stats_pid) do
     Enum.each(opts[:formatters], &EM.add_handler(manager, &1, opts))
 
-    config = %{
+    %{
       capture_log: opts[:capture_log],
       exclude: opts[:exclude],
       include: opts[:include],
       manager: manager,
-      stats: stats,
       max_cases: opts[:max_cases],
+      max_failures: opts[:max_failures],
+      only_test_ids: opts[:only_test_ids],
+      runner_pid: runner_pid,
       seed: opts[:seed],
-      modules: :async,
+      stats_pid: stats_pid,
       timeout: opts[:timeout],
       trace: opts[:trace]
     }
-
-    {opts, config}
   end
 
   defp normalize_opts(opts) do
@@ -53,154 +92,342 @@ defmodule ExUnit.Runner do
     |> Keyword.put(:include, include)
   end
 
-  defp loop(%{modules: :async} = config, taken) do
-    available = config.max_cases - taken
+  defp async_loop(config, running, async_once?) do
+    available = config.max_cases - map_size(running)
 
     cond do
       # No modules available, wait for one
       available <= 0 ->
-        wait_until_available(config, taken)
+        running = wait_until_available(config, running)
+        async_loop(config, running, async_once?)
 
       # Slots are available, start with async modules
       modules = ExUnit.Server.take_async_modules(available) ->
-        spawn_modules(config, modules, taken)
+        running = spawn_modules(config, modules, running)
+        async_loop(config, running, true)
 
       true ->
-        modules = ExUnit.Server.take_sync_modules()
-        loop(%{config | modules: modules}, taken)
+        sync_modules = ExUnit.Server.take_sync_modules()
+
+        # Wait for all async modules
+        0 =
+          running
+          |> Enum.reduce(running, fn _, acc -> wait_until_available(config, acc) end)
+          |> map_size()
+
+        async_stop_time = if async_once?, do: System.monotonic_time(), else: nil
+
+        # Run all sync modules directly
+        for module <- sync_modules do
+          running = spawn_modules(config, [module], %{})
+          running != %{} and wait_until_available(config, running)
+        end
+
+        async_stop_time
     end
   end
 
-  defp loop(%{modules: modules} = config, taken) do
-    case modules do
-      _ when taken > 0 ->
-        wait_until_available(config, taken)
-
-      # So we can start all sync modules
-      [h | t] ->
-        spawn_modules(%{config | modules: t}, [h], taken)
-
-      # No more modules, we are done!
-      [] ->
-        config
-    end
-  end
-
-  # Loop expecting messages from the spawned modules. Whenever
-  # a module has finished executing, decrease the taken modules
-  # counter and attempt to spawn new ones.
-  defp wait_until_available(config, taken) do
+  # Expect down messages from the spawned modules.
+  #
+  # We first look at the sigquit signal because we don't want
+  # to spawn new test cases when we know we will have to handle
+  # sigquit next.
+  #
+  # Otherwise, whenever a module has finished executing, update
+  # the running modules and attempt to spawn new ones.
+  defp wait_until_available(config, running) do
     receive do
-      {_pid, :module_finished, _test_case} ->
-        loop(config, taken - 1)
+      {ref, pid, :sigquit} ->
+        sigquit(config, ref, pid, running)
+    after
+      0 ->
+        receive do
+          {ref, pid, :sigquit} ->
+            sigquit(config, ref, pid, running)
+
+          {:DOWN, ref, _, _, _} when is_map_key(running, ref) ->
+            Map.delete(running, ref)
+        end
     end
   end
 
-  defp spawn_modules(config, modules, taken) do
-    pid = self()
-
-    Enum.each(modules, fn module ->
-      spawn_link(fn ->
-        run_module(config, pid, module)
-      end)
-    end)
-
-    loop(config, taken + length(modules))
+  defp spawn_modules(_config, [], running) do
+    running
   end
 
-  defp run_module(config, pid, module) do
+  defp spawn_modules(config, [module | modules], running) do
+    if max_failures_reached?(config) do
+      running
+    else
+      {pid, ref} = spawn_monitor(fn -> run_module(config, module) end)
+      spawn_modules(config, modules, Map.put(running, ref, pid))
+    end
+  end
+
+  ## Stacktrace
+
+  # Assertions can pop-up in the middle of the stack
+  def prune_stacktrace([{ExUnit.Assertions, _, _, _} | t]), do: prune_stacktrace(t)
+
+  # As soon as we see a Runner, it is time to ignore the stacktrace
+  def prune_stacktrace([{ExUnit.Runner, _, _, _} | _]), do: []
+
+  # All other cases
+  def prune_stacktrace([h | t]), do: [h | prune_stacktrace(t)]
+  def prune_stacktrace([]), do: []
+
+  ## sigquit
+
+  defp sigquit(config, ref, pid, running) do
+    # Stop all child processes from running and get their current state.
+    # We need to stop these processes because they may invoke the event
+    # manager and we must stop the event manager to guarantee the sigquit
+    # data has been flushed.
+    current =
+      Enum.map(running, fn {ref, pid} ->
+        current = safe_pdict_current(pid)
+        Process.exit(pid, :shutdown)
+
+        receive do
+          {:DOWN, ^ref, _, _, _} -> current
+        end
+      end)
+
+    EM.sigquit(config.manager, Enum.reject(current, &is_nil/1))
+    EM.stop(config.manager)
+
+    # Reply to the event manager and wait until it shuts down the VM.
+    send(pid, ref)
+    Process.sleep(:infinity)
+  end
+
+  defp safe_pdict_current(pid) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         {@current_key, current} <- List.keyfind(dictionary, @current_key, 0),
+         do: current
+  rescue
+    _ -> nil
+  end
+
+  ## Running modules
+
+  defp run_module(config, module) do
     test_module = module.__ex_unit__()
     EM.module_started(config.manager, test_module)
 
-    # Prepare tests, selecting which ones should
-    # run and which ones were skipped.
+    # Prepare tests, selecting which ones should be run or skipped
     tests = prepare_tests(config, test_module.tests)
+    {excluded_and_skipped_tests, to_run_tests} = Enum.split_with(tests, & &1.state)
 
-    {test_module, pending} =
-      if Enum.all?(tests, & &1.state) do
-        {test_module, tests}
-      else
-        spawn_module(config, test_module, tests)
+    for excluded_or_skipped_test <- excluded_and_skipped_tests do
+      EM.test_started(config.manager, excluded_or_skipped_test)
+      EM.test_finished(config.manager, excluded_or_skipped_test)
+    end
+
+    {test_module, invalid_tests, finished_tests} = run_module(config, test_module, to_run_tests)
+
+    pending_tests =
+      case process_max_failures(config, test_module) do
+        :no ->
+          invalid_tests
+
+        {:reached, n} ->
+          Enum.take(invalid_tests, n)
+
+        :surpassed ->
+          nil
       end
 
-    # Run the pending tests. We don't actually spawn those
-    # tests but we do send the notifications to formatter.
-    Enum.each(pending, &run_test(config, &1, []))
-    EM.module_finished(config.manager, test_module)
-    send(pid, {self(), :module_finished, test_module})
+    # If pending_tests is [], EM.module_finished is still called.
+    # Only if process_max_failures/2 returns :surpassed it is not.
+    if pending_tests do
+      for pending_test <- pending_tests do
+        EM.test_started(config.manager, pending_test)
+        EM.test_finished(config.manager, pending_test)
+      end
+
+      test_module = %{test_module | tests: Enum.reverse(finished_tests, pending_tests)}
+      EM.module_finished(config.manager, test_module)
+    end
   end
 
   defp prepare_tests(config, tests) do
     tests = shuffle(config, tests)
     include = config.include
     exclude = config.exclude
+    test_ids = config.only_test_ids
 
-    for test <- tests do
+    for test <- tests, include_test?(test_ids, test) do
       tags = Map.merge(test.tags, %{test: test.name, module: test.module})
 
       case ExUnit.Filters.eval(include, exclude, tags, tests) do
         :ok -> %{test | tags: tags}
-        {:error, msg} -> %{test | state: {:skip, msg}}
+        excluded_or_skipped -> %{test | state: excluded_or_skipped}
       end
     end
   end
 
-  defp spawn_module(config, test_module, tests) do
-    parent = self()
+  defp include_test?(test_ids, test) do
+    test_ids == nil or MapSet.member?(test_ids, {test.module, test.name})
+  end
 
-    {module_pid, module_ref} =
-      spawn_monitor(fn ->
-        ExUnit.OnExitHandler.register(self())
+  defp run_module(_config, test_module, []) do
+    {test_module, [], []}
+  end
 
-        case exec_module_setup(test_module) do
-          {:ok, test_module, context} ->
-            Enum.each(tests, &run_test(config, &1, context))
-            send(parent, {self(), :module_finished, test_module, []})
+  defp run_module(config, test_module, tests) do
+    {module_pid, module_ref} = run_setup_all(test_module, self())
 
-          {:error, test_module} ->
-            failed_tests = Enum.map(tests, &%{&1 | state: {:invalid, test_module}})
-            send(parent, {self(), :module_finished, test_module, failed_tests})
-        end
-
-        exit(:shutdown)
-      end)
-
-    {test_module, pending} =
+    {test_module, invalid_tests, finished_tests} =
       receive do
-        {^module_pid, :module_finished, test_module, tests} ->
-          Process.demonitor(module_ref, [:flush])
-          {test_module, tests}
+        {^module_pid, :setup_all, {:ok, context}} ->
+          finished_tests =
+            if max_failures_reached?(config), do: [], else: run_tests(config, tests, context)
+
+          :ok = exit_setup_all(module_pid, module_ref)
+          {test_module, [], finished_tests}
+
+        {^module_pid, :setup_all, {:error, test_module}} ->
+          invalid_tests = Enum.map(tests, &%{&1 | state: {:invalid, test_module}})
+          :ok = exit_setup_all(module_pid, module_ref)
+          {test_module, invalid_tests, []}
 
         {:DOWN, ^module_ref, :process, ^module_pid, error} ->
           test_module = %{test_module | state: failed({:EXIT, module_pid}, error, [])}
-          {test_module, []}
+          {test_module, [], []}
       end
 
-    timeout = get_timeout(%{}, config)
-    {exec_on_exit(test_module, module_pid, timeout), pending}
+    timeout = get_timeout(config, %{})
+    {exec_on_exit(test_module, module_pid, timeout), invalid_tests, finished_tests}
   end
 
-  defp exec_module_setup(%ExUnit.TestModule{name: module} = test_module) do
-    {:ok, test_module, module.__ex_unit__(:setup_all, %{module: module})}
-  catch
-    kind, error ->
-      failed = failed(kind, error, pruned_stacktrace())
-      {:error, %{test_module | state: failed}}
+  defp run_setup_all(%ExUnit.TestModule{name: module} = test_module, parent_pid) do
+    Process.put(@current_key, test_module)
+
+    spawn_monitor(fn ->
+      ExUnit.OnExitHandler.register(self())
+
+      result =
+        try do
+          {:ok, module.__ex_unit__(:setup_all, %{module: module, case: module})}
+        catch
+          kind, error ->
+            failed = failed(kind, error, prune_stacktrace(__STACKTRACE__))
+            {:error, %{test_module | state: failed}}
+        end
+
+      send(parent_pid, {self(), :setup_all, result})
+
+      # We keep the process alive so all of its resources
+      # stay alive until we run all tests in this case.
+      ref = Process.monitor(parent_pid)
+
+      receive do
+        {^parent_pid, :exit} -> :ok
+        {:DOWN, ^ref, _, _, _} -> :ok
+      end
+    end)
   end
 
-  defp run_test(true, config, test, context) do
-    run_test([], config, test, context)
+  defp exit_setup_all(pid, ref) do
+    send(pid, {self(), :exit})
+
+    receive do
+      {:DOWN, ^ref, _, _, _} -> :ok
+    end
   end
 
-  defp run_test(false, config, test, context) do
+  defp run_tests(config, tests, context) do
+    Enum.reduce_while(tests, [], fn test, acc ->
+      Process.put(@current_key, test)
+
+      case run_test(config, test, context) do
+        {:ok, test} -> {:cont, [test | acc]}
+        :max_failures_reached -> {:halt, acc}
+      end
+    end)
+  end
+
+  defp run_test(config, %{tags: tags} = test, context) do
+    EM.test_started(config.manager, test)
+
+    capture_log = Map.get(tags, :capture_log, config.capture_log)
+    test = run_test_with_capture_log(capture_log, config, test, context)
+
+    case process_max_failures(config, test) do
+      :no ->
+        EM.test_finished(config.manager, test)
+        {:ok, test}
+
+      {:reached, 1} ->
+        EM.test_finished(config.manager, test)
+        :max_failures_reached
+
+      :surpassed ->
+        :max_failures_reached
+    end
+  end
+
+  defp maybe_create_tmp_dir(test, context, %{tmp_dir: true}) do
+    create_tmp_dir!(test, "", context)
+  end
+
+  defp maybe_create_tmp_dir(test, context, %{tmp_dir: path}) when is_binary(path) do
+    create_tmp_dir!(test, path, context)
+  end
+
+  defp maybe_create_tmp_dir(_, context, %{tmp_dir: false}) do
+    context
+  end
+
+  defp maybe_create_tmp_dir(_, _, %{tmp_dir: other}) do
+    raise ArgumentError, "expected :tmp_dir to be a boolean or a string, got: #{inspect(other)}"
+  end
+
+  defp maybe_create_tmp_dir(_, context, _) do
+    context
+  end
+
+  defp short_hash(module, test_name) do
+    (module <> "/" <> test_name)
+    |> :erlang.md5()
+    |> Base.encode16(case: :lower)
+    |> binary_slice(0..7)
+  end
+
+  defp create_tmp_dir!(test, extra_path, context) do
+    module_string = inspect(test.module)
+    name_string = to_string(test.name)
+
+    module = escape_path(module_string)
+    name = escape_path(name_string)
+    short_hash = short_hash(module_string, name_string)
+
+    path = ["tmp", module, "#{name}-#{short_hash}", extra_path] |> Path.join() |> Path.expand()
+    File.rm_rf!(path)
+    File.mkdir_p!(path)
+    Map.put(context, :tmp_dir, path)
+  end
+
+  @escape Enum.map(~c" [~#%&*{}\\:<>?/+|\"]", &<<&1::utf8>>)
+
+  defp escape_path(path) do
+    String.replace(path, @escape, "-")
+  end
+
+  defp run_test_with_capture_log(true, config, test, context) do
+    run_test_with_capture_log([], config, test, context)
+  end
+
+  defp run_test_with_capture_log(false, config, test, context) do
     spawn_test(config, test, context)
   end
 
-  defp run_test(opts, config, test, context) do
+  defp run_test_with_capture_log(capture_log_opts, config, test, context) do
     ref = make_ref()
 
     try do
-      ExUnit.CaptureLog.capture_log(opts, fn ->
+      ExUnit.CaptureLog.capture_log(capture_log_opts, fn ->
         send(self(), {ref, spawn_test(config, test, context)})
       end)
     catch
@@ -218,52 +445,32 @@ defmodule ExUnit.Runner do
     end
   end
 
-  defp run_test(config, %{tags: tags} = test, context) do
-    EM.test_started(config.manager, test)
-
-    test =
-      if is_nil(test.state) do
-        capture_log? = Map.get(tags, :capture_log, config.capture_log)
-        run_test(capture_log?, config, test, Map.merge(tags, context))
-      else
-        test
-      end
-
-    EM.test_finished(config.manager, test)
-  end
-
   defp spawn_test(config, test, context) do
-    parent = self()
-
-    {test_pid, test_ref} =
-      spawn_monitor(fn ->
-        ExUnit.OnExitHandler.register(self())
-
-        generate_test_seed(config, test)
-
-        {us, test} =
-          :timer.tc(fn ->
-            case exec_test_setup(test, context) do
-              {:ok, test} ->
-                exec_test(test)
-
-              {:error, test} ->
-                test
-            end
-          end)
-
-        send(parent, {self(), :test_finished, %{test | time: us}})
-        exit(:shutdown)
-      end)
-
-    timeout = get_timeout(test.tags, config)
+    parent_pid = self()
+    timeout = get_timeout(config, test.tags)
+    {test_pid, test_ref} = spawn_test_monitor(config, test, parent_pid, context)
     test = receive_test_reply(test, test_pid, test_ref, timeout)
-
     exec_on_exit(test, test_pid, timeout)
   end
 
-  defp generate_test_seed(%{seed: seed}, %ExUnit.Test{module: module, name: name}) do
-    :rand.seed(@rand_algorithm, {:erlang.phash2(module), :erlang.phash2(name), seed})
+  defp spawn_test_monitor(%{seed: seed}, test, parent_pid, context) do
+    spawn_monitor(fn ->
+      ExUnit.OnExitHandler.register(self())
+      generate_test_seed(seed, test)
+
+      {time, test} =
+        :timer.tc(fn ->
+          context = maybe_create_tmp_dir(test, context, test.tags)
+
+          case exec_test_setup(test, Map.merge(test.tags, context)) do
+            {:ok, context} -> exec_test(test, context)
+            {:error, test} -> test
+          end
+        end)
+
+      send(parent_pid, {self(), :test_finished, %{test | time: time}})
+      exit(:shutdown)
+    end)
   end
 
   defp receive_test_reply(test, test_pid, test_ref, timeout) do
@@ -284,7 +491,7 @@ defmodule ExUnit.Runner do
             exception =
               ExUnit.TimeoutError.exception(
                 timeout: timeout,
-                type: Atom.to_string(test.tags.type)
+                type: Atom.to_string(test.tags.test_type)
               )
 
             %{test | state: failed(:error, exception, stacktrace)}
@@ -296,18 +503,18 @@ defmodule ExUnit.Runner do
   end
 
   defp exec_test_setup(%ExUnit.Test{module: module} = test, context) do
-    {:ok, %{test | tags: module.__ex_unit__(:setup, context)}}
+    {:ok, module.__ex_unit__(:setup, context)}
   catch
     kind, error ->
-      {:error, %{test | state: failed(kind, error, pruned_stacktrace())}}
+      {:error, %{test | state: failed(kind, error, prune_stacktrace(__STACKTRACE__))}}
   end
 
-  defp exec_test(%ExUnit.Test{module: module, name: name, tags: context} = test) do
+  defp exec_test(%ExUnit.Test{module: module, name: name} = test, context) do
     apply(module, name, [context])
     test
   catch
     kind, error ->
-      %{test | state: failed(kind, error, pruned_stacktrace())}
+      %{test | state: failed(kind, error, prune_stacktrace(__STACKTRACE__))}
   end
 
   defp exec_on_exit(test_or_case, pid, timeout) do
@@ -323,8 +530,41 @@ defmodule ExUnit.Runner do
 
   ## Helpers
 
-  defp get_timeout(tags, config) do
-    if config.trace() do
+  defp generate_test_seed(seed, %ExUnit.Test{module: module, name: name}) do
+    :rand.seed(@rand_algorithm, {:erlang.phash2(module), :erlang.phash2(name), seed})
+  end
+
+  defp process_max_failures(%{max_failures: :infinity}, _), do: :no
+
+  defp process_max_failures(config, %ExUnit.TestModule{state: {:failed, _}, tests: tests}) do
+    process_max_failures(config.stats_pid, config.max_failures, length(tests))
+  end
+
+  defp process_max_failures(config, %ExUnit.Test{state: {:failed, _}}) do
+    process_max_failures(config.stats_pid, config.max_failures, 1)
+  end
+
+  defp process_max_failures(config, _test_module_or_test) do
+    if max_failures_reached?(config), do: :surpassed, else: :no
+  end
+
+  defp process_max_failures(stats_pid, max_failures, bump) do
+    previous = ExUnit.RunnerStats.increment_failure_counter(stats_pid, bump)
+
+    cond do
+      previous >= max_failures -> :surpassed
+      previous + bump < max_failures -> :no
+      true -> {:reached, max_failures - previous}
+    end
+  end
+
+  defp max_failures_reached?(%{stats_pid: stats_pid, max_failures: max_failures}) do
+    max_failures != :infinity and
+      ExUnit.RunnerStats.get_failure_counter(stats_pid) >= max_failures
+  end
+
+  defp get_timeout(config, tags) do
+    if config.trace do
       :infinity
     else
       Map.get(tags, :timeout, config.timeout)
@@ -332,7 +572,7 @@ defmodule ExUnit.Runner do
   end
 
   defp shuffle(%{seed: 0}, list) do
-    Enum.reverse(list)
+    list
   end
 
   defp shuffle(%{seed: seed}, list) do
@@ -343,25 +583,13 @@ defmodule ExUnit.Runner do
   defp failed(:error, %ExUnit.MultiError{errors: errors}, _stack) do
     errors =
       Enum.map(errors, fn {kind, reason, stack} ->
-        {kind, Exception.normalize(kind, reason), prune_stacktrace(stack)}
+        {kind, Exception.normalize(kind, reason, stack), prune_stacktrace(stack)}
       end)
 
     {:failed, errors}
   end
 
   defp failed(kind, reason, stack) do
-    {:failed, [{kind, Exception.normalize(kind, reason), stack}]}
+    {:failed, [{kind, Exception.normalize(kind, reason, stack), stack}]}
   end
-
-  defp pruned_stacktrace, do: prune_stacktrace(System.stacktrace())
-
-  # Assertions can pop-up in the middle of the stack
-  defp prune_stacktrace([{ExUnit.Assertions, _, _, _} | t]), do: prune_stacktrace(t)
-
-  # As soon as we see a Runner, it is time to ignore the stacktrace
-  defp prune_stacktrace([{ExUnit.Runner, _, _, _} | _]), do: []
-
-  # All other cases
-  defp prune_stacktrace([h | t]), do: [h | prune_stacktrace(t)]
-  defp prune_stacktrace([]), do: []
 end

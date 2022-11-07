@@ -10,23 +10,25 @@ defmodule Mix.Tasks.Profile.Cprof do
   to function calls.
 
   Before running the code, it invokes the `app.start` task which compiles
-  and loads your project. Then the target expression is profiled, together
+  and loads your project. After that, the target expression is profiled together
   with all matching function calls, by setting breakpoints containing
   counters. These can only be set on BEAM code so BIFs cannot be call
   count traced.
 
   To profile the code, you can use syntax similar to the `mix run` task:
 
-      mix profile.cprof -e Hello.world
-      mix profile.cprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
-      mix profile.cprof my_script.exs arg1 arg2 arg3
+      $ mix profile.cprof -e Hello.world
+      $ mix profile.cprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
+      $ mix profile.cprof my_script.exs arg1 arg2 arg3
+
+  This task is automatically re-enabled, so you can profile multiple times
+  in the same Mix invocation.
 
   ## Command line options
 
     * `--matching` - only profile calls matching the given `Module.function/arity` pattern
     * `--limit` - filters out any results with a call count less than the limit
     * `--module` - filters out any results not pertaining to the given module
-    * `--config`, `-c` - loads the given configuration file
     * `--eval`, `-e` - evaluate the given code
     * `--require`, `-r` - requires pattern before running the command
     * `--parallel`, `-p` - makes all requires parallel
@@ -72,7 +74,7 @@ defmodule Mix.Tasks.Profile.Cprof do
 
   The pattern can be a module name, such as `String` to count all calls to that module,
   a call without arity, such as `String.split`, to count all calls to that function
-  regardless of arity, or a call with arity, such as `String.split/2`, to count all
+  regardless of arity, or a call with arity, such as `String.split/3`, to count all
   calls to that exact module, function and arity.
 
   ## Caveats
@@ -109,8 +111,10 @@ defmodule Mix.Tasks.Profile.Cprof do
 
   @aliases [r: :require, p: :parallel, e: :eval, c: :config]
 
+  @impl true
   def run(args) do
     {opts, head} = OptionParser.parse_head!(args, aliases: @aliases, strict: @switches)
+    Mix.Task.reenable("profile.cprof")
 
     Mix.Tasks.Run.run(
       ["--no-mix-exs" | args],
@@ -122,13 +126,15 @@ defmodule Mix.Tasks.Profile.Cprof do
   end
 
   defp profile_code(code_string, opts) do
+    opts = Enum.map(opts, &parse_opt/1)
+
     content =
       quote do
         unquote(__MODULE__).profile(
           fn ->
             unquote(Code.string_to_quoted!(code_string))
           end,
-          unquote(opts)
+          unquote(Macro.escape(opts))
         )
       end
 
@@ -136,13 +142,41 @@ defmodule Mix.Tasks.Profile.Cprof do
     Code.compile_quoted(content)
   end
 
-  @doc false
-  def profile(fun, opts) do
-    fun
-    |> profile_and_analyse(opts)
-    |> print_output
+  defp parse_opt({:matching, matching}) do
+    case Mix.Utils.parse_mfa(matching) do
+      {:ok, [m, f, a]} -> {:matching, {m, f, a}}
+      {:ok, [m, f]} -> {:matching, {m, f, :_}}
+      {:ok, [m]} -> {:matching, {m, :_, :_}}
+      :error -> Mix.raise("Invalid matching pattern: #{matching}")
+    end
+  end
+
+  defp parse_opt({:module, module}), do: {:module, string_to_existing_module(module)}
+  defp parse_opt(other), do: other
+
+  @doc """
+  Allows to programmatically run the `cprof` profiler on expression in `fun`.
+
+  Returns the return value of `fun`.
+
+  ## Options
+
+    * `:matching` - only profile calls matching the given pattern in form of
+      `{module, function, arity}`, where each element may be replaced by `:_`
+      to allow any value
+    * `:limit` - filters out any results with a call count less than the limit
+    * `:module` - filters out any results not pertaining to the given module
+
+  """
+  @spec profile((-> any()), keyword()) :: any()
+  def profile(fun, opts \\ []) when is_function(fun, 0) do
+    {return_value, num_matched_functions, analysis_result} = profile_and_analyse(fun, opts)
+
+    print_output(num_matched_functions, analysis_result)
 
     :cprof.stop()
+
+    return_value
   end
 
   defp profile_and_analyse(fun, opts) do
@@ -152,18 +186,12 @@ defmodule Mix.Tasks.Profile.Cprof do
     end
 
     num_matched_functions =
-      case Keyword.get(opts, :matching) do
-        nil ->
-          :cprof.start()
-
-        matching ->
-          case Mix.Utils.parse_mfa(matching) do
-            {:ok, args} -> apply(:cprof, :start, args)
-            :error -> Mix.raise("Invalid matching pattern: #{matching}")
-          end
+      case Keyword.fetch(opts, :matching) do
+        {:ok, matching} -> :cprof.start(matching)
+        :error -> :cprof.start()
       end
 
-    apply(fun, [])
+    return_value = apply(fun, [])
 
     :cprof.pause()
 
@@ -179,8 +207,6 @@ defmodule Mix.Tasks.Profile.Cprof do
           :cprof.analyse(limit)
 
         {limit, module} ->
-          module = string_to_existing_module(module)
-
           if limit do
             :cprof.analyse(module, limit)
           else
@@ -188,19 +214,19 @@ defmodule Mix.Tasks.Profile.Cprof do
           end
       end
 
-    {num_matched_functions, analysis_result}
+    {return_value, num_matched_functions, analysis_result}
   end
 
   defp string_to_existing_module(":" <> module), do: String.to_existing_atom(module)
   defp string_to_existing_module(module), do: Module.concat([module])
 
-  defp print_output({num_matched_functions, {all_call_count, mod_analysis_list}}) do
+  defp print_output(num_matched_functions, {all_call_count, mod_analysis_list}) do
     print_total_row(all_call_count)
     Enum.each(mod_analysis_list, &print_analysis_result/1)
     print_number_of_matched_functions(num_matched_functions)
   end
 
-  defp print_output({num_matched_functions, {_mod, _call_count, _mod_fun_list} = mod_analysis}) do
+  defp print_output(num_matched_functions, {_mod, _call_count, _mod_fun_list} = mod_analysis) do
     print_analysis_result(mod_analysis)
     print_number_of_matched_functions(num_matched_functions)
   end

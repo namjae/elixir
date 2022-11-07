@@ -3,9 +3,8 @@ Code.require_file("test_helper.exs", __DIR__)
 defmodule RecordTest do
   use ExUnit.Case, async: true
 
-  doctest Record
-
   require Record
+  doctest Record
 
   test "extract/2 extracts information from an Erlang file" do
     assert Record.extract(:file_info, from_lib: "kernel/include/file.hrl") == [
@@ -79,7 +78,7 @@ defmodule RecordTest do
   def record_in_guard?(term, kind) when Record.is_record(term, kind), do: true
   def record_in_guard?(_, _), do: false
 
-  test "is_record/1/2 (in guard)" do
+  test "is_record/1,2 (in guard)" do
     assert record_in_guard?({User, "john", 27})
     refute record_in_guard?({"user", "john", 27})
 
@@ -123,13 +122,54 @@ defmodule RecordTest do
     record = user(_: :_, name: "meg")
     assert user(record, :name) == "meg"
     assert user(record, :age) == :_
-
     assert match?(user(_: _), user())
-    refute match?(user(_: "other"), user())
+  end
 
-    record = user(user(), _: :_, name: "meg")
-    assert user(record, :name) == "meg"
-    assert user(record, :age) == :_
+  test "records preserve side-effects order" do
+    user =
+      user(
+        age: send(self(), :age),
+        name: send(self(), :name)
+      )
+
+    assert Process.info(self(), :messages) == {:messages, [:age, :name]}
+
+    _ =
+      user(user,
+        age: send(self(), :update_age),
+        name: send(self(), :update_name)
+      )
+
+    assert Process.info(self(), :messages) ==
+             {:messages, [:age, :name, :update_age, :update_name]}
+  end
+
+  test "nested records preserve side-effects order" do
+    user =
+      user(
+        age:
+          user(
+            age: send(self(), :inner_age),
+            name: send(self(), :inner_name)
+          ),
+        name: send(self(), :name)
+      )
+
+    assert user == {RecordTest, :name, {RecordTest, :inner_name, :inner_age}}
+    assert for(_ <- 1..3, do: assert_receive(_)) == [:inner_age, :inner_name, :name]
+
+    user =
+      user(
+        name: send(self(), :name),
+        age:
+          user(
+            age: send(self(), :inner_age),
+            name: send(self(), :inner_name)
+          )
+      )
+
+    assert user == {RecordTest, :name, {RecordTest, :inner_name, :inner_age}}
+    assert for(_ <- 1..3, do: assert_receive(_)) == [:name, :inner_age, :inner_name]
   end
 
   Record.defrecord(
@@ -144,7 +184,7 @@ defmodule RecordTest do
     call: MapSet.new(),
     string: "abc",
     binary: <<1, 2, 3>>,
-    charlist: 'abc'
+    charlist: ~c"abc"
   )
 
   test "records with literal defaults and on-the-fly record" do
@@ -159,7 +199,7 @@ defmodule RecordTest do
              call: MapSet.new(),
              string: "abc",
              binary: <<1, 2, 3>>,
-             charlist: 'abc'
+             charlist: ~c"abc"
            ]
 
     assert defaults(defaults(), :struct) == ~D[2016-01-01]
@@ -172,7 +212,7 @@ defmodule RecordTest do
     assert defaults(defaults(), :call) == MapSet.new()
     assert defaults(defaults(), :string) == "abc"
     assert defaults(defaults(), :binary) == <<1, 2, 3>>
-    assert defaults(defaults(), :charlist) == 'abc'
+    assert defaults(defaults(), :charlist) == ~c"abc"
   end
 
   test "records with literal defaults and record in a variable" do
@@ -189,7 +229,7 @@ defmodule RecordTest do
              call: MapSet.new(),
              string: "abc",
              binary: <<1, 2, 3>>,
-             charlist: 'abc'
+             charlist: ~c"abc"
            ]
 
     assert defaults(defaults, :struct) == ~D[2016-01-01]
@@ -202,7 +242,7 @@ defmodule RecordTest do
     assert defaults(defaults, :call) == MapSet.new()
     assert defaults(defaults, :string) == "abc"
     assert defaults(defaults, :binary) == <<1, 2, 3>>
-    assert defaults(defaults, :charlist) == 'abc'
+    assert defaults(defaults, :charlist) == ~c"abc"
   end
 
   test "records with dynamic arguments" do
@@ -247,6 +287,12 @@ defmodule RecordTest do
     refute macro_exported?(__MODULE__, :file_info, 1)
   end
 
+  test "records reflection" do
+    assert %{fields: [:name, :age], kind: :defrecord, name: :user, tag: RecordTest} in @__records__
+
+    assert %{fields: [:date, :time], kind: :defrecord, name: :timestamp, tag: :timestamp} in @__records__
+  end
+
   test "records with no defaults" do
     record = timestamp()
     assert timestamp(record, :date) == nil
@@ -255,5 +301,81 @@ defmodule RecordTest do
     record = timestamp(date: :foo, time: :bar)
     assert timestamp(record, :date) == :foo
     assert timestamp(record, :time) == :bar
+  end
+
+  test "records defined multiple times" do
+    msg = "cannot define record :r because a definition r/0 already exists"
+
+    assert_raise ArgumentError, msg, fn ->
+      defmodule M do
+        import Record
+        defrecord :r, [:a]
+        defrecord :r, [:a]
+      end
+    end
+  end
+
+  test "macro and record with the same name defined" do
+    msg = "cannot define record :a because a definition a/1 already exists"
+
+    assert_raise ArgumentError, msg, fn ->
+      defmodule M do
+        defmacro a(_) do
+        end
+
+        require Record
+        Record.defrecord(:a, [:a])
+      end
+    end
+
+    msg = "cannot define record :a because a definition a/2 already exists"
+
+    assert_raise ArgumentError, msg, fn ->
+      defmodule M do
+        defmacro a(_, _) do
+        end
+
+        require Record
+        Record.defrecord(:a, [:a])
+      end
+    end
+  end
+
+  describe "warnings" do
+    import ExUnit.CaptureIO
+
+    test "warns on bad record update input" do
+      assert capture_io(:stderr, fn ->
+               defmodule RecordSample do
+                 require Record
+                 Record.defrecord(:user, __MODULE__, name: "john", age: 25)
+
+                 def fun do
+                   user(user(), _: :_, name: "meg")
+                 end
+               end
+             end) =~
+               "updating a record with a default (:_) is equivalent to creating a new record"
+    after
+      purge(RecordSample)
+    end
+
+    test "defrecord warns with duplicate keys" do
+      assert capture_io(:stderr, fn ->
+               Code.eval_string("""
+               defmodule RecordSample do
+                 import Record
+                 defrecord :r, [:foo, :bar, foo: 1]
+               end
+               """)
+             end) =~ "duplicate key :foo found in record"
+    after
+      purge(RecordSample)
+    end
+
+    defp purge(module) when is_atom(module) do
+      :code.delete(module)
+      :code.purge(module)
+    end
   end
 end

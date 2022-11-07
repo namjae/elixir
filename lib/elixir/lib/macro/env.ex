@@ -21,99 +21,135 @@ defmodule Macro.Env do
 
   It contains the following fields:
 
-    * `module` - the current module name
-    * `file` - the current file name as a binary
-    * `line` - the current line as an integer
+    * `context` - the context of the environment; it can be `nil`
+      (default context), `:guard` (inside a guard) or `:match` (inside a match)
+    * `context_modules` - a list of modules defined in the current context
+    * `file` - the current absolute file name as a binary
     * `function` - a tuple as `{atom, integer}`, where the first
       element is the function name and the second its arity; returns
       `nil` if not inside a function
-    * `context` - the context of the environment; it can be `nil`
-      (default context), inside a guard or inside a match
-    * `aliases` -  a list of two-element tuples, where the first
-      element is the aliased name and the second one the actual name
-    * `requires` - the list of required modules
-    * `functions` - a list of functions imported from each module
-    * `macros` - a list of macros imported from each module
-    * `macro_aliases` - a list of aliases defined inside the current macro
-    * `context_modules` - a list of modules defined in the current context
-    * `lexical_tracker` - PID of the lexical tracker which is responsible for
-      keeping user info
-    * `vars` - a list keeping all defined variables as `{var, context}`
+    * `line` - the current line as an integer
+    * `module` - the current module name
 
-  The following fields are private and must not be accessed or relied on:
+  The following fields are private to Elixir's macro expansion mechanism and
+  must not be accessed directly:
 
-    * `export_vars` - a list keeping all variables to be exported in a
-      construct (may be `nil`)
-    * `match_vars` - controls how "new" variables are handled. Inside a
-      match it is a list with all variables in a match. Outside of a match
-      is either `:warn` or `:apply`
-    * `prematch_vars` - a list of variables defined before a match (is
-      `nil` when not inside a match)
+    * `aliases`
+    * `functions`
+    * `macro_aliases`
+    * `macros`
+    * `lexical_tracker`
+    * `requires`
+    * `tracers`
+    * `versioned_vars`
 
   """
 
-  @type name_arity :: {atom, arity}
+  @type context :: :match | :guard | nil
+  @type context_modules :: [module]
   @type file :: binary
   @type line :: non_neg_integer
-  @type aliases :: [{module, module}]
-  @type macro_aliases :: [{module, {integer, module}}]
-  @type context :: :match | :guard | nil
-  @type requires :: [module]
-  @type functions :: [{module, [name_arity]}]
-  @type macros :: [{module, [name_arity]}]
-  @type context_modules :: [module]
-  @type vars :: [{atom, atom | non_neg_integer}]
-  @type lexical_tracker :: pid | nil
-  @type local :: atom | nil
+  @type name_arity :: {atom, arity}
+  @type variable :: {atom, atom | term}
 
-  @opaque export_vars :: vars | nil
-  @opaque match_vars :: vars | :warn | :apply
-  @opaque prematch_vars :: vars | nil
+  @typep aliases :: [{module, module}]
+  @typep functions :: [{module, [name_arity]}]
+  @typep lexical_tracker :: pid | nil
+  @typep macro_aliases :: [{module, {term, module}}]
+  @typep macros :: [{module, [name_arity]}]
+  @typep requires :: [module]
+  @typep tracers :: [module]
+  @typep versioned_vars :: %{optional(variable) => var_version :: non_neg_integer}
 
   @type t :: %{
           __struct__: __MODULE__,
-          module: atom,
-          file: file,
-          line: line,
-          function: name_arity | nil,
-          context: context,
-          requires: requires,
           aliases: aliases,
-          functions: functions,
-          macros: macros,
-          macro_aliases: aliases,
+          context: context,
           context_modules: context_modules,
-          vars: vars,
-          export_vars: export_vars,
-          match_vars: match_vars,
-          prematch_vars: prematch_vars,
-          lexical_tracker: lexical_tracker
+          file: file,
+          function: name_arity | nil,
+          functions: functions,
+          lexical_tracker: lexical_tracker,
+          line: line,
+          macro_aliases: macro_aliases,
+          macros: macros,
+          module: module,
+          requires: requires,
+          tracers: tracers,
+          versioned_vars: versioned_vars
         }
 
-  def __struct__ do
-    %{
-      __struct__: __MODULE__,
-      module: nil,
-      file: "nofile",
-      line: 0,
-      function: nil,
-      context: nil,
-      requires: [],
-      aliases: [],
-      functions: [],
-      macros: [],
-      macro_aliases: [],
-      context_modules: [],
-      vars: [],
-      lexical_tracker: nil,
-      export_vars: nil,
-      match_vars: :warn,
-      prematch_vars: nil
-    }
+  fields = [
+    aliases: [],
+    context: nil,
+    context_modules: [],
+    file: "nofile",
+    function: nil,
+    functions: [],
+    lexical_tracker: nil,
+    line: 0,
+    macro_aliases: [],
+    macros: [],
+    module: nil,
+    requires: [],
+    tracers: [],
+    versioned_vars: %{}
+  ]
+
+  # Define the __struct__ callbacks by hand for bootstrap reasons.
+  {struct, [], kv, body} = Kernel.Utils.defstruct(__MODULE__, fields, false)
+  def __struct__(), do: unquote(:elixir_quote.escape(struct, false, :none))
+  def __struct__(unquote(kv)), do: unquote(body)
+
+  @doc """
+  Prunes compile information from the environment.
+
+  This happens when the environment is captured at compilation
+  time, for example, in the module body, and then used to
+  evaluate code after the module has been defined.
+  """
+  @doc since: "1.14.0"
+  @spec prune_compile_info(t) :: t
+  def prune_compile_info(env) do
+    %{env | lexical_tracker: nil, tracers: []}
   end
 
-  def __struct__(kv) do
-    Enum.reduce(kv, __struct__(), fn {k, v}, acc -> :maps.update(k, v, acc) end)
+  @doc """
+  Returns a list of variables in the current environment.
+
+  Each variable is identified by a tuple of two elements,
+  where the first element is the variable name as an atom
+  and the second element is its context, which may be an
+  atom or an integer.
+  """
+  @doc since: "1.7.0"
+  @spec vars(t) :: [variable]
+  def vars(env)
+
+  def vars(%{__struct__: Macro.Env, versioned_vars: vars}) do
+    Map.keys(vars)
+  end
+
+  @doc """
+  Checks if a variable belongs to the environment.
+
+  ## Examples
+
+      iex> x = 13
+      iex> x
+      13
+      iex> Macro.Env.has_var?(__ENV__, {:x, nil})
+      true
+      iex> Macro.Env.has_var?(__ENV__, {:unknown, nil})
+      false
+
+  """
+  @doc since: "1.7.0"
+  @spec has_var?(t, variable) :: boolean()
+  def has_var?(env, var)
+
+  def has_var?(%{__struct__: Macro.Env, versioned_vars: vars}, var) do
+    Map.has_key?(vars, var)
   end
 
   @doc """
@@ -128,15 +164,116 @@ defmodule Macro.Env do
   end
 
   @doc """
+  Fetches the alias for the given atom.
+
+  Returns `{:ok, alias}` if the alias exists, `:error`
+  otherwise.
+
+  ## Examples
+
+      iex> alias Foo.Bar, as: Baz
+      iex> Baz
+      Foo.Bar
+      iex> Macro.Env.fetch_alias(__ENV__, :Baz)
+      {:ok, Foo.Bar}
+      iex> Macro.Env.fetch_alias(__ENV__, :Unknown)
+      :error
+
+  """
+  @doc since: "1.13.0"
+  @spec fetch_alias(t, atom) :: {:ok, atom} | :error
+  def fetch_alias(%{__struct__: Macro.Env, aliases: aliases}, atom) when is_atom(atom),
+    do: Keyword.fetch(aliases, :"Elixir.#{atom}")
+
+  @doc """
+  Fetches the macro alias for the given atom.
+
+  Returns `{:ok, macro_alias}` if the alias exists, `:error`
+  otherwise.
+
+  A macro alias is only used inside quoted expansion. See
+  `fetch_alias/2` for a more general example.
+  """
+  @doc since: "1.13.0"
+  @spec fetch_macro_alias(t, atom) :: {:ok, atom} | :error
+  def fetch_macro_alias(%{__struct__: Macro.Env, macro_aliases: aliases}, atom)
+      when is_atom(atom),
+      do: Keyword.fetch(aliases, :"Elixir.#{atom}")
+
+  @doc """
+  Returns the modules from which the given `{name, arity}` was
+  imported.
+
+  It returns a list of two element tuples in the shape of
+  `{:function | :macro, module}`. The elements in the list
+  are in no particular order and the order is not guaranteed.
+
+  ## Examples
+
+      iex> Macro.Env.lookup_import(__ENV__, {:duplicate, 2})
+      []
+      iex> import Tuple, only: [duplicate: 2], warn: false
+      iex> Macro.Env.lookup_import(__ENV__, {:duplicate, 2})
+      [{:function, Tuple}]
+      iex> import List, only: [duplicate: 2], warn: false
+      iex> Macro.Env.lookup_import(__ENV__, {:duplicate, 2})
+      [{:function, List}, {:function, Tuple}]
+
+      iex> Macro.Env.lookup_import(__ENV__, {:def, 1})
+      [{:macro, Kernel}]
+
+  """
+  @doc since: "1.13.0"
+  @spec lookup_import(t, name_arity) :: [{:function | :macro, module}]
+  def lookup_import(
+        %{__struct__: Macro.Env, functions: functions, macros: macros},
+        {name, arity} = pair
+      )
+      when is_atom(name) and is_integer(arity) do
+    f = for {mod, pairs} <- functions, :ordsets.is_element(pair, pairs), do: {:function, mod}
+    m = for {mod, pairs} <- macros, :ordsets.is_element(pair, pairs), do: {:macro, mod}
+    f ++ m
+  end
+
+  @doc """
+  Returns true if the given module has been required.
+
+  ## Examples
+
+      iex> Macro.Env.required?(__ENV__, Integer)
+      false
+      iex> require Integer
+      iex> Macro.Env.required?(__ENV__, Integer)
+      true
+
+      iex> Macro.Env.required?(__ENV__, Kernel)
+      true
+  """
+  @doc since: "1.13.0"
+  @spec required?(t, module) :: boolean
+  def required?(%{__struct__: Macro.Env, requires: requires}, mod) when is_atom(mod),
+    do: mod in requires
+
+  @doc """
+  Prepend a tracer to the list of tracers in the environment.
+
+  ## Examples
+
+      Macro.Env.prepend_tracer(__ENV__, MyCustomTracer)
+
+  """
+  @doc since: "1.13.0"
+  @spec prepend_tracer(t, module) :: t
+  def prepend_tracer(%{__struct__: Macro.Env, tracers: tracers} = env, tracer) do
+    %{env | tracers: [tracer | tracers]}
+  end
+
+  @doc """
   Returns a `Macro.Env` in the match context.
   """
   @spec to_match(t) :: t
-  def to_match(%{__struct__: Macro.Env, context: :match} = env) do
-    env
-  end
-
-  def to_match(%{__struct__: Macro.Env, prematch_vars: nil, vars: vars} = env) do
-    %{env | context: :match, match_vars: [], prematch_vars: vars}
+  def to_match(%{__struct__: Macro.Env} = env) do
+    %{env | context: :match}
   end
 
   @doc """

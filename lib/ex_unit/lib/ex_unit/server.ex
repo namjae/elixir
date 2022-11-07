@@ -1,6 +1,7 @@
 defmodule ExUnit.Server do
   @moduledoc false
   @name __MODULE__
+  @timeout :infinity
 
   use GenServer
 
@@ -8,26 +9,29 @@ defmodule ExUnit.Server do
     GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
-  def add_async_module(name) do
-    GenServer.cast(@name, {:add_async_module, name})
+  def add_async_module(name), do: add(name, :async)
+  def add_sync_module(name), do: add(name, :sync)
+
+  defp add(name, type) do
+    case GenServer.call(@name, {:add, name, type}, @timeout) do
+      :ok ->
+        :ok
+
+      :already_running ->
+        raise "cannot add #{type} case named #{inspect(name)} to test suite after the suite starts running"
+    end
   end
 
-  def add_sync_module(name) do
-    GenServer.cast(@name, {:add_sync_module, name})
-  end
-
-  def modules_loaded do
-    GenServer.call(@name, :modules_loaded)
+  def modules_loaded(uniq?) do
+    GenServer.call(@name, {:modules_loaded, uniq?}, @timeout)
   end
 
   def take_async_modules(count) do
-    timeout = Application.fetch_env!(:ex_unit, :module_load_timeout)
-    GenServer.call(@name, {:take_async_modules, count}, timeout)
+    GenServer.call(@name, {:take_async_modules, count}, @timeout)
   end
 
   def take_sync_modules() do
-    timeout = Application.fetch_env!(:ex_unit, :module_load_timeout)
-    GenServer.call(@name, :take_sync_modules, timeout)
+    GenServer.call(@name, :take_sync_modules, @timeout)
   end
 
   ## Callbacks
@@ -54,20 +58,41 @@ defmodule ExUnit.Server do
     {:reply, state.sync_modules, %{state | sync_modules: [], loaded: System.monotonic_time()}}
   end
 
-  def handle_call(:modules_loaded, _from, %{loaded: loaded} = state) when is_integer(loaded) do
+  def handle_call({:modules_loaded, _}, _from, %{loaded: :done} = state) do
+    {:reply, 0, state}
+  end
+
+  def handle_call({:modules_loaded, uniq?}, _from, %{loaded: loaded} = state)
+      when is_integer(loaded) do
+    state =
+      if uniq? do
+        %{
+          state
+          | async_modules: Enum.uniq(state.async_modules),
+            sync_modules: Enum.uniq(state.sync_modules)
+        }
+      else
+        state
+      end
+
     diff = System.convert_time_unit(System.monotonic_time() - loaded, :native, :microsecond)
     {:reply, diff, take_modules(%{state | loaded: :done})}
   end
 
-  def handle_cast({:add_async_module, name}, %{async_modules: modules, loaded: loaded} = state)
+  def handle_call({:add, name, :async}, _from, %{loaded: loaded} = state)
       when is_integer(loaded) do
-    {:noreply, take_modules(%{state | async_modules: [name | modules]})}
+    state = update_in(state.async_modules, &[name | &1])
+    {:reply, :ok, take_modules(state)}
   end
 
-  def handle_cast({:add_sync_module, name}, %{sync_modules: modules, loaded: loaded} = state)
+  def handle_call({:add, name, :sync}, _from, %{loaded: loaded} = state)
       when is_integer(loaded) do
-    {:noreply, %{state | sync_modules: [name | modules]}}
+    state = update_in(state.sync_modules, &[name | &1])
+    {:reply, :ok, state}
   end
+
+  def handle_call({:add, _name, _type}, _from, state),
+    do: {:reply, :already_running, state}
 
   defp take_modules(%{waiting: nil} = state) do
     state

@@ -1,12 +1,11 @@
 defmodule HashDict do
   @moduledoc """
-  WARNING: this module is deprecated.
+  Tuple-based HashDict implementation.
 
-  Use the `Map` module instead.
+  This module is deprecated. Use the `Map` module instead.
   """
 
-  # TODO: Remove by 2.0
-  # (hard-deprecated in elixir_dispatch)
+  @moduledoc deprecated: "Use Map instead"
 
   use Dict
 
@@ -23,19 +22,24 @@ defmodule HashDict do
   @compile :inline_list_funcs
   @compile {:inline, key_hash: 1, key_mask: 1, key_shift: 1}
 
+  message = "Use maps and the Map module instead"
+
   @doc """
   Creates a new empty dict.
   """
   @spec new :: Dict.t()
+  @deprecated message
   def new do
     %HashDict{}
   end
 
+  @deprecated message
   def put(%HashDict{root: root, size: size}, key, value) do
     {root, counter} = do_put(root, key, value, key_hash(key))
     %HashDict{root: root, size: size + counter}
   end
 
+  @deprecated message
   def update!(%HashDict{root: root, size: size} = dict, key, fun) when is_function(fun, 1) do
     {root, counter} =
       do_update(root, key, fn -> raise KeyError, key: key, term: dict end, fun, key_hash(key))
@@ -43,15 +47,18 @@ defmodule HashDict do
     %HashDict{root: root, size: size + counter}
   end
 
-  def update(%HashDict{root: root, size: size}, key, initial, fun) when is_function(fun, 1) do
-    {root, counter} = do_update(root, key, fn -> initial end, fun, key_hash(key))
+  @deprecated message
+  def update(%HashDict{root: root, size: size}, key, default, fun) when is_function(fun, 1) do
+    {root, counter} = do_update(root, key, fn -> default end, fun, key_hash(key))
     %HashDict{root: root, size: size + counter}
   end
 
+  @deprecated message
   def fetch(%HashDict{root: root}, key) do
     do_fetch(root, key, key_hash(key))
   end
 
+  @deprecated message
   def delete(dict, key) do
     case dict_delete(dict, key) do
       {dict, _value} -> dict
@@ -59,6 +66,7 @@ defmodule HashDict do
     end
   end
 
+  @deprecated message
   def pop(dict, key, default \\ nil) do
     case dict_delete(dict, key) do
       {dict, value} -> {value, dict}
@@ -66,11 +74,13 @@ defmodule HashDict do
     end
   end
 
+  @deprecated message
   def size(%HashDict{size: size}) do
     size
   end
 
   @doc false
+  @deprecated message
   def reduce(%HashDict{root: root}, acc, fun) do
     do_reduce(root, acc, fun, @node_size, fn
       {:suspend, acc} -> {:suspended, acc, &{:done, elem(&1, 1)}}
@@ -125,25 +135,25 @@ defmodule HashDict do
     end
   end
 
-  defp do_update(node, key, initial, fun, hash) do
+  defp do_update(node, key, default, fun, hash) do
     index = key_mask(hash)
 
     case elem(node, index) do
       [] ->
-        {put_elem(node, index, [key | initial.()]), 1}
+        {put_elem(node, index, [key | default.()]), 1}
 
       [^key | value] ->
         {put_elem(node, index, [key | fun.(value)]), 0}
 
       [k | v] ->
-        n = put_elem(@node_template, key_mask(key_shift(hash)), [key | initial.()])
+        n = put_elem(@node_template, key_mask(key_shift(hash)), [key | default.()])
         {put_elem(node, index, {k, v, n}), 1}
 
       {^key, value, n} ->
         {put_elem(node, index, {key, fun.(value), n}), 0}
 
       {k, v, n} ->
-        {n, counter} = do_update(n, key, initial, fun, key_shift(hash))
+        {n, counter} = do_update(n, key, default, fun, key_shift(hash))
         {put_elem(node, index, {k, v, n}), counter}
     end
   end

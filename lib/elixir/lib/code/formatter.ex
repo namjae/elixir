@@ -6,19 +6,25 @@ defmodule Code.Formatter do
   @double_heredoc "\"\"\""
   @single_quote "'"
   @single_heredoc "'''"
+  @sigil_c "~c\""
+  @sigil_c_heredoc "~c\"\"\""
   @newlines 2
   @min_line 0
   @max_line 9_999_999
   @empty empty()
+  @ampersand_prec Code.Identifier.unary_op(:&) |> elem(1)
+
+  # Operators that are composed of multiple binary operators
+  @multi_binary_operators [:"..//"]
 
   # Operators that do not have space between operands
-  @no_space_binary_operators [:..]
+  @no_space_binary_operators [:.., :"//"]
 
   # Operators that do not have newline between operands (as well as => and keywords)
   @no_newline_binary_operators [:\\, :in]
 
-  # Left associative operators that start on the next line in case of breaks
-  @left_new_line_before_binary_operators [:|>, :~>>, :<<~, :~>, :<~, :<~>, :<|>]
+  # Left associative operators that start on the next line in case of breaks (always pipes)
+  @pipeline_operators [:|>, :~>>, :<<~, :~>, :<~, :<~>, :"<|>"]
 
   # Right associative operators that start on the next line in case of breaks
   @right_new_line_before_binary_operators [:|, :when]
@@ -27,7 +33,7 @@ defmodule Code.Formatter do
   @required_parens_logical_binary_operands [:||, :|||, :or, :&&, :&&&, :and]
 
   # Operators with next break fits. = and :: do not consider new lines though
-  @next_break_fits_operators [:<-, :==, :!=, :=~, :===, :!==, :<, :>, :<=, :>=, :=, :::]
+  @next_break_fits_operators [:<-, :==, :!=, :=~, :===, :!==, :<, :>, :<=, :>=, :=, :"::"]
 
   # Operators that always require parens on operands when they are the parent
   @required_parens_on_binary_operands [
@@ -39,8 +45,10 @@ defmodule Code.Formatter do
     :<<~,
     :~>>,
     :<~>,
-    :<|>,
-    :^^^,
+    :"<|>",
+    :"^^^",
+    :+++,
+    :---,
     :in,
     :++,
     :--,
@@ -48,7 +56,7 @@ defmodule Code.Formatter do
     :<>
   ]
 
-  locals_without_parens = [
+  @locals_without_parens [
     # Special forms
     alias: 1,
     alias: 2,
@@ -76,6 +84,7 @@ defmodule Code.Formatter do
     defmacro: 2,
     defmacrop: 1,
     defmacrop: 2,
+    defmodule: 2,
     defdelegate: 2,
     defexception: 1,
     defoverridable: 1,
@@ -92,10 +101,11 @@ defmodule Code.Formatter do
 
     # Stdlib,
     defrecord: 2,
+    defrecord: 3,
     defrecordp: 2,
+    defrecordp: 3,
 
     # Testing
-    all: :*,
     assert: 1,
     assert: 2,
     assert_in_delta: 3,
@@ -107,12 +117,8 @@ defmodule Code.Formatter do
     assert_receive: 3,
     assert_received: 1,
     assert_received: 2,
-    check: 1,
-    check: 2,
     doctest: 1,
     doctest: 2,
-    property: 1,
-    property: 2,
     refute: 1,
     refute: 2,
     refute_in_delta: 3,
@@ -135,175 +141,119 @@ defmodule Code.Formatter do
     import_config: 1
   ]
 
-  @locals_without_parens MapSet.new(locals_without_parens)
+  @do_end_keywords [:rescue, :catch, :else, :after]
+
+  @bitstring_modifiers [
+    :integer,
+    :float,
+    :bits,
+    :bitstring,
+    :binary,
+    :bytes,
+    :utf8,
+    :utf16,
+    :utf32,
+    :signed,
+    :unsigned,
+    :little,
+    :big,
+    :native,
+    :_
+  ]
 
   @doc """
-  Checks if two strings are equivalent.
+  Converts the quoted expression into an algebra document.
   """
-  def equivalent(string1, string2) when is_binary(string1) and is_binary(string2) do
-    quoted1 = :elixir.string_to_quoted!(to_charlist(string1), 1, "nofile", [])
-    quoted2 = :elixir.string_to_quoted!(to_charlist(string2), 1, "nofile", [])
+  def to_algebra(quoted, opts \\ []) do
+    comments = Keyword.get(opts, :comments, [])
 
-    case not_equivalent(quoted1, quoted2) do
-      {left, right} -> {:error, left, right}
-      nil -> :ok
-    end
-  end
+    state =
+      comments
+      |> Enum.map(&format_comment/1)
+      |> gather_comments()
+      |> state(opts)
 
-  defp not_equivalent({:__block__, _, [left]}, right) do
-    not_equivalent(left, right)
-  end
-
-  defp not_equivalent(left, {:__block__, _, [right]}) do
-    not_equivalent(left, right)
-  end
-
-  defp not_equivalent({:__block__, _, []}, nil) do
-    nil
-  end
-
-  defp not_equivalent(nil, {:__block__, _, []}) do
-    nil
-  end
-
-  defp not_equivalent([left | lefties], [right | righties]) do
-    not_equivalent(left, right) || not_equivalent(lefties, righties)
-  end
-
-  defp not_equivalent({left_name, _, left_args}, {right_name, _, right_args}) do
-    not_equivalent(left_name, right_name) || not_equivalent(left_args, right_args)
-  end
-
-  defp not_equivalent({left1, left2}, {right1, right2}) do
-    not_equivalent(left1, right1) || not_equivalent(left2, right2)
-  end
-
-  defp not_equivalent(side, side) do
-    nil
-  end
-
-  defp not_equivalent(left, right) do
-    {left, right}
+    {doc, _} = block_to_algebra(quoted, @min_line, @max_line, state)
+    doc
   end
 
   @doc """
-  Converts `string` to an algebra document.
-
-  Returns `{:ok, doc}` or `{:error, parser_error}`.
-
-  See `format!/2` for the list of options.
+  Lists all default locals without parens.
   """
-  def to_algebra(string, opts \\ []) when is_binary(string) and is_list(opts) do
-    file = Keyword.get(opts, :file, "nofile")
-    line = Keyword.get(opts, :line, 1)
-    charlist = String.to_charlist(string)
-
-    Process.put(:code_formatter_comments, [])
-    tokenizer_options = [unescape: false, preserve_comments: &preserve_comments/5]
-
-    with {:ok, tokens} <- :elixir.string_to_tokens(charlist, line, file, tokenizer_options),
-         {:ok, forms} <- :elixir.tokens_to_quoted(tokens, file, formatter_metadata: true) do
-      state =
-        Process.get(:code_formatter_comments)
-        |> Enum.reverse()
-        |> gather_comments()
-        |> state(opts)
-
-      {doc, _} = block_to_algebra(forms, @min_line, @max_line, state)
-      {:ok, doc}
-    end
-  after
-    Process.delete(:code_formatter_comments)
+  def locals_without_parens do
+    @locals_without_parens
   end
 
   @doc """
-  Converts `string` to an algebra document.
-
-  Raises if the `string` cannot be parsed.
-
-  See `format!/2` for the list of options.
+  Checks if a function is a local without parens.
   """
-  def to_algebra!(string, opts \\ []) do
-    case to_algebra(string, opts) do
-      {:ok, doc} ->
-        doc
-
-      {:error, {line, error, token}} ->
-        :elixir_errors.parse_error(line, Keyword.get(opts, :file, "nofile"), error, token)
-    end
+  def local_without_parens?(fun, arity, locals_without_parens) do
+    arity > 0 and
+      Enum.any?(locals_without_parens, fn {key, val} ->
+        key == fun and (val == :* or val == arity)
+      end)
   end
 
   defp state(comments, opts) do
-    rename_deprecated_at =
-      if version = opts[:rename_deprecated_at] do
-        case Version.parse(version) do
-          {:ok, parsed} ->
-            parsed
+    force_do_end_blocks = Keyword.get(opts, :force_do_end_blocks, false)
+    locals_without_parens = Keyword.get(opts, :locals_without_parens, [])
+    file = Keyword.get(opts, :file, nil)
+    sigils = Keyword.get(opts, :sigils, [])
+    normalize_bitstring_modifiers = Keyword.get(opts, :normalize_bitstring_modifiers, true)
+    normalize_charlists_as_sigils = Keyword.get(opts, :normalize_charlists_as_sigils, true)
+    syntax_colors = Keyword.get(opts, :syntax_colors, [])
 
-          :error ->
+    sigils =
+      Map.new(sigils, fn {key, value} ->
+        with true <- is_atom(key) and is_function(value, 2),
+             [char] <- Atom.to_charlist(key),
+             true <- char in ?A..?Z do
+          {char, value}
+        else
+          _ ->
             raise ArgumentError,
-                  "invalid version #{inspect(version)} given to :rename_deprecated_at"
+                  ":sigils must be a keyword list with a single uppercased letter as key and an " <>
+                    "anonymous function expecting two arguments as value, got: #{inspect(sigils)}"
         end
-      end
-
-    locals_without_parens =
-      opts
-      |> Keyword.get(:locals_without_parens, [])
-      |> MapSet.new()
-      |> MapSet.union(@locals_without_parens)
+      end)
 
     %{
-      locals_without_parens: locals_without_parens,
+      force_do_end_blocks: force_do_end_blocks,
+      locals_without_parens: locals_without_parens ++ locals_without_parens(),
       operand_nesting: 2,
-      rename_deprecated_at: rename_deprecated_at,
-      comments: comments
+      skip_eol: false,
+      comments: comments,
+      sigils: sigils,
+      file: file,
+      normalize_bitstring_modifiers: normalize_bitstring_modifiers,
+      normalize_charlists_as_sigils: normalize_charlists_as_sigils,
+      inspect_opts: %Inspect.Opts{syntax_colors: syntax_colors}
     }
   end
 
-  # Code comment handling
-
-  defp preserve_comments(line, _column, tokens, comment, rest) do
-    comments = Process.get(:code_formatter_comments)
-    comment = {line, {previous_eol(tokens), next_eol(rest, 0)}, format_comment(comment, [])}
-    Process.put(:code_formatter_comments, [comment | comments])
+  defp format_comment(%{text: text} = comment) do
+    %{comment | text: format_comment_text(text)}
   end
 
-  defp next_eol('\s' ++ rest, count), do: next_eol(rest, count)
-  defp next_eol('\t' ++ rest, count), do: next_eol(rest, count)
-  defp next_eol('\n' ++ rest, count), do: next_eol(rest, count + 1)
-  defp next_eol('\r\n' ++ rest, count), do: next_eol(rest, count + 1)
-  defp next_eol(_, count), do: count
-
-  defp previous_eol([{token, {_, _, count}} | _]) when token in [:eol, :",", :";"] and count > 0 do
-    count
-  end
-
-  defp previous_eol([]), do: 1
-  defp previous_eol(_), do: nil
-
-  defp format_comment('##' ++ rest, acc), do: format_comment([?# | rest], [?# | acc])
-
-  defp format_comment('#!', acc), do: reverse_to_string(acc, '#!')
-  defp format_comment('#! ' ++ _ = rest, acc), do: reverse_to_string(acc, rest)
-  defp format_comment('#!' ++ rest, acc), do: reverse_to_string(acc, [?#, ?!, ?\s, rest])
-
-  defp format_comment('#', acc), do: reverse_to_string(acc, '#')
-  defp format_comment('# ' ++ _ = rest, acc), do: reverse_to_string(acc, rest)
-  defp format_comment('#' ++ rest, acc), do: reverse_to_string(acc, [?#, ?\s, rest])
-
-  defp reverse_to_string(acc, prefix) do
-    acc |> Enum.reverse(prefix) |> List.to_string()
-  end
+  defp format_comment_text("#"), do: "#"
+  defp format_comment_text("#!" <> rest), do: "#!" <> rest
+  defp format_comment_text("##" <> rest), do: "#" <> format_comment_text("#" <> rest)
+  defp format_comment_text("# " <> rest), do: "# " <> rest
+  defp format_comment_text("#" <> rest), do: "# " <> rest
 
   # If there is a no new line before, we can't gather all followup comments.
-  defp gather_comments([{line, {nil, next_eol}, doc} | comments]) do
-    comment = {line, {@newlines, next_eol}, doc}
+  defp gather_comments([%{previous_eol_count: 0} = comment | comments]) do
+    comment = %{comment | previous_eol_count: @newlines}
     [comment | gather_comments(comments)]
   end
 
-  defp gather_comments([{line, {previous_eol, next_eol}, doc} | comments]) do
-    {next_eol, comments, doc} = gather_followup_comments(line + 1, next_eol, comments, doc)
-    comment = {line, {previous_eol, next_eol}, doc}
+  defp gather_comments([comment | comments]) do
+    %{line: line, next_eol_count: next_eol_count, text: doc} = comment
+
+    {next_eol_count, comments, doc} =
+      gather_followup_comments(line + 1, next_eol_count, comments, doc)
+
+    comment = %{comment | next_eol_count: next_eol_count, text: doc}
     [comment | gather_comments(comments)]
   end
 
@@ -311,28 +261,29 @@ defmodule Code.Formatter do
     []
   end
 
-  defp gather_followup_comments(line, _, [{line, {previous_eol, next_eol}, text} | comments], doc)
-       when previous_eol != nil do
-    gather_followup_comments(line + 1, next_eol, comments, line(doc, text))
+  defp gather_followup_comments(line, _, [%{line: line} = comment | comments], doc)
+       when comment.previous_eol_count != 0 do
+    %{next_eol_count: next_eol_count, text: text} = comment
+    gather_followup_comments(line + 1, next_eol_count, comments, line(doc, text))
   end
 
-  defp gather_followup_comments(_line, next_eol, comments, doc) do
-    {next_eol, comments, doc}
+  defp gather_followup_comments(_line, next_eol_count, comments, doc) do
+    {next_eol_count, comments, doc}
   end
 
-  # Special AST nodes from compiler feedback.
+  # Special AST nodes from compiler feedback
 
-  defp quoted_to_algebra({:special, :clause_args, [args]}, _context, state) do
+  defp quoted_to_algebra({{:special, :clause_args}, _meta, [args]}, _context, state) do
     {doc, state} = clause_args_to_algebra(args, state)
     {group(doc), state}
   end
 
-  defp quoted_to_algebra({:special, :bitstring_segment, [arg, last]}, _context, state) do
+  defp quoted_to_algebra({{:special, :bitstring_segment}, _meta, [arg, last]}, _context, state) do
     bitstring_segment_to_algebra({arg, -1}, state, last)
   end
 
   defp quoted_to_algebra({var, _meta, var_context}, _context, state) when is_atom(var_context) do
-    {var |> Atom.to_string() |> string(), state}
+    {var |> Atom.to_string() |> string() |> color(:variable, state.inspect_opts), state}
   end
 
   defp quoted_to_algebra({:<<>>, meta, entries}, _context, state) do
@@ -343,13 +294,13 @@ defmodule Code.Formatter do
       not interpolated?(entries) ->
         bitstring_to_algebra(meta, entries, state)
 
-      meta[:format] == :bin_heredoc ->
+      meta[:delimiter] == ~s["""] ->
         {doc, state} =
           entries
           |> prepend_heredoc_line()
-          |> interpolation_to_algebra(:heredoc, state, @double_heredoc, @double_heredoc)
+          |> interpolation_to_algebra(~s["""], state, @double_heredoc, @double_heredoc)
 
-        {force_break(doc), state}
+        {force_unfit(doc), state}
 
       true ->
         interpolation_to_algebra(entries, @double_quote, state, @double_quote, @double_quote)
@@ -357,24 +308,27 @@ defmodule Code.Formatter do
   end
 
   defp quoted_to_algebra(
-         {{:., _, [String, :to_charlist]}, _, [{:<<>>, meta, entries}]} = quoted,
+         {{:., _, [List, :to_charlist]}, meta, [entries]} = quoted,
          context,
          state
        ) do
     cond do
-      not interpolated?(entries) ->
+      not list_interpolated?(entries) ->
         remote_to_algebra(quoted, context, state)
 
-      meta[:format] == :list_heredoc ->
+      meta[:delimiter] == ~s['''] ->
+        {opener, quotes} = get_charlist_quotes(true, state)
+
         {doc, state} =
           entries
           |> prepend_heredoc_line()
-          |> interpolation_to_algebra(:heredoc, state, @single_heredoc, @single_heredoc)
+          |> list_interpolation_to_algebra(quotes, state, opener, quotes)
 
-        {force_break(doc), state}
+        {force_unfit(doc), state}
 
       true ->
-        interpolation_to_algebra(entries, @single_quote, state, @single_quote, @single_quote)
+        {opener, quotes} = get_charlist_quotes(false, state)
+        list_interpolation_to_algebra(entries, quotes, state, opener, quotes)
     end
   end
 
@@ -391,10 +345,17 @@ defmodule Code.Formatter do
   end
 
   # foo[bar]
-  defp quoted_to_algebra({{:., _, [Access, :get]}, meta, [target | args]}, _context, state) do
+  defp quoted_to_algebra({{:., _, [Access, :get]}, meta, [target, arg]}, _context, state) do
     {target_doc, state} = remote_target_to_algebra(target, state)
-    {call_doc, state} = list_to_algebra(meta, args, state)
-    {concat(target_doc, call_doc), state}
+
+    {access_doc, state} =
+      if keyword?(arg) do
+        list_to_algebra(meta, arg, state)
+      else
+        list_to_algebra(meta, [arg], state)
+      end
+
+    {concat(target_doc, access_doc), state}
   end
 
   # %Foo{}
@@ -415,22 +376,24 @@ defmodule Code.Formatter do
   # {}
   # {1, 2}
   defp quoted_to_algebra({:{}, meta, args}, _context, state) do
-    tuple_to_algebra(meta, args, state)
+    tuple_to_algebra(meta, args, :flex_break, state)
   end
 
   defp quoted_to_algebra({:__block__, meta, [{left, right}]}, _context, state) do
-    tuple_to_algebra(meta, [left, right], state)
+    tuple_to_algebra(meta, [left, right], :flex_break, state)
   end
 
   defp quoted_to_algebra({:__block__, meta, [list]}, _context, state) when is_list(list) do
-    case meta[:format] do
-      :list_heredoc ->
-        string = list |> List.to_string() |> escape_heredoc()
-        {@single_heredoc |> concat(string) |> concat(@single_heredoc) |> force_break(), state}
+    case meta[:delimiter] do
+      ~s['''] ->
+        {opener, quotes} = get_charlist_quotes(true, state)
+        string = list |> List.to_string() |> escape_heredoc(quotes)
+        {opener |> concat(string) |> concat(quotes) |> force_unfit(), state}
 
-      :charlist ->
-        string = list |> List.to_string() |> escape_string(@single_quote)
-        {@single_quote |> concat(string) |> concat(@single_quote), state}
+      ~s['] ->
+        {opener, quotes} = get_charlist_quotes(false, state)
+        string = list |> List.to_string() |> escape_string(quotes)
+        {opener |> concat(string) |> concat(quotes), state}
 
       _other ->
         list_to_algebra(meta, list, state)
@@ -438,25 +401,35 @@ defmodule Code.Formatter do
   end
 
   defp quoted_to_algebra({:__block__, meta, [string]}, _context, state) when is_binary(string) do
-    if meta[:format] == :bin_heredoc do
-      string = escape_heredoc(string)
-      {@double_heredoc |> concat(string) |> concat(@double_heredoc) |> force_break(), state}
+    if meta[:delimiter] == ~s["""] do
+      string = escape_heredoc(string, ~s["""])
+
+      {@double_heredoc
+       |> concat(string)
+       |> concat(@double_heredoc)
+       |> color(:string, state.inspect_opts)
+       |> force_unfit(), state}
     else
       string = escape_string(string, @double_quote)
-      {@double_quote |> concat(string) |> concat(@double_quote), state}
+
+      {@double_quote
+       |> concat(string)
+       |> concat(@double_quote)
+       |> color(:string, state.inspect_opts), state}
     end
   end
 
-  defp quoted_to_algebra({:__block__, _, [atom]}, _context, state) when is_atom(atom) do
-    {atom_to_algebra(atom), state}
+  defp quoted_to_algebra({:__block__, meta, [atom]}, _context, state) when is_atom(atom) do
+    {atom_to_algebra(atom, meta, state.inspect_opts), state}
   end
 
-  defp quoted_to_algebra({:__block__, meta, [integer]}, _context, state) when is_integer(integer) do
-    {integer_to_algebra(Keyword.fetch!(meta, :original)), state}
+  defp quoted_to_algebra({:__block__, meta, [integer]}, _context, state)
+       when is_integer(integer) do
+    {Keyword.fetch!(meta, :token) |> integer_to_algebra(state.inspect_opts), state}
   end
 
   defp quoted_to_algebra({:__block__, meta, [float]}, _context, state) when is_float(float) do
-    {float_to_algebra(Keyword.fetch!(meta, :original)), state}
+    {Keyword.fetch!(meta, :token) |> float_to_algebra(state.inspect_opts), state}
   end
 
   defp quoted_to_algebra(
@@ -472,8 +445,12 @@ defmodule Code.Formatter do
     quoted_to_algebra(arg, context, state)
   end
 
+  defp quoted_to_algebra({:__block__, _meta, []}, _context, state) do
+    {color("nil", nil, state.inspect_opts), state}
+  end
+
   defp quoted_to_algebra({:__block__, meta, _} = block, _context, state) do
-    {block, state} = block_to_algebra(block, line(meta), end_line(meta), state)
+    {block, state} = block_to_algebra(block, line(meta), closing_line(meta), state)
     {surround("(", block, ")"), state}
   end
 
@@ -485,7 +462,8 @@ defmodule Code.Formatter do
         quoted_to_algebra_with_parens_if_operator(head, context, state)
       end
 
-    {Enum.reduce(tail, doc, &concat(&2, "." <> Atom.to_string(&1))), state}
+    {Enum.reduce(tail, doc, &concat(&2, "." <> Atom.to_string(&1)))
+     |> color(:atom, state.inspect_opts), state}
   end
 
   # &1
@@ -508,8 +486,22 @@ defmodule Code.Formatter do
     binary_op_to_algebra(:in, "not in", meta, left, right, context, state)
   end
 
+  # ..
+  defp quoted_to_algebra({:.., _meta, []}, context, state) do
+    if context in [:no_parens_arg, :no_parens_one_arg] do
+      {"(..)", state}
+    else
+      {"..", state}
+    end
+  end
+
+  # 1..2//3
+  defp quoted_to_algebra({:"..//", meta, [left, middle, right]}, context, state) do
+    quoted_to_algebra({:"//", meta, [{:.., meta, [left, middle]}, right]}, context, state)
+  end
+
   defp quoted_to_algebra({:fn, meta, [_ | _] = clauses}, _context, state) do
-    anon_fun_to_algebra(clauses, line(meta), end_line(meta), state)
+    anon_fun_to_algebra(clauses, line(meta), closing_line(meta), state, eol?(meta, state))
   end
 
   defp quoted_to_algebra({fun, meta, args}, context, state) when is_atom(fun) and is_list(args) do
@@ -525,7 +517,7 @@ defmodule Code.Formatter do
 
   # (left -> right)
   defp quoted_to_algebra([{:->, _, _} | _] = clauses, _context, state) do
-    type_fun_to_algebra(clauses, @max_line, @min_line, state)
+    paren_fun_to_algebra(clauses, @max_line, @min_line, state)
   end
 
   # [keyword: :list] (inner part)
@@ -541,8 +533,19 @@ defmodule Code.Formatter do
       if keyword_key?(left_arg) do
         {left, state} =
           case left_arg do
+            # TODO: Remove this clause in v1.16 when we no longer quote operator :..//
+            {:__block__, _, [:"..//"]} ->
+              {string(~S{"..//":}), state}
+
             {:__block__, _, [atom]} when is_atom(atom) ->
-              {atom |> Code.Identifier.inspect_as_key() |> string(), state}
+              key =
+                if Macro.classify_atom(atom) in [:identifier, :unquoted] do
+                  IO.iodata_to_binary([Atom.to_string(atom), ?:])
+                else
+                  IO.iodata_to_binary([?", Atom.to_string(atom), ?", ?:])
+                end
+
+              {string(key) |> color(:atom, state.inspect_opts), state}
 
             {{:., _, [:erlang, :binary_to_atom]}, _, [{:<<>>, _, entries}, :utf8]} ->
               interpolation_to_algebra(entries, @double_quote, state, "\"", "\":")
@@ -558,17 +561,22 @@ defmodule Code.Formatter do
       end
 
     doc =
-      with_next_break_fits(next_break_fits?(right_arg), right, fn right ->
+      with_next_break_fits(next_break_fits?(right_arg, state), right, fn right ->
         concat(group(left), group(nest(glue(op, group(right)), 2, :break)))
       end)
 
     {doc, state}
   end
 
+  # #PID's and #Ref's may appear on regular AST
+  defp quoted_to_algebra(unknown, _context, state) do
+    {inspect(unknown), state}
+  end
+
   ## Blocks
 
-  defp block_to_algebra([{:->, _, _} | _] = type_fun, min_line, max_line, state) do
-    type_fun_to_algebra(type_fun, min_line, max_line, state)
+  defp block_to_algebra([{:->, _, _} | _] = paren_fun, min_line, max_line, state) do
+    paren_fun_to_algebra(paren_fun, min_line, max_line, state)
   end
 
   defp block_to_algebra({:__block__, _, []}, min_line, max_line, state) do
@@ -584,19 +592,19 @@ defmodule Code.Formatter do
   end
 
   defp block_args_to_algebra(args, min_line, max_line, state) do
-    quoted_to_algebra = fn {kind, meta, _} = arg, _args, doc_newlines, state ->
-      doc_newlines = Keyword.get(meta, :newlines, doc_newlines)
+    quoted_to_algebra = fn {kind, meta, _} = arg, _args, state ->
+      newlines = meta[:end_of_expression][:newlines] || 1
       {doc, state} = quoted_to_algebra(arg, :block, state)
-      {doc, block_next_line(kind), doc_newlines, state}
+      {{doc, block_next_line(kind), newlines}, state}
     end
 
     {args_docs, _comments?, state} =
-      quoted_to_algebra_with_comments(args, min_line, max_line, 2, state, quoted_to_algebra)
+      quoted_to_algebra_with_comments(args, [], min_line, max_line, state, quoted_to_algebra)
 
     case args_docs do
       [] -> {@empty, state}
       [line] -> {line, state}
-      lines -> {lines |> Enum.reduce(&line(&2, &1)) |> force_break(), state}
+      lines -> {lines |> Enum.reduce(&line(&2, &1)) |> force_unfit(), state}
     end
   end
 
@@ -632,7 +640,7 @@ defmodule Code.Formatter do
         Atom.to_string(op)
       end
 
-    {concat(op_string, doc), state}
+    {color(op_string, :operator, state.inspect_opts) |> concat(doc), state}
   end
 
   defp maybe_binary_op_to_algebra(fun, meta, args, context, state) do
@@ -646,11 +654,11 @@ defmodule Code.Formatter do
 
   # There are five kinds of operators.
   #
-  #   1. no space binary operators, e.g. 1..2
-  #   2. no newline binary operators, e.g. left in right
-  #   3. strict newlines before a left precedent operator, e.g. foo |> bar |> baz
-  #   4. strict newlines before a right precedent operator, e.g. foo when bar when baz
-  #   5. flex newlines after the operator, e.g. foo ++ bar ++ baz
+  #   1. no space binary operators, for example,  1..2
+  #   2. no newline binary operators, for example, left in right
+  #   3. strict newlines before a left precedent operator, for example, foo |> bar |> baz
+  #   4. strict newlines before a right precedent operator, for example, foo when bar when baz
+  #   5. flex newlines after the operator, for example, foo ++ bar ++ baz
   #
   # Cases 1, 2 and 5 are handled fairly easily by relying on the
   # operator precedence and making sure nesting is applied only once.
@@ -659,23 +667,75 @@ defmodule Code.Formatter do
   # strict or flex mode around.
   defp binary_op_to_algebra(op, op_string, meta, left_arg, right_arg, context, state) do
     %{operand_nesting: nesting} = state
-    binary_op_to_algebra(op, op_string, meta, left_arg, right_arg, context, state, nil, nesting)
+    binary_op_to_algebra(op, op_string, meta, left_arg, right_arg, context, state, nesting)
   end
 
-  defp binary_op_to_algebra(
-         op,
-         op_string,
-         meta,
-         left_arg,
-         right_arg,
-         context,
-         state,
-         parent_info,
-         nesting
-       ) do
+  defp binary_op_to_algebra(op, op_string, meta, left_arg, right_arg, context, state, _nesting)
+       when op in @right_new_line_before_binary_operators do
     op_info = Code.Identifier.binary_op(op)
-    left_context = force_many_args_or_operand(context, :parens_arg)
-    right_context = force_many_args_or_operand(context, :operand)
+    op_string = op_string <> " "
+    left_context = left_op_context(context)
+    right_context = right_op_context(context)
+
+    min_line =
+      case left_arg do
+        {_, left_meta, _} -> line(left_meta)
+        _ -> line(meta)
+      end
+
+    {operands, max_line} =
+      unwrap_right(right_arg, op, meta, right_context, [{{:root, left_context}, left_arg}])
+
+    fun = fn
+      {{:root, context}, arg}, _args, state ->
+        {doc, state} = binary_operand_to_algebra(arg, context, state, op, op_info, :left, 2)
+        {{doc, @empty, 1}, state}
+
+      {{kind, context}, arg}, _args, state ->
+        {doc, state} = binary_operand_to_algebra(arg, context, state, op, op_info, kind, 0)
+        doc = doc |> nest_by_length(op_string) |> force_keyword(arg)
+        {{concat(op_string, doc), @empty, 1}, state}
+    end
+
+    {doc, state} =
+      operand_to_algebra_with_comments(operands, meta, min_line, max_line, context, state, fun)
+
+    if keyword?(right_arg) and context in [:parens_arg, :no_parens_arg] do
+      {wrap_in_parens(doc), state}
+    else
+      {doc, state}
+    end
+  end
+
+  defp binary_op_to_algebra(op, _, meta, left_arg, right_arg, context, state, _nesting)
+       when op in @pipeline_operators do
+    op_info = Code.Identifier.binary_op(op)
+    left_context = left_op_context(context)
+    right_context = right_op_context(context)
+    max_line = line(meta)
+
+    {pipes, min_line} =
+      unwrap_pipes(left_arg, meta, left_context, [{{op, right_context}, right_arg}])
+
+    fun = fn
+      {{:root, context}, arg}, _args, state ->
+        {doc, state} = binary_operand_to_algebra(arg, context, state, op, op_info, :left, 2)
+        {{doc, @empty, 1}, state}
+
+      {{op, context}, arg}, _args, state ->
+        op_info = Code.Identifier.binary_op(op)
+        op_string = Atom.to_string(op) <> " "
+        {doc, state} = binary_operand_to_algebra(arg, context, state, op, op_info, :right, 0)
+        {{concat(op_string, doc), @empty, 1}, state}
+    end
+
+    operand_to_algebra_with_comments(pipes, meta, min_line, max_line, context, state, fun)
+  end
+
+  defp binary_op_to_algebra(op, op_string, meta, left_arg, right_arg, context, state, nesting) do
+    op_info = Code.Identifier.binary_op(op)
+    left_context = left_op_context(context)
+    right_context = right_op_context(context)
 
     {left, state} =
       binary_operand_to_algebra(left_arg, left_context, state, op, op_info, :left, 2)
@@ -686,56 +746,24 @@ defmodule Code.Formatter do
     doc =
       cond do
         op in @no_space_binary_operators ->
-          concat(concat(group(left), op_string), group(right))
+          op_doc = color(op_string, :operator, state.inspect_opts)
+          concat(concat(group(left), op_doc), group(right))
 
         op in @no_newline_binary_operators ->
-          op_string = " " <> op_string <> " "
-          concat(concat(group(left), op_string), group(right))
-
-        op in @left_new_line_before_binary_operators ->
-          op_string = op_string <> " "
-
-          # If the parent is of the same type (computed via same precedence),
-          # we cannot group the left side yet.
-          left = if op_info == parent_info, do: left, else: group(left)
-
-          # The right side is never the same operator, so we can group and nest
-          right = group(nest_by_length(right, op_string))
-
-          doc = glue(left, concat(op_string, right))
-          if Keyword.get(meta, :eol, false), do: force_break(doc), else: doc
-
-        op in @right_new_line_before_binary_operators ->
-          op_string = op_string <> " "
-
-          # If the parent is of the same type (computed via same precedence),
-          # we need to nest the left side because of the associativity.
-          left =
-            if op_info == parent_info do
-              nest_by_length(left, op_string)
-            else
-              group(left)
-            end
-
-          # If the right side is of the same type, we will keep recursing
-          # and do the nesting on the left side later on (as written above).
-          right =
-            case right_arg do
-              {^op, _, [_, _]} -> right
-              _ -> right |> nest_by_length(op_string) |> force_keyword(right_arg) |> group()
-            end
-
-          doc = glue(left, concat(op_string, right))
-          if Keyword.get(meta, :eol, false), do: force_break(doc), else: doc
+          op_doc = color(" " <> op_string <> " ", :operator, state.inspect_opts)
+          concat(concat(group(left), op_doc), group(right))
 
         true ->
+          eol? = eol?(meta, state)
+
           next_break_fits? =
-            op in @next_break_fits_operators and next_break_fits?(right_arg) and
-              not Keyword.get(meta, :eol, false)
+            op in @next_break_fits_operators and next_break_fits?(right_arg, state) and not eol?
 
           with_next_break_fits(next_break_fits?, right, fn right ->
-            op_string = " " <> op_string
-            concat(group(left), group(nest(glue(op_string, group(right)), nesting, :break)))
+            op_doc = color(" " <> op_string, :operator, state.inspect_opts)
+            right = nest(glue(op_doc, group(right)), nesting, :break)
+            right = if eol?, do: force_unfit(right), else: right
+            concat(group(left), group(right))
           end)
       end
 
@@ -743,7 +771,7 @@ defmodule Code.Formatter do
   end
 
   # TODO: We can remove this workaround once we remove
-  # ?rearrange_uop from the parser in Elixir v2.0.
+  # ?rearrange_uop from the parser on v2.0.
   # (! left) in right
   # (not left) in right
   defp binary_operand_to_algebra(
@@ -761,10 +789,11 @@ defmodule Code.Formatter do
   end
 
   defp binary_operand_to_algebra(operand, context, state, parent_op, parent_info, side, nesting) do
+    {parent_assoc, parent_prec} = parent_info
+
     with {op, meta, [left, right]} <- operand,
          op_info = Code.Identifier.binary_op(op),
          {_assoc, prec} <- op_info do
-      {parent_assoc, parent_prec} = parent_info
       op_string = Atom.to_string(op)
 
       cond do
@@ -772,17 +801,7 @@ defmodule Code.Formatter do
         # the correct side, we respect the nesting rule to avoid multiple
         # nestings. This only applies for left associativity or same operator.
         parent_prec == prec and parent_assoc == side and (side == :left or op == parent_op) ->
-          binary_op_to_algebra(
-            op,
-            op_string,
-            meta,
-            left,
-            right,
-            context,
-            state,
-            parent_info,
-            nesting
-          )
+          binary_op_to_algebra(op, op_string, meta, left, right, context, state, nesting)
 
         # If the parent requires parens or the precedence is inverted or
         # it is in the wrong side, then we *need* parenthesis.
@@ -791,21 +810,96 @@ defmodule Code.Formatter do
              parent_op in @required_parens_logical_binary_operands) or parent_prec > prec or
             (parent_prec == prec and parent_assoc != side) ->
           {operand, state} =
-            binary_op_to_algebra(op, op_string, meta, left, right, context, state, parent_info, 2)
+            binary_op_to_algebra(op, op_string, meta, left, right, context, state, 2)
 
           {wrap_in_parens(operand), state}
 
         # Otherwise, we rely on precedence but also nest.
         true ->
-          binary_op_to_algebra(op, op_string, meta, left, right, context, state, parent_info, 2)
+          binary_op_to_algebra(op, op_string, meta, left, right, context, state, 2)
       end
     else
-      {:&, _, [arg]} when not is_integer(arg) and side == :left ->
+      {:&, _, [arg]}
+      when not is_integer(arg) and side == :left
+      when not is_integer(arg) and parent_assoc == :left and parent_prec > @ampersand_prec ->
         {doc, state} = quoted_to_algebra(operand, context, state)
         {wrap_in_parens(doc), state}
 
       _ ->
         quoted_to_algebra(operand, context, state)
+    end
+  end
+
+  defp unwrap_pipes({op, meta, [left, right]}, _meta, context, acc)
+       when op in @pipeline_operators do
+    left_context = left_op_context(context)
+    right_context = right_op_context(context)
+    unwrap_pipes(left, meta, left_context, [{{op, right_context}, right} | acc])
+  end
+
+  defp unwrap_pipes(left, meta, context, acc) do
+    min_line =
+      case left do
+        {_, meta, _} -> line(meta)
+        _ -> line(meta)
+      end
+
+    {[{{:root, context}, left} | acc], min_line}
+  end
+
+  defp unwrap_right({op, meta, [left, right]}, op, _meta, context, acc) do
+    left_context = left_op_context(context)
+    right_context = right_op_context(context)
+    unwrap_right(right, op, meta, right_context, [{{:left, left_context}, left} | acc])
+  end
+
+  defp unwrap_right(right, _op, meta, context, acc) do
+    acc = [{{:right, context}, right} | acc]
+    {Enum.reverse(acc), line(meta)}
+  end
+
+  defp operand_to_algebra_with_comments(operands, meta, min_line, max_line, context, state, fun) do
+    # If we are in a no_parens_one_arg expression, we actually cannot
+    # extract comments from the first operand, because it would rewrite:
+    #
+    #     @spec function(x) ::
+    #             # Comment
+    #             any
+    #           when x: any
+    #
+    # to:
+    #
+    #     @spec # Comment
+    #           function(x) ::
+    #             any
+    #           when x: any
+    #
+    # Instead we get:
+    #
+    #     @spec function(x) ::
+    #             any
+    #           # Comment
+    #           when x: any
+    #
+    # Which may look counter-intuitive but it actually makes sense,
+    # as the closest possible location for the comment is the when
+    # operator.
+    {operands, acc, state} =
+      if context == :no_parens_one_arg do
+        [operand | operands] = operands
+        {doc_triplet, state} = fun.(operand, :unused, state)
+        {operands, [doc_triplet], state}
+      else
+        {operands, [], state}
+      end
+
+    {docs, comments?, state} =
+      quoted_to_algebra_with_comments(operands, acc, min_line, max_line, state, fun)
+
+    if comments? or eol?(meta, state) do
+      {docs |> Enum.reduce(&line(&2, &1)) |> force_unfit(), state}
+    else
+      {docs |> Enum.reduce(&glue(&2, &1)), state}
     end
   end
 
@@ -820,11 +914,11 @@ defmodule Code.Formatter do
 
   # @foo bar
   # @foo(bar)
-  defp module_attribute_to_algebra(meta, {name, _, [_] = args} = expr, context, state)
+  defp module_attribute_to_algebra(meta, {name, call_meta, [_] = args} = expr, context, state)
        when is_atom(name) and name not in [:__block__, :__aliases__] do
-    if Code.Identifier.classify(name) == :callable_local do
+    if Macro.classify_atom(name) == :identifier do
       {{call_doc, state}, wrap_in_parens?} =
-        call_args_to_algebra(args, meta, context, :skip_unless_many_args, false, state)
+        call_args_to_algebra(args, call_meta, context, :skip_unless_many_args, false, state)
 
       doc =
         "@#{name}"
@@ -853,10 +947,10 @@ defmodule Code.Formatter do
   defp capture_to_algebra(arg, context, state) do
     {doc, state} = capture_target_to_algebra(arg, context, state)
 
-    if doc |> format_to_string() |> String.starts_with?("&") do
-      {concat("& ", doc), state}
-    else
-      {concat("&", doc), state}
+    case format_to_string(doc) do
+      <<"&", _::binary>> -> {concat("& ", doc), state}
+      <<int, _::binary>> when int in ?0..?9 -> {concat("& ", doc), state}
+      _ -> {concat("&", doc), state}
     end
   end
 
@@ -867,7 +961,7 @@ defmodule Code.Formatter do
        )
        when is_atom(fun) and is_integer(arity) do
     {target_doc, state} = remote_target_to_algebra(target, state)
-    fun = remote_fun_to_algebra(target, fun, arity, state)
+    fun = Macro.inspect_atom(:remote_call, fun)
     {target_doc |> nest(1) |> concat(string(".#{fun}/#{arity}")), state}
   end
 
@@ -890,7 +984,7 @@ defmodule Code.Formatter do
   # expression.{arguments}
   defp remote_to_algebra({{:., _, [target, :{}]}, meta, args}, _context, state) do
     {target_doc, state} = remote_target_to_algebra(target, state)
-    {call_doc, state} = tuple_to_algebra(meta, args, state)
+    {call_doc, state} = tuple_to_algebra(meta, args, :break, state)
     {concat(concat(target_doc, "."), call_doc), state}
   end
 
@@ -909,13 +1003,16 @@ defmodule Code.Formatter do
   # Mod.function()
   # var.function
   # expression.function(arguments)
-  defp remote_to_algebra({{:., _, [target, fun]}, meta, args}, context, state) when is_atom(fun) do
+  defp remote_to_algebra({{:., _, [target, fun]}, meta, args}, context, state)
+       when is_atom(fun) do
     {target_doc, state} = remote_target_to_algebra(target, state)
-    fun = remote_fun_to_algebra(target, fun, length(args), state)
-    remote_doc = target_doc |> concat(".") |> concat(string(fun))
 
-    if args == [] and not remote_target_is_a_module?(target) and
-         Keyword.get(meta, :no_parens, false) do
+    fun_doc =
+      Macro.inspect_atom(:remote_call, fun) |> string() |> color(:call, state.inspect_opts)
+
+    remote_doc = target_doc |> concat(".") |> concat(fun_doc)
+
+    if args == [] and not remote_target_is_a_module?(target) and not meta?(meta, :closing) do
       {remote_doc, state}
     else
       {{call_doc, state}, wrap_in_parens?} =
@@ -948,34 +1045,6 @@ defmodule Code.Formatter do
     end
   end
 
-  defp remote_fun_to_algebra(target, fun, arity, state) do
-    %{rename_deprecated_at: since} = state
-
-    atom_target =
-      case since && target do
-        {:__aliases__, _, [alias | _] = aliases} when is_atom(alias) ->
-          Module.concat(aliases)
-
-        {:__block__, _, [atom]} when is_atom(atom) ->
-          atom
-
-        _ ->
-          nil
-      end
-
-    with {fun, requirement} <- deprecated(atom_target, fun, arity),
-         true <- Version.match?(since, requirement) do
-      fun
-    else
-      _ -> Code.Identifier.inspect_as_function(fun)
-    end
-  end
-
-  # We can only rename functions in the same module because
-  # introducing a new module may wrong due to aliases.
-  defp deprecated(Enum, :partition, 2), do: {"split_with", "~> 1.4"}
-  defp deprecated(_, _, _), do: :error
-
   defp remote_target_to_algebra({:fn, _, [_ | _]} = quoted, state) do
     # This change is not semantically required but for beautification.
     {doc, state} = quoted_to_algebra(quoted, :no_parens_arg, state)
@@ -989,7 +1058,16 @@ defmodule Code.Formatter do
   # function(arguments)
   defp local_to_algebra(fun, meta, args, context, state) when is_atom(fun) do
     skip_parens =
-      if skip_parens?(fun, meta, args, state), do: :skip_unless_many_args, else: :skip_if_do_end
+      cond do
+        meta?(meta, :closing) ->
+          :skip_if_only_do_end
+
+        local_without_parens?(fun, length(args), state.locals_without_parens) ->
+          :skip_unless_many_args
+
+        true ->
+          :skip_if_do_end
+      end
 
     {{call_doc, state}, wrap_in_parens?} =
       call_args_to_algebra(args, meta, context, skip_parens, true, state)
@@ -998,37 +1076,46 @@ defmodule Code.Formatter do
       fun
       |> Atom.to_string()
       |> string()
+      |> color(:call, state.inspect_opts)
       |> concat(call_doc)
 
     doc = if wrap_in_parens?, do: wrap_in_parens(doc), else: doc
     {doc, state}
   end
 
-  # parens may one of:
+  # parens may be one of:
   #
   #   * :skip_unless_many_args - skips parens unless we are the argument context
+  #   * :skip_if_only_do_end - skip parens if we are do-end and the only arg
   #   * :skip_if_do_end - skip parens if we are do-end
   #   * :required - never skip parens
   #
   defp call_args_to_algebra([], meta, _context, _parens, _list_to_keyword?, state) do
-    {args_doc, state} = args_to_algebra_with_comments([], meta, false, false, state, &{&1, &2})
+    {args_doc, _join, state} =
+      args_to_algebra_with_comments([], meta, false, :none, :break, state, &{&1, &2})
+
     {{surround("(", args_doc, ")"), state}, false}
   end
 
   defp call_args_to_algebra(args, meta, context, parens, list_to_keyword?, state) do
     {rest, last} = split_last(args)
 
-    if blocks = do_end_blocks(last) do
+    if blocks = do_end_blocks(meta, last, state) do
       {call_doc, state} =
-        if rest == [] do
-          {" do", state}
-        else
-          no_parens? = parens != :required
-          call_args_to_algebra_no_blocks(meta, rest, no_parens?, list_to_keyword?, " do", state)
+        case rest do
+          [] when parens == :required ->
+            {"() do", state}
+
+          [] ->
+            {" do", state}
+
+          _ ->
+            no_parens? = parens not in [:required, :skip_if_only_do_end]
+            call_args_to_algebra_no_blocks(meta, rest, no_parens?, list_to_keyword?, " do", state)
         end
 
       {blocks_doc, state} = do_end_blocks_to_algebra(blocks, state)
-      call_doc = call_doc |> concat(blocks_doc) |> line("end") |> force_break()
+      call_doc = call_doc |> concat(blocks_doc) |> line("end") |> force_unfit()
       {{call_doc, state}, context in [:no_parens_arg, :no_parens_one_arg]}
     else
       no_parens? =
@@ -1044,8 +1131,7 @@ defmodule Code.Formatter do
 
   defp call_args_to_algebra_no_blocks(meta, args, skip_parens?, list_to_keyword?, extra, state) do
     {left, right} = split_last(args)
-    generators_count = count_generators(args)
-    {keyword?, right} = last_arg_to_keyword(right, list_to_keyword?)
+    {keyword?, right} = last_arg_to_keyword(right, list_to_keyword?, skip_parens?, state.comments)
 
     context =
       if left == [] and not keyword? do
@@ -1054,96 +1140,129 @@ defmodule Code.Formatter do
         if skip_parens?, do: :no_parens_arg, else: :parens_arg
       end
 
-    if left != [] and keyword? and skip_parens? and generators_count == 0 do
-      call_args_to_algebra_with_no_parens_keywords(meta, left, right, context, extra, state)
-    else
-      next_break_fits? = next_break_fits?(right)
+    args = if keyword?, do: left ++ right, else: left ++ [right]
+    many_eol? = match?([_, _ | _], args) and eol?(meta, state)
+    no_generators? = no_generators?(args)
+    to_algebra_fun = &quoted_to_algebra(&1, context, &2)
 
-      force_keyword? = keyword? and force_keyword?(right)
-      non_empty_eol? = left != [] and not next_break_fits? and Keyword.get(meta, :eol, false)
-      force_break? = generators_count > 1 or force_keyword? or non_empty_eol?
-      args = if keyword?, do: left ++ right, else: left ++ [right]
+    {args_doc, next_break_fits?, state} =
+      if left != [] and keyword? and no_generators? do
+        join = if force_args?(left) or many_eol?, do: :line, else: :break
 
-      {args_doc, state} =
-        args_to_algebra_with_comments(
-          args,
-          meta,
-          next_break_fits?,
-          force_break?,
-          state,
-          &quoted_to_algebra(&1, context, &2)
-        )
+        {left_doc, _join, state} =
+          args_to_algebra_with_comments(
+            left,
+            Keyword.delete(meta, :closing),
+            skip_parens?,
+            :force_comma,
+            join,
+            state,
+            to_algebra_fun
+          )
 
-      doc =
-        if skip_parens? do
-          " "
-          |> concat(nest(args_doc, :cursor, :break))
-          |> concat(extra)
-          |> group()
-        else
-          glue("(", "", args_doc)
-          |> nest(2, :break)
-          |> glue("", ")")
-          |> concat(extra)
-          |> group()
-        end
+        join = if force_args?(right) or force_args?(args) or many_eol?, do: :line, else: :break
 
-      if next_break_fits? do
-        {next_break_fits(doc, :disabled), state}
+        {right_doc, _join, state} =
+          args_to_algebra_with_comments(right, meta, false, :none, join, state, to_algebra_fun)
+
+        right_doc = apply(Inspect.Algebra, join, []) |> concat(right_doc)
+
+        args_doc =
+          if skip_parens? do
+            left_doc
+            |> concat(next_break_fits(group(right_doc, :inherit), :enabled))
+            |> nest(:cursor, :break)
+          else
+            right_doc =
+              right_doc
+              |> nest(2, :break)
+              |> concat(break(""))
+              |> concat(")")
+              |> group(:inherit)
+              |> next_break_fits(:enabled)
+
+            concat(nest(left_doc, 2, :break), right_doc)
+          end
+
+        {args_doc, true, state}
       else
-        {doc, state}
+        join = if force_args?(args) or many_eol?, do: :line, else: :break
+        next_break_fits? = join == :break and next_break_fits?(right, state)
+        last_arg_mode = if next_break_fits?, do: :next_break_fits, else: :none
+
+        {args_doc, _join, state} =
+          args_to_algebra_with_comments(
+            args,
+            meta,
+            skip_parens?,
+            last_arg_mode,
+            join,
+            state,
+            to_algebra_fun
+          )
+
+        # If we have a single argument, then we won't have an option to break
+        # before the "extra" part, so we ungroup it and build it later.
+        args_doc = ungroup_if_group(args_doc)
+
+        args_doc =
+          if skip_parens? do
+            nest(args_doc, :cursor, :break)
+          else
+            nest(args_doc, 2, :break) |> concat(break("")) |> concat(")")
+          end
+
+        {args_doc, next_break_fits?, state}
       end
+
+    doc =
+      cond do
+        left != [] and keyword? and skip_parens? and no_generators? ->
+          " "
+          |> concat(args_doc)
+          |> nest(2)
+          |> concat(extra)
+          |> group()
+
+        skip_parens? ->
+          " "
+          |> concat(args_doc)
+          |> concat(extra)
+          |> group()
+
+        true ->
+          "("
+          |> concat(break(""))
+          |> nest(2, :break)
+          |> concat(args_doc)
+          |> concat(extra)
+          |> group()
+      end
+
+    if next_break_fits? do
+      {next_break_fits(doc, :disabled), state}
+    else
+      {doc, state}
     end
   end
 
-  defp call_args_to_algebra_with_no_parens_keywords(meta, left, right, context, extra, state) do
-    to_algebra_fun = &quoted_to_algebra(&1, context, &2)
-
-    {left_doc, state} =
-      args_to_algebra_with_comments(left, meta, false, false, state, to_algebra_fun)
-
-    {right_doc, state} =
-      args_to_algebra_with_comments(right, meta, false, false, state, to_algebra_fun)
-
-    right_doc = "," |> glue(right_doc) |> force_keyword(right) |> group(:inherit)
-
-    doc =
-      with_next_break_fits(true, right_doc, fn right_doc ->
-        args_doc = concat(left_doc, right_doc)
-
-        " "
-        |> concat(nest(args_doc, :cursor, :break))
-        |> nest(2)
-        |> concat(extra)
-        |> group()
-      end)
-
-    {doc, state}
+  defp no_generators?(args) do
+    not Enum.any?(args, &match?({:<-, _, [_, _]}, &1))
   end
 
-  defp skip_parens?(fun, meta, args, %{locals_without_parens: locals_without_parens}) do
-    length = length(args)
-
-    length > 0 and Keyword.get(meta, :no_parens, false) and
-      Enum.any?(locals_without_parens, fn {key, val} ->
-        key == fun and (val == :* or val == length)
-      end)
-  end
-
-  defp count_generators(args) do
-    Enum.count(args, &match?({:<-, _, [_, _]}, &1))
-  end
-
-  defp do_end_blocks([{{:__block__, meta, [:do]}, _} | _] = blocks) do
-    if meta[:format] == :block do
+  defp do_end_blocks(meta, [{{:__block__, _, [:do]}, _} | rest] = blocks, state) do
+    if meta?(meta, :do) or can_force_do_end_blocks?(rest, state) do
       blocks
       |> Enum.map(fn {{:__block__, meta, [key]}, value} -> {key, line(meta), value} end)
       |> do_end_blocks_with_range(end_line(meta))
     end
   end
 
-  defp do_end_blocks(_) do
-    nil
+  defp do_end_blocks(_, _, _), do: nil
+
+  defp can_force_do_end_blocks?(rest, state) do
+    state.force_do_end_blocks and
+      Enum.all?(rest, fn {{:__block__, _, [key]}, _} -> key in @do_end_keywords end)
   end
 
   defp do_end_blocks_with_range([{key1, line1, value1}, {_, line2, _} = h | t], end_line) do
@@ -1172,9 +1291,17 @@ defmodule Code.Formatter do
 
   ## Interpolation
 
+  defp list_interpolated?(entries) do
+    Enum.all?(entries, fn
+      {{:., _, [Kernel, :to_string]}, _, [_]} -> true
+      entry when is_binary(entry) -> true
+      _ -> false
+    end)
+  end
+
   defp interpolated?(entries) do
     Enum.all?(entries, fn
-      {:::, _, [{{:., _, [Kernel, :to_string]}, _, [_]}, {:binary, _, _}]} -> true
+      {:"::", _, [{{:., _, [Kernel, :to_string]}, _, [_]}, {:binary, _, _}]} -> true
       entry when is_binary(entry) -> true
       _ -> false
     end)
@@ -1188,15 +1315,31 @@ defmodule Code.Formatter do
     ["\n" | entries]
   end
 
-  defp interpolation_to_algebra([entry | entries], escape, state, acc, last) when is_binary(entry) do
+  defp list_interpolation_to_algebra([entry | entries], escape, state, acc, last)
+       when is_binary(entry) do
+    acc = concat(acc, escape_string(entry, escape))
+    list_interpolation_to_algebra(entries, escape, state, acc, last)
+  end
+
+  defp list_interpolation_to_algebra([entry | entries], escape, state, acc, last) do
+    {{:., _, [Kernel, :to_string]}, _meta, [quoted]} = entry
+    {doc, state} = interpolation_to_algebra(quoted, state)
+    list_interpolation_to_algebra(entries, escape, state, concat(acc, doc), last)
+  end
+
+  defp list_interpolation_to_algebra([], _escape, state, acc, last) do
+    {concat(acc, last), state}
+  end
+
+  defp interpolation_to_algebra([entry | entries], escape, state, acc, last)
+       when is_binary(entry) do
     acc = concat(acc, escape_string(entry, escape))
     interpolation_to_algebra(entries, escape, state, acc, last)
   end
 
   defp interpolation_to_algebra([entry | entries], escape, state, acc, last) do
-    {:::, _, [{{:., _, [Kernel, :to_string]}, meta, [quoted]}, {:binary, _, _}]} = entry
-    {doc, state} = block_to_algebra(quoted, line(meta), end_line(meta), state)
-    doc = surround("\#{", doc, "}")
+    {:"::", _, [{{:., _, [Kernel, :to_string]}, _meta, [quoted]}, {:binary, _, _}]} = entry
+    {doc, state} = interpolation_to_algebra(quoted, state)
     interpolation_to_algebra(entries, escape, state, concat(acc, doc), last)
   end
 
@@ -1204,66 +1347,108 @@ defmodule Code.Formatter do
     {concat(acc, last), state}
   end
 
+  defp interpolation_to_algebra(quoted, %{skip_eol: skip_eol} = state) do
+    {doc, state} = block_to_algebra(quoted, @max_line, @min_line, %{state | skip_eol: true})
+    {no_limit(surround("\#{", doc, "}")), %{state | skip_eol: skip_eol}}
+  end
+
   ## Sigils
 
   defp maybe_sigil_to_algebra(fun, meta, args, state) do
-    case {Atom.to_string(fun), args} do
-      {<<"sigil_", name>>, [{:<<>>, _, entries}, modifiers]} ->
-        opening_terminator = Keyword.fetch!(meta, :terminator)
-        doc = <<?~, name, opening_terminator::binary>>
+    with <<"sigil_", name>> <- Atom.to_string(fun),
+         [{:<<>>, _, entries}, modifiers] when is_list(modifiers) <- args,
+         opening_delimiter when not is_nil(opening_delimiter) <- meta[:delimiter] do
+      doc = <<?~, name, opening_delimiter::binary>>
 
-        if opening_terminator in [@double_heredoc, @single_heredoc] do
-          closing_terminator = concat(opening_terminator, List.to_string(modifiers))
+      entries =
+        case state.sigils do
+          %{^name => callback} ->
+            metadata = [
+              file: state.file,
+              line: meta[:line],
+              sigil: List.to_atom([name]),
+              modifiers: modifiers,
+              opening_delimiter: opening_delimiter
+            ]
 
-          {doc, state} =
+            case callback.(hd(entries), metadata) do
+              iodata when is_binary(iodata) or is_list(iodata) ->
+                [IO.iodata_to_binary(iodata)]
+
+              other ->
+                raise ArgumentError,
+                      "expected sigil callback to return iodata, got: #{inspect(other)}"
+            end
+
+          %{} ->
             entries
-            |> prepend_heredoc_line()
-            |> interpolation_to_algebra(:heredoc, state, doc, closing_terminator)
-
-          {force_break(doc), state}
-        else
-          escape = closing_sigil_terminator(opening_terminator)
-          closing_terminator = concat(escape, List.to_string(modifiers))
-          interpolation_to_algebra(entries, escape, state, doc, closing_terminator)
         end
 
+      if opening_delimiter in [@double_heredoc, @single_heredoc] do
+        closing_delimiter = concat(opening_delimiter, List.to_string(modifiers))
+
+        {doc, state} =
+          entries
+          |> prepend_heredoc_line()
+          |> interpolation_to_algebra(opening_delimiter, state, doc, closing_delimiter)
+
+        {force_unfit(doc), state}
+      else
+        escape = closing_sigil_delimiter(opening_delimiter)
+        closing_delimiter = concat(escape, List.to_string(modifiers))
+        interpolation_to_algebra(entries, escape, state, doc, closing_delimiter)
+      end
+    else
       _ ->
         :error
     end
   end
 
-  defp closing_sigil_terminator("("), do: ")"
-  defp closing_sigil_terminator("["), do: "]"
-  defp closing_sigil_terminator("{"), do: "}"
-  defp closing_sigil_terminator("<"), do: ">"
-  defp closing_sigil_terminator(other) when other in ["\"", "'", "|", "/"], do: other
+  defp closing_sigil_delimiter("("), do: ")"
+  defp closing_sigil_delimiter("["), do: "]"
+  defp closing_sigil_delimiter("{"), do: "}"
+  defp closing_sigil_delimiter("<"), do: ">"
+  defp closing_sigil_delimiter(other) when other in ["\"", "'", "|", "/"], do: other
 
   ## Bitstrings
 
   defp bitstring_to_algebra(meta, args, state) do
     last = length(args) - 1
+    join = if eol?(meta, state), do: :line, else: :flex_break
     to_algebra_fun = &bitstring_segment_to_algebra(&1, &2, last)
-    force_break? = Keyword.get(meta, :eol, false)
 
-    {args_doc, state} =
+    {args_doc, join, state} =
       args
       |> Enum.with_index()
-      |> args_to_algebra_with_comments(meta, false, force_break?, state, to_algebra_fun)
+      |> args_to_algebra_with_comments(meta, false, :none, join, state, to_algebra_fun)
 
-    {surround("<<", args_doc, ">>"), state}
+    if join == :flex_break do
+      {"<<" |> concat(args_doc) |> nest(2) |> concat(">>") |> group(), state}
+    else
+      {surround("<<", args_doc, ">>"), state}
+    end
   end
 
   defp bitstring_segment_to_algebra({{:<-, meta, [left, right]}, i}, state, last) do
-    left = {:special, :bitstring_segment, [left, last]}
+    left = {{:special, :bitstring_segment}, meta, [left, last]}
     {doc, state} = quoted_to_algebra({:<-, meta, [left, right]}, :parens_arg, state)
     {bitstring_wrap_parens(doc, i, last), state}
   end
 
-  defp bitstring_segment_to_algebra({{:::, _, [segment, spec]}, i}, state, last) do
+  defp bitstring_segment_to_algebra({{:"::", _, [segment, spec]}, i}, state, last) do
     {doc, state} = quoted_to_algebra(segment, :parens_arg, state)
-    {spec, state} = bitstring_spec_to_algebra(spec, state)
-    doc = concat(concat(doc, "::"), wrap_in_parens_if_inspected_atom(spec))
-    {bitstring_wrap_parens(doc, i, last), state}
+    {spec, state} = bitstring_spec_to_algebra(spec, state, state.normalize_bitstring_modifiers)
+
+    spec = wrap_in_parens_if_inspected_atom(spec)
+    spec = if i == last, do: bitstring_wrap_parens(spec, i, last), else: spec
+
+    doc =
+      doc
+      |> bitstring_wrap_parens(i, -1)
+      |> concat("::")
+      |> concat(spec)
+
+    {doc, state}
   end
 
   defp bitstring_segment_to_algebra({segment, i}, state, last) do
@@ -1271,168 +1456,202 @@ defmodule Code.Formatter do
     {bitstring_wrap_parens(doc, i, last), state}
   end
 
-  defp bitstring_spec_to_algebra({op, _, [left, right]}, state) when op in [:-, :*] do
-    {left, state} = bitstring_spec_to_algebra(left, state)
-    {right, state} = quoted_to_algebra_with_parens_if_operator(right, :parens_arg, state)
+  defp bitstring_spec_to_algebra({op, _, [left, right]}, state, normalize_modifiers)
+       when op in [:-, :*] do
+    normalize_modifiers = normalize_modifiers && op != :*
+    {left, state} = bitstring_spec_to_algebra(left, state, normalize_modifiers)
+    {right, state} = bitstring_spec_element_to_algebra(right, state, normalize_modifiers)
     {concat(concat(left, Atom.to_string(op)), right), state}
   end
 
-  defp bitstring_spec_to_algebra(spec, state) do
-    quoted_to_algebra_with_parens_if_operator(spec, :parens_arg, state)
+  defp bitstring_spec_to_algebra(spec, state, normalize_modifiers) do
+    bitstring_spec_element_to_algebra(spec, state, normalize_modifiers)
   end
 
-  defp bitstring_wrap_parens(doc, i, last) do
-    if i == 0 or i == last do
-      string = format_to_string(doc)
+  defp bitstring_spec_element_to_algebra(
+         {atom, meta, empty_args},
+         state,
+         _normalize_modifiers = true
+       )
+       when is_atom(atom) and empty_args in [nil, []] do
+    empty_args = bitstring_spec_normalize_empty_args(atom)
+    quoted_to_algebra_with_parens_if_operator({atom, meta, empty_args}, :parens_arg, state)
+  end
 
-      if (i == 0 and String.starts_with?(string, "<<")) or
-           (i == last and String.ends_with?(string, ">>")) do
-        wrap_in_parens(doc)
-      else
-        doc
-      end
+  defp bitstring_spec_element_to_algebra(spec_element, state, _normalize_modifiers) do
+    quoted_to_algebra_with_parens_if_operator(spec_element, :parens_arg, state)
+  end
+
+  defp bitstring_spec_normalize_empty_args(atom) when atom in @bitstring_modifiers, do: nil
+  defp bitstring_spec_normalize_empty_args(_atom), do: []
+
+  defp bitstring_wrap_parens(doc, i, last) when i == 0 or i == last do
+    string = format_to_string(doc)
+
+    if (i == 0 and String.starts_with?(string, ["~", "<<"])) or
+         (i == last and String.ends_with?(string, [">>"])) do
+      wrap_in_parens(doc)
     else
       doc
     end
   end
 
+  defp bitstring_wrap_parens(doc, _, _), do: doc
+
   ## Literals
 
   defp list_to_algebra(meta, args, state) do
-    to_algebra_fun = &quoted_to_algebra(&1, :parens_arg, &2)
-    force_break? = Keyword.get(meta, :eol, false)
+    join = if eol?(meta, state), do: :line, else: :break
+    fun = &quoted_to_algebra(&1, :parens_arg, &2)
 
-    {args_doc, state} =
-      args_to_algebra_with_comments(args, meta, false, force_break?, state, to_algebra_fun)
+    {args_doc, _join, state} =
+      args_to_algebra_with_comments(args, meta, false, :none, join, state, fun)
 
-    {surround("[", args_doc, "]"), state}
+    left_bracket = color("[", :list, state.inspect_opts)
+    right_bracket = color("]", :list, state.inspect_opts)
+
+    {surround(left_bracket, args_doc, right_bracket), state}
   end
 
   defp map_to_algebra(meta, name_doc, [{:|, _, [left, right]}], state) do
-    to_algebra_fun = &quoted_to_algebra(&1, :parens_arg, &2)
-    force_break? = Keyword.get(meta, :eol, false)
+    join = if eol?(meta, state), do: :line, else: :break
+    fun = &quoted_to_algebra(&1, :parens_arg, &2)
+    {left_doc, state} = fun.(left, state)
 
-    {left_doc, state} = to_algebra_fun.(left, state)
-
-    {right_doc, state} =
-      args_to_algebra_with_comments(right, meta, false, force_break?, state, to_algebra_fun)
+    {right_doc, _join, state} =
+      args_to_algebra_with_comments(right, meta, false, :none, join, state, fun)
 
     args_doc =
       left_doc
       |> wrap_in_parens_if_binary_operator(left)
       |> glue(concat("| ", nest(right_doc, 2)))
 
-    name_doc = "%" |> concat(name_doc) |> concat("{")
-    {surround(name_doc, args_doc, "}"), state}
+    do_map_to_algebra(name_doc, args_doc, state)
   end
 
   defp map_to_algebra(meta, name_doc, args, state) do
-    force_break? = Keyword.get(meta, :eol, false)
-    to_algebra_fun = &quoted_to_algebra(&1, :parens_arg, &2)
+    join = if eol?(meta, state), do: :line, else: :break
+    fun = &quoted_to_algebra(&1, :parens_arg, &2)
 
-    {args_doc, state} =
-      args_to_algebra_with_comments(args, meta, false, force_break?, state, to_algebra_fun)
+    {args_doc, _join, state} =
+      args_to_algebra_with_comments(args, meta, false, :none, join, state, fun)
 
-    name_doc = "%" |> concat(name_doc) |> concat("{")
-    {surround(name_doc, args_doc, "}"), state}
+    do_map_to_algebra(name_doc, args_doc, state)
   end
 
-  defp tuple_to_algebra(meta, args, state) do
-    force_break? = Keyword.get(meta, :eol, false)
-    to_algebra_fun = &quoted_to_algebra(&1, :parens_arg, &2)
+  defp do_map_to_algebra(name_doc, args_doc, state) do
+    name_doc = "%" |> concat(name_doc) |> concat("{") |> color(:map, state.inspect_opts)
+    {surround(name_doc, args_doc, color("}", :map, state.inspect_opts)), state}
+  end
 
-    next_break_fits? =
-      args != [] and next_break_fits?(Enum.fetch!(args, -1)) and
-        not Keyword.get(meta, :eol, false)
+  defp tuple_to_algebra(meta, args, join, state) do
+    join = if eol?(meta, state), do: :line, else: join
+    fun = &quoted_to_algebra(&1, :parens_arg, &2)
 
-    {args_doc, state} =
-      args_to_algebra_with_comments(
-        args,
-        meta,
-        next_break_fits?,
-        force_break?,
-        state,
-        to_algebra_fun
-      )
+    {args_doc, join, state} =
+      args_to_algebra_with_comments(args, meta, false, :none, join, state, fun)
 
-    doc = surround("{", args_doc, "}")
+    left_bracket = color("{", :tuple, state.inspect_opts)
+    right_bracket = color("}", :tuple, state.inspect_opts)
 
-    if next_break_fits? do
-      {next_break_fits(doc, :disabled), state}
+    if join == :flex_break do
+      {left_bracket |> concat(args_doc) |> nest(1) |> concat(right_bracket) |> group(), state}
     else
-      {doc, state}
+      {surround(left_bracket, args_doc, right_bracket), state}
     end
   end
 
-  defp atom_to_algebra(atom) when atom in [nil, true, false] do
-    Atom.to_string(atom)
+  defp atom_to_algebra(atom, _, inspect_opts) when atom in [true, false] do
+    Atom.to_string(atom) |> color(:boolean, inspect_opts)
   end
 
-  defp atom_to_algebra(atom) do
+  defp atom_to_algebra(nil, _, inspect_opts) do
+    Atom.to_string(nil) |> color(nil, inspect_opts)
+  end
+
+  # TODO: Remove this clause in v1.16 when we no longer quote operator :..//
+  defp atom_to_algebra(:"..//", _, inspect_opts) do
+    string(":\"..//\"") |> color(:atom, inspect_opts)
+  end
+
+  defp atom_to_algebra(:\\, meta, inspect_opts) do
+    # Since we parse strings without unescaping, the atoms
+    # :\\ and :"\\" have the same representation, so we need
+    # to check the delimiter and handle them accordingly.
+    string =
+      case Keyword.get(meta, :delimiter) do
+        "\"" -> ":\"\\\\\""
+        _ -> ":\\\\"
+      end
+
+    string(string) |> color(:atom, inspect_opts)
+  end
+
+  defp atom_to_algebra(atom, _, inspect_opts) do
     string = Atom.to_string(atom)
 
     iodata =
-      case Code.Identifier.classify(atom) do
-        type when type in [:callable_local, :callable_operator, :not_callable] ->
-          [?:, string]
-
-        _ ->
-          [?:, ?", String.replace(string, "\"", "\\\""), ?"]
+      if Macro.classify_atom(atom) in [:unquoted, :identifier] do
+        [?:, string]
+      else
+        [?:, ?", String.replace(string, "\"", "\\\""), ?"]
       end
 
-    iodata |> IO.iodata_to_binary() |> string()
+    iodata |> IO.iodata_to_binary() |> string() |> color(:atom, inspect_opts)
   end
 
-  defp integer_to_algebra(text) do
+  defp integer_to_algebra(text, inspect_otps) do
     case text do
-      [?0, ?x | rest] ->
-        "0x" <> String.upcase(List.to_string(rest))
+      <<?0, ?x, rest::binary>> ->
+        "0x" <> String.upcase(rest)
 
-      [?0, base | _rest] = digits when base in [?b, ?o] ->
-        List.to_string(digits)
+      <<?0, base, _::binary>> = digits when base in [?b, ?o] ->
+        digits
 
-      [?? | _rest] = char ->
-        List.to_string(char)
+      <<??, _::binary>> = char ->
+        char
 
       decimal ->
-        List.to_string(insert_underscores(decimal))
+        insert_underscores(decimal)
     end
+    |> color(:number, inspect_otps)
   end
 
-  defp float_to_algebra(text) do
-    {int_part, [?. | decimal_part]} = Enum.split_while(text, &(&1 != ?.))
+  defp float_to_algebra(text, inspect_otps) do
+    [int_part, decimal_part] = :binary.split(text, ".")
+    decimal_part = String.downcase(decimal_part)
 
-    decimal_part =
-      decimal_part
-      |> List.to_string()
-      |> String.downcase()
-
-    List.to_string(insert_underscores(int_part)) <> "." <> decimal_part
+    string = insert_underscores(int_part) <> "." <> decimal_part
+    color(string, :number, inspect_otps)
   end
 
   defp insert_underscores(digits) do
     cond do
-      ?_ in digits ->
+      digits =~ "_" ->
         digits
 
-      length(digits) >= 6 ->
+      byte_size(digits) >= 6 ->
         digits
+        |> String.to_charlist()
         |> Enum.reverse()
         |> Enum.chunk_every(3)
-        |> Enum.intersperse('_')
+        |> Enum.intersperse(~c"_")
         |> List.flatten()
         |> Enum.reverse()
+        |> List.to_string()
 
       true ->
         digits
     end
   end
 
-  defp escape_heredoc(string) do
+  defp escape_heredoc(string, escape) do
+    string = String.replace(string, escape, "\\" <> escape)
     heredoc_to_algebra(["" | String.split(string, "\n")])
   end
 
-  defp escape_string(string, :heredoc) do
+  defp escape_string(string, <<_, _, _>> = escape) do
+    string = String.replace(string, escape, "\\" <> escape)
     heredoc_to_algebra(String.split(string, "\n"))
   end
 
@@ -1465,51 +1684,76 @@ defmodule Code.Formatter do
   defp heredoc_line(["", _ | _]), do: nest(line(), :reset)
   defp heredoc_line(_), do: line()
 
-  defp args_to_algebra_with_comments(args, meta, next_break_fits?, force_break?, state, fun) do
+  defp args_to_algebra_with_comments(args, meta, skip_parens?, last_arg_mode, join, state, fun) do
     min_line = line(meta)
-    max_line = end_line(meta)
+    max_line = closing_line(meta)
 
-    arg_to_algebra = fn arg, args, newlines, state ->
+    arg_to_algebra = fn arg, args, state ->
       {doc, state} = fun.(arg, state)
 
       doc =
-        cond do
-          args != [] -> concat(doc, ",")
-          next_break_fits? -> next_break_fits(doc, :enabled)
-          true -> doc
+        case args do
+          [_ | _] -> concat_to_last_group(doc, ",")
+          [] when last_arg_mode == :force_comma -> concat_to_last_group(doc, ",")
+          [] when last_arg_mode == :next_break_fits -> next_break_fits(doc, :enabled)
+          [] when last_arg_mode == :none -> doc
         end
 
-      {doc, @empty, newlines, state}
+      {{doc, @empty, 1}, state}
     end
 
-    {args_docs, comments?, new_state} =
-      quoted_to_algebra_with_comments(args, min_line, max_line, 1, state, arg_to_algebra)
+    # If skipping parens, we cannot extract the comments of the first
+    # argument as there is no place to move them to, so we handle it now.
+    {args, acc, state} =
+      case args do
+        [head | tail] when skip_parens? ->
+          {doc_triplet, state} = arg_to_algebra.(head, tail, state)
+          {tail, [doc_triplet], state}
+
+        _ ->
+          {args, [], state}
+      end
+
+    {args_docs, comments?, state} =
+      quoted_to_algebra_with_comments(args, acc, min_line, max_line, state, arg_to_algebra)
 
     cond do
       args_docs == [] ->
-        {@empty, new_state}
+        {@empty, :empty, state}
 
-      force_break? or comments? ->
-        {args_docs |> Enum.reduce(&line(&2, &1)) |> force_break(), new_state}
+      join == :line or comments? ->
+        {args_docs |> Enum.reduce(&line(&2, &1)) |> force_unfit(), :line, state}
 
-      true ->
-        {args_docs |> Enum.reduce(&glue(&2, &1)), new_state}
+      join == :break ->
+        {args_docs |> Enum.reduce(&glue(&2, &1)), :break, state}
+
+      join == :flex_break ->
+        {args_docs |> Enum.reduce(&flex_glue(&2, &1)), :flex_break, state}
     end
   end
 
   ## Anonymous functions
 
   # fn -> block end
-  defp anon_fun_to_algebra([{:->, meta, [[], body]}] = clauses, _min_line, max_line, state) do
+  defp anon_fun_to_algebra(
+         [{:->, meta, [[], body]}] = clauses,
+         _min_line,
+         max_line,
+         state,
+         _multi_clauses_style
+       ) do
     min_line = line(meta)
     {body_doc, state} = block_to_algebra(body, min_line, max_line, state)
+    break_or_line = clause_break_or_line(clauses, state)
 
     doc =
       "fn ->"
-      |> glue(body_doc)
+      |> concat(break_or_line)
+      |> concat(body_doc)
       |> nest(2)
-      |> glue("end")
-      |> maybe_force_clauses(clauses)
+      |> concat(break_or_line)
+      |> concat("end")
+      |> maybe_force_clauses(clauses, state)
       |> group()
 
     {doc, state}
@@ -1519,19 +1763,35 @@ defmodule Code.Formatter do
   # fn x ->
   #   y
   # end
-  defp anon_fun_to_algebra([{:->, meta, [args, body]}] = clauses, _min_line, max_line, state) do
+  defp anon_fun_to_algebra(
+         [{:->, meta, [args, body]}] = clauses,
+         _min_line,
+         max_line,
+         state,
+         false = _multi_clauses_style
+       ) do
     min_line = line(meta)
     {args_doc, state} = clause_args_to_algebra(args, min_line, state)
     {body_doc, state} = block_to_algebra(body, min_line, max_line, state)
 
+    head =
+      args_doc
+      |> ungroup_if_group()
+      |> concat(" ->")
+      |> nest(:cursor)
+      |> group()
+
+    break_or_line = clause_break_or_line(clauses, state)
+
     doc =
       "fn "
-      |> concat(group(nest(args_doc, :cursor)))
-      |> concat(" ->")
-      |> glue(body_doc)
+      |> concat(head)
+      |> concat(break_or_line)
+      |> concat(body_doc)
       |> nest(2)
-      |> glue("end")
-      |> maybe_force_clauses(clauses)
+      |> concat(break_or_line)
+      |> concat("end")
+      |> maybe_force_clauses(clauses, state)
       |> group()
 
     {doc, state}
@@ -1543,23 +1803,23 @@ defmodule Code.Formatter do
   #   args2 ->
   #     block2
   # end
-  defp anon_fun_to_algebra(clauses, min_line, max_line, state) do
+  defp anon_fun_to_algebra(clauses, min_line, max_line, state, _multi_clauses_style) do
     {clauses_doc, state} = clauses_to_algebra(clauses, min_line, max_line, state)
-    {"fn" |> line(clauses_doc) |> nest(2) |> line("end") |> force_break(), state}
+    {"fn" |> line(clauses_doc) |> nest(2) |> line("end") |> force_unfit(), state}
   end
 
   ## Type functions
 
-  # (() -> block)
-  defp type_fun_to_algebra([{:->, meta, [[], body]}] = clauses, _min_line, max_line, state) do
+  # (-> block)
+  defp paren_fun_to_algebra([{:->, meta, [[], body]}] = clauses, _min_line, max_line, state) do
     min_line = line(meta)
     {body_doc, state} = block_to_algebra(body, min_line, max_line, state)
 
     doc =
-      "(() -> "
+      "(-> "
       |> concat(nest(body_doc, :cursor))
       |> concat(")")
-      |> maybe_force_clauses(clauses)
+      |> maybe_force_clauses(clauses, state)
       |> group()
 
     {doc, state}
@@ -1568,22 +1828,20 @@ defmodule Code.Formatter do
   # (x -> y)
   # (x ->
   #    y)
-  defp type_fun_to_algebra([{:->, meta, [args, body]}] = clauses, _min_line, max_line, state) do
+  defp paren_fun_to_algebra([{:->, meta, [args, body]}] = clauses, _min_line, max_line, state) do
     min_line = line(meta)
     {args_doc, state} = clause_args_to_algebra(args, min_line, state)
     {body_doc, state} = block_to_algebra(body, min_line, max_line, state)
-
-    clause_doc =
-      " ->"
-      |> glue(body_doc)
-      |> nest(2)
+    break_or_line = clause_break_or_line(clauses, state)
 
     doc =
       args_doc
+      |> ungroup_if_group()
+      |> concat(" ->")
       |> group()
-      |> concat(clause_doc)
+      |> concat(break_or_line |> concat(body_doc) |> nest(2))
       |> wrap_in_parens()
-      |> maybe_force_clauses(clauses)
+      |> maybe_force_clauses(clauses, state)
       |> group()
 
     {doc, state}
@@ -1595,19 +1853,28 @@ defmodule Code.Formatter do
   #   args2 ->
   #     block2
   # )
-  defp type_fun_to_algebra(clauses, min_line, max_line, state) do
+  defp paren_fun_to_algebra(clauses, min_line, max_line, state) do
     {clauses_doc, state} = clauses_to_algebra(clauses, min_line, max_line, state)
-    {"(" |> line(clauses_doc) |> nest(2) |> line(")") |> force_break(), state}
+    {"(" |> line(clauses_doc) |> nest(2) |> line(")") |> force_unfit(), state}
   end
 
   ## Clauses
 
-  defp maybe_force_clauses(doc, clauses) do
-    if Enum.any?(clauses, fn {:->, meta, _} -> Keyword.get(meta, :eol, false) end) do
-      force_break(doc)
-    else
-      doc
-    end
+  defp multi_line_clauses?(clauses, state) do
+    Enum.any?(clauses, fn {:->, meta, [_, block]} ->
+      eol?(meta, state) or multi_line_block?(block)
+    end)
+  end
+
+  defp multi_line_block?({:__block__, _, [_, _ | _]}), do: true
+  defp multi_line_block?(_), do: false
+
+  defp clause_break_or_line(clauses, state) do
+    if multi_line_clauses?(clauses, state), do: line(), else: break()
+  end
+
+  defp maybe_force_clauses(doc, clauses, state) do
+    if multi_line_clauses?(clauses, state), do: force_unfit(doc), else: doc
   end
 
   defp clauses_to_algebra([{:->, _, _} | _] = clauses, min_line, max_line, state) do
@@ -1626,7 +1893,7 @@ defmodule Code.Formatter do
         {doc_acc, state_acc}
       end)
 
-    {clauses_doc |> maybe_force_clauses([clause | clauses]) |> group(), state}
+    {clauses_doc |> maybe_force_clauses([clause | clauses], state) |> group(), state}
   end
 
   defp clauses_to_algebra(other, min_line, max_line, state) do
@@ -1637,7 +1904,7 @@ defmodule Code.Formatter do
   end
 
   defp clause_to_algebra({:->, meta, [[], body]}, _min_line, state) do
-    {body_doc, state} = block_to_algebra(body, line(meta), end_line(meta), state)
+    {body_doc, state} = block_to_algebra(body, line(meta), closing_line(meta), state)
     {"() ->" |> glue(body_doc) |> nest(2), state}
   end
 
@@ -1648,12 +1915,20 @@ defmodule Code.Formatter do
     {args_doc, state} = clause_args_to_algebra(args, min_line, state)
 
     state = %{state | operand_nesting: nesting}
-    {body_doc, state} = block_to_algebra(body, min_line, end_line(meta), state)
-    {concat(args_doc, " ->" |> glue(body_doc) |> nest(2)), state}
+    {body_doc, state} = block_to_algebra(body, min_line, closing_line(meta), state)
+
+    doc =
+      args_doc
+      |> ungroup_if_group()
+      |> concat(" ->")
+      |> group()
+      |> concat(break() |> concat(body_doc) |> nest(2))
+
+    {doc, state}
   end
 
   defp add_max_line_to_last_clause([{op, meta, args}], max_line) do
-    [{op, [end_line: max_line] ++ meta, args}]
+    [{op, [closing: [line: max_line]] ++ meta, args}]
   end
 
   defp add_max_line_to_last_clause([clause | clauses], max_line) do
@@ -1661,14 +1936,25 @@ defmodule Code.Formatter do
   end
 
   defp clause_args_to_algebra(args, min_line, state) do
-    meta = [line: min_line]
-    args_to_algebra_with_comments([args], meta, false, false, state, &clause_args_to_algebra/2)
+    arg_to_algebra = fn arg, _args, state ->
+      {doc, state} = clause_args_to_algebra(arg, state)
+      {{doc, @empty, 1}, state}
+    end
+
+    {args_docs, comments?, state} =
+      quoted_to_algebra_with_comments([args], [], min_line, @min_line, state, arg_to_algebra)
+
+    if comments? do
+      {Enum.reduce(args_docs, &line(&2, &1)), state}
+    else
+      {Enum.reduce(args_docs, &glue(&2, &1)), state}
+    end
   end
 
   # fn a, b, c when d -> e end
   defp clause_args_to_algebra([{:when, meta, args}], state) do
     {args, right} = split_last(args)
-    left = {:special, :clause_args, [args]}
+    left = {{:special, :clause_args}, meta, [args]}
     binary_op_to_algebra(:when, "when", meta, left, right, :no_parens_arg, state)
   end
 
@@ -1684,64 +1970,80 @@ defmodule Code.Formatter do
 
   ## Quoted helpers for comments
 
-  defp quoted_to_algebra_with_comments(args, min_line, max_line, newlines, state, fun) do
+  defp quoted_to_algebra_with_comments(args, acc, min_line, max_line, state, fun) do
     {pre_comments, state} =
       get_and_update_in(state.comments, fn comments ->
-        Enum.split_while(comments, fn {line, _, _} -> line <= min_line end)
+        Enum.split_while(comments, fn %{line: line} -> line <= min_line end)
       end)
 
     {docs, comments?, state} =
-      each_quoted_to_algebra_with_comments(args, [], max_line, newlines, state, false, fun)
+      each_quoted_to_algebra_with_comments(args, acc, max_line, state, false, fun)
 
     {docs, comments?, update_in(state.comments, &(pre_comments ++ &1))}
   end
 
-  defp each_quoted_to_algebra_with_comments([], acc, max_line, _newlines, state, comments?, _fun) do
-    %{comments: comments} = state
-    {current, comments} = Enum.split_with(comments, fn {line, _, _} -> line < max_line end)
-
-    extra = for {_, {previous, _}, doc} <- current, do: {doc, @empty, previous}
-    args_docs = merge_algebra_with_comments(Enum.reverse(acc, extra), @empty)
-    {args_docs, comments? or extra != [], %{state | comments: comments}}
+  defp each_quoted_to_algebra_with_comments([], acc, max_line, state, comments?, _fun) do
+    {acc, comments, comments?} = extract_comments_before(max_line, acc, state.comments, comments?)
+    args_docs = merge_algebra_with_comments(Enum.reverse(acc), @empty)
+    {args_docs, comments?, %{state | comments: comments}}
   end
 
-  defp each_quoted_to_algebra_with_comments(args, acc, max_line, newlines, state, comments?, fun) do
-    [arg | args] = args
-    {doc_start, doc_end} = traverse_line(arg, {@max_line, @min_line})
+  defp each_quoted_to_algebra_with_comments([arg | args], acc, max_line, state, comments?, fun) do
+    case traverse_line(arg, {@max_line, @min_line}) do
+      {@max_line, @min_line} ->
+        {doc_triplet, state} = fun.(arg, args, state)
+        acc = [doc_triplet | acc]
+        each_quoted_to_algebra_with_comments(args, acc, max_line, state, comments?, fun)
 
-    {doc_newlines, acc, comments, comments?} =
-      extract_comments_before(doc_start, newlines, acc, state.comments, comments?)
+      {doc_start, doc_end} ->
+        {acc, comments, comments?} =
+          extract_comments_before(doc_start, acc, state.comments, comments?)
 
-    {doc, next_line, doc_newlines, state} =
-      fun.(arg, args, doc_newlines, %{state | comments: comments})
+        {doc_triplet, state} = fun.(arg, args, %{state | comments: comments})
 
-    {doc_newlines, acc, comments, comments?} =
-      extract_comments_trailing(doc_start, doc_end, doc_newlines, acc, state.comments, comments?)
+        {acc, comments, comments?} =
+          extract_comments_trailing(doc_start, doc_end, acc, state.comments, comments?)
 
-    acc = [{doc, next_line, doc_newlines} | acc]
-    state = %{state | comments: comments}
-    each_quoted_to_algebra_with_comments(args, acc, max_line, newlines, state, comments?, fun)
+        acc = [adjust_trailing_newlines(doc_triplet, doc_end, comments) | acc]
+        state = %{state | comments: comments}
+        each_quoted_to_algebra_with_comments(args, acc, max_line, state, comments?, fun)
+    end
   end
 
-  defp extract_comments_before(max, _, acc, [{line, _, _} = comment | rest], _) when line < max do
-    {_, {previous, next}, doc} = comment
-    acc = [{doc, @empty, previous} | acc]
-    extract_comments_before(max, next, acc, rest, true)
+  defp extract_comments_before(max, acc, [%{line: line} = comment | rest], _) when line < max do
+    %{previous_eol_count: previous, next_eol_count: next, text: doc} = comment
+    acc = [{doc, @empty, next} | add_previous_to_acc(acc, previous)]
+    extract_comments_before(max, acc, rest, true)
   end
 
-  defp extract_comments_before(_max, newlines, acc, rest, comments?) do
-    {newlines, acc, rest, comments?}
+  defp extract_comments_before(_max, acc, rest, comments?) do
+    {acc, rest, comments?}
   end
 
-  defp extract_comments_trailing(min, max, newlines, acc, [{line, _, doc_comment} | rest], _)
+  defp add_previous_to_acc([{doc, next_line, newlines} | acc], previous) when newlines < previous,
+    do: [{doc, next_line, previous} | acc]
+
+  defp add_previous_to_acc(acc, _previous),
+    do: acc
+
+  defp extract_comments_trailing(min, max, acc, [%{line: line, text: doc_comment} | rest], _)
        when line >= min and line <= max do
-    acc = [{doc_comment, @empty, newlines} | acc]
-    extract_comments_trailing(min, max, 1, acc, rest, true)
+    acc = [{doc_comment, @empty, 1} | acc]
+    extract_comments_trailing(min, max, acc, rest, true)
   end
 
-  defp extract_comments_trailing(_min, _max, newlines, acc, rest, comments?) do
-    {newlines, acc, rest, comments?}
+  defp extract_comments_trailing(_min, _max, acc, rest, comments?) do
+    {acc, rest, comments?}
   end
+
+  # If the document is immediately followed by comment which is followed by newlines,
+  # its newlines wouldn't have considered the comment, so we need to adjust it.
+  defp adjust_trailing_newlines({doc, next_line, newlines}, doc_end, [%{line: line} | _])
+       when newlines > 1 and line == doc_end + 1 do
+    {doc, next_line, 1}
+  end
+
+  defp adjust_trailing_newlines(doc_triplet, _, _), do: doc_triplet
 
   defp traverse_line({expr, meta, args}, {min, max}) do
     acc =
@@ -1772,8 +2074,8 @@ defmodule Code.Formatter do
   #      (except for module attributes)
   #   3. empty lines are collapsed as to not exceed more than one
   #
-  defp merge_algebra_with_comments([{doc, next_line, _newlines} | docs], left) do
-    right = next_line_separator(docs, next_line)
+  defp merge_algebra_with_comments([{doc, next_line, newlines} | docs], left) do
+    right = if newlines >= @newlines, do: line(), else: next_line
 
     doc =
       if left != @empty do
@@ -1798,6 +2100,9 @@ defmodule Code.Formatter do
 
   ## Quoted helpers
 
+  defp left_op_context(context), do: force_many_args_or_operand(context, :parens_arg)
+  defp right_op_context(context), do: force_many_args_or_operand(context, :operand)
+
   defp force_many_args_or_operand(:no_parens_one_arg, _choice), do: :no_parens_arg
   defp force_many_args_or_operand(:parens_one_arg, _choice), do: :parens_arg
   defp force_many_args_or_operand(:no_parens_arg, _choice), do: :no_parens_arg
@@ -1810,8 +2115,6 @@ defmodule Code.Formatter do
     {wrap_in_parens_if_operator(doc, ast), state}
   end
 
-  # TODO: We can remove this workaround once we remove
-  # ?rearrange_uop from the parser in Elixir v2.0.
   defp wrap_in_parens_if_operator(doc, {:__block__, _, [expr]}) do
     wrap_in_parens_if_operator(doc, expr)
   end
@@ -1851,17 +2154,9 @@ defmodule Code.Formatter do
     end)
   end
 
-  defp next_line_separator([{_doc, _next_line, newlines} | _], next_line) do
-    if newlines >= @newlines, do: line(), else: next_line
-  end
-
-  defp next_line_separator([], _) do
-    line()
-  end
-
   defp module_attribute_read?({:@, _, [{var, _, var_context}]})
        when is_atom(var) and is_atom(var_context) do
-    Code.Identifier.classify(var) == :callable_local
+    Macro.classify_atom(var) == :identifier
   end
 
   defp module_attribute_read?(_), do: false
@@ -1875,21 +2170,16 @@ defmodule Code.Formatter do
 
   defp binary_operator?(quoted) do
     case quoted do
-      {op, _, [_, _]} when is_atom(op) ->
-        Code.Identifier.binary_op(op) != :error
-
-      _ ->
-        false
+      {op, _, [_, _, _]} when op in @multi_binary_operators -> true
+      {op, _, [_, _]} when is_atom(op) -> Code.Identifier.binary_op(op) != :error
+      _ -> false
     end
   end
 
   defp unary_operator?(quoted) do
     case quoted do
-      {op, _, [_]} when is_atom(op) ->
-        Code.Identifier.unary_op(op) != :error
-
-      _ ->
-        false
+      {op, _, [_]} when is_atom(op) -> Code.Identifier.unary_op(op) != :error
+      _ -> false
     end
   end
 
@@ -1904,106 +2194,178 @@ defmodule Code.Formatter do
     end
   end
 
-  defp next_break_fits?({:<<>>, meta, [_ | _] = entries}) do
-    meta[:format] == :bin_heredoc or not interpolated?(entries)
+  defp next_break_fits?({:{}, meta, _args}, state) do
+    eol_or_comments?(meta, state)
   end
 
-  defp next_break_fits?({{:., _, [String, :to_charlist]}, _, [{:<<>>, meta, [_ | _]}]}) do
-    meta[:format] == :list_heredoc
+  defp next_break_fits?({:__block__, meta, [{_, _}]}, state) do
+    eol_or_comments?(meta, state)
   end
 
-  defp next_break_fits?({{:., _, [_left, :{}]}, _, _}) do
+  defp next_break_fits?({:<<>>, meta, [_ | _] = entries}, state) do
+    meta[:delimiter] == ~s["""] or
+      (not interpolated?(entries) and eol_or_comments?(meta, state))
+  end
+
+  defp next_break_fits?({{:., _, [List, :to_charlist]}, meta, [[_ | _]]}, _state) do
+    meta[:delimiter] == ~s[''']
+  end
+
+  defp next_break_fits?({{:., _, [_left, :{}]}, _, _}, _state) do
     true
   end
 
-  defp next_break_fits?({:__block__, meta, [string]}) when is_binary(string) do
-    meta[:format] == :bin_heredoc
+  defp next_break_fits?({:__block__, meta, [string]}, _state) when is_binary(string) do
+    meta[:delimiter] == ~s["""]
   end
 
-  defp next_break_fits?({:__block__, meta, [list]}) when is_list(list) do
-    meta[:format] != :charlist
+  defp next_break_fits?({:__block__, meta, [list]}, _state) when is_list(list) do
+    meta[:delimiter] != ~s[']
   end
 
-  defp next_break_fits?({form, _, [_ | _]}) when form in [:fn, :%{}, :%] do
+  defp next_break_fits?({form, _, [_ | _]}, _state) when form in [:fn, :%{}, :%] do
     true
   end
 
-  defp next_break_fits?({fun, meta, args}) when is_atom(fun) and is_list(args) do
-    meta[:terminator] in [@double_heredoc, @single_heredoc] and
+  defp next_break_fits?({fun, meta, args}, _state) when is_atom(fun) and is_list(args) do
+    meta[:delimiter] in [@double_heredoc, @single_heredoc] and
       fun |> Atom.to_string() |> String.starts_with?("sigil_")
   end
 
-  defp next_break_fits?({{:__block__, _, [atom]}, expr}) when is_atom(atom) do
-    next_break_fits?(expr)
+  defp next_break_fits?({{:__block__, _, [atom]}, expr}, state) when is_atom(atom) do
+    next_break_fits?(expr, state)
   end
 
-  defp next_break_fits?(_) do
+  defp next_break_fits?(_, _state) do
     false
   end
 
-  defp last_arg_to_keyword([_ | _] = arg, _list_to_keyword?) do
+  defp eol_or_comments?(meta, %{comments: comments} = state) do
+    eol?(meta, state) or
+      (
+        min_line = line(meta)
+        max_line = closing_line(meta)
+        Enum.any?(comments, fn %{line: line} -> line > min_line and line < max_line end)
+      )
+  end
+
+  # A literal list is a keyword or (... -> ...)
+  defp last_arg_to_keyword([_ | _] = arg, _list_to_keyword?, _skip_parens?, _comments) do
     {keyword?(arg), arg}
   end
 
-  defp last_arg_to_keyword({:__block__, _, [[_ | _] = arg]} = block, true) do
-    if keyword?(arg), do: {true, arg}, else: {false, block}
-  end
+  # This is a list of tuples, it can be converted to keywords.
+  defp last_arg_to_keyword(
+         {:__block__, meta, [[_ | _] = arg]} = block,
+         true,
+         skip_parens?,
+         comments
+       ) do
+    cond do
+      not keyword?(arg) ->
+        {false, block}
 
-  defp last_arg_to_keyword(arg, _list_to_keyword?) do
-    {false, arg}
-  end
+      skip_parens? ->
+        block_line = line(meta)
+        {{_, arg_meta, _}, _} = hd(arg)
+        first_line = line(arg_meta)
 
-  defp force_keyword?(keyword) do
-    match?([_, _ | _], keyword) and force_keyword?(keyword, MapSet.new())
-  end
+        case Enum.drop_while(comments, fn %{line: line} -> line <= block_line end) do
+          [%{line: line} | _] when line <= first_line ->
+            {false, block}
 
-  defp force_keyword?([{{_, meta, _}, _} | keyword], lines) do
-    line = line(meta)
+          _ ->
+            {true, arg}
+        end
 
-    if line in lines do
-      false
-    else
-      force_keyword?(keyword, MapSet.put(lines, line))
+      true ->
+        {true, arg}
     end
   end
 
-  defp force_keyword?([], _lines) do
-    true
+  # Otherwise we don't have a keyword.
+  defp last_arg_to_keyword(arg, _list_to_keyword?, _skip_parens?, _comments) do
+    {false, arg}
   end
+
+  defp force_args?(args) do
+    match?([_ | _], args) and force_args?(args, %{})
+  end
+
+  defp force_args?([[arg | _] | args], lines) do
+    force_args?([arg | args], lines)
+  end
+
+  defp force_args?([arg | args], lines) do
+    line =
+      case arg do
+        {{_, meta, _}, _} -> meta[:line]
+        {_, meta, _} -> meta[:line]
+      end
+
+    cond do
+      # Line may be missing from non-formatter AST
+      is_nil(line) -> force_args?(args, lines)
+      Map.has_key?(lines, line) -> false
+      true -> force_args?(args, Map.put(lines, line, true))
+    end
+  end
+
+  defp force_args?([], lines), do: map_size(lines) >= 2
 
   defp force_keyword(doc, arg) do
-    if force_keyword?(arg), do: force_break(doc), else: doc
+    if force_args?(arg), do: force_unfit(doc), else: doc
   end
 
-  defp keyword?([{key, _} | list]) do
-    keyword_key?(key) and keyword?(list)
-  end
+  defp keyword?([{_, _} | list]), do: keyword?(list)
+  defp keyword?(rest), do: rest == []
 
-  defp keyword?(rest) do
-    rest == []
-  end
+  defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom),
+    do: meta[:format] == :keyword
 
-  defp keyword_key?({:__block__, meta, [_]}) do
-    meta[:format] == :keyword
-  end
+  defp keyword_key?({{:., _, [:erlang, :binary_to_atom]}, meta, [{:<<>>, _, _}, :utf8]}),
+    do: meta[:format] == :keyword
 
-  defp keyword_key?({{:., _, [:erlang, :binary_to_atom]}, _, [{:<<>>, meta, _}, :utf8]}) do
-    meta[:format] == :keyword
-  end
+  defp keyword_key?(_),
+    do: false
 
-  defp keyword_key?(_) do
-    false
+  defp eol?(_meta, %{skip_eol: true}), do: false
+  defp eol?(meta, _state), do: Keyword.get(meta, :newlines, 0) > 0
+
+  defp meta?(meta, key) do
+    is_list(meta[key])
   end
 
   defp line(meta) do
-    Keyword.get(meta, :line, @max_line)
+    meta[:line] || @max_line
   end
 
   defp end_line(meta) do
-    Keyword.get(meta, :end_line, @min_line)
+    meta[:end][:line] || @min_line
+  end
+
+  defp closing_line(meta) do
+    meta[:closing][:line] || @min_line
   end
 
   ## Algebra helpers
+
+  # Relying on the inner document is brittle and error prone.
+  # It would be best if we had a mechanism to apply this.
+  defp concat_to_last_group({:doc_cons, left, right}, concat) do
+    {:doc_cons, left, concat_to_last_group(right, concat)}
+  end
+
+  defp concat_to_last_group({:doc_group, group, mode}, concat) do
+    {:doc_group, {:doc_cons, group, concat}, mode}
+  end
+
+  defp concat_to_last_group(other, concat) do
+    {:doc_cons, other, concat}
+  end
+
+  defp ungroup_if_group({:doc_group, group, _mode}), do: group
+  defp ungroup_if_group(other), do: other
 
   defp format_to_string(doc) do
     doc |> Inspect.Algebra.format(:infinity) |> IO.iodata_to_binary()
@@ -2028,5 +2390,21 @@ defmodule Code.Formatter do
   defp split_last(list) do
     {left, [right]} = Enum.split(list, -1)
     {left, right}
+  end
+
+  defp get_charlist_quotes(_heredoc = false, state) do
+    if state.normalize_charlists_as_sigils do
+      {@sigil_c, @double_quote}
+    else
+      {@single_quote, @single_quote}
+    end
+  end
+
+  defp get_charlist_quotes(_heredoc = true, state) do
+    if state.normalize_charlists_as_sigils do
+      {@sigil_c_heredoc, @double_heredoc}
+    else
+      {@single_heredoc, @single_heredoc}
+    end
   end
 end

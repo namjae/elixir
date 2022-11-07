@@ -11,10 +11,10 @@ defmodule Mix.Dep do
 
     * `app` - the application name as an atom
 
-    * `requirement` - a binary or regex with the dependency's requirement
+    * `requirement` - a binary or regular expression with the dependency's requirement
 
     * `status` - the current status of the dependency, check
-      `Mix.Dep.format_status/1` for more info
+      `Mix.Dep.format_status/1` for more information
 
     * `opts` - the options given by the developer
 
@@ -23,7 +23,7 @@ defmodule Mix.Dep do
     * `top_level` - true if dependency was defined in the top-level project
 
     * `manager` - the project management, possible values:
-      `:rebar` | `:rebar3` | `:mix` | `:make` | `nil`
+      `:rebar3` | `:mix` | `:make` | `nil`
 
     * `from` - path to the file where the dependency was defined
 
@@ -63,13 +63,13 @@ defmodule Mix.Dep do
             system_env: []
 
   @type t :: %__MODULE__{
-          scm: module,
+          scm: Mix.SCM.t(),
           app: atom,
           requirement: String.t() | Regex.t() | nil,
-          status: atom,
+          status: {:ok, String.t() | nil} | atom | tuple,
           opts: keyword,
           top_level: boolean,
-          manager: :rebar | :rebar3 | :mix | :make | nil,
+          manager: :rebar3 | :mix | :make | nil,
           from: String.t(),
           extra: term,
           system_env: keyword
@@ -78,61 +78,134 @@ defmodule Mix.Dep do
   @doc """
   Returns loaded dependencies from the cache for the current environment.
 
+  If dependencies have not been cached yet, they are loaded
+  and then cached.
+
   Because the dependencies are cached during deps.loadpaths,
   their status may be outdated (for example, `:compile` did not
   yet become `:ok`). Therefore it is recommended to not rely
   on their status, also given they haven't been checked
   against the lock.
-
-  If MIX_NO_DEPS is set, we return an empty list of dependencies
-  without loading them.
   """
-  def cached do
-    cond do
-      System.get_env("MIX_NO_DEPS") in ~w(1 true) ->
-        []
-
-      project = Mix.Project.get() ->
-        key = {:cached_deps, Mix.env(), project}
-
-        Mix.ProjectStack.read_cache(key) ||
-          Mix.ProjectStack.write_cache(key, loaded(env: Mix.env()))
-
-      true ->
-        loaded(env: Mix.env())
+  def cached() do
+    if project = Mix.Project.get() do
+      read_cached_deps(project, {Mix.env(), Mix.target()}) || load_and_cache()
+    else
+      load_and_cache()
     end
   end
 
   @doc """
-  Returns loaded dependencies recursively as a `Mix.Dep` struct.
+  Returns loaded dependencies recursively and caches it.
+
+  The result is cached for future `cached/0` calls.
 
   ## Exceptions
 
   This function raises an exception if any of the dependencies
   provided in the project are in the wrong format.
   """
-  def loaded(opts) do
+  def load_and_cache() do
+    env = Mix.env()
+    target = Mix.target()
+
+    case Mix.ProjectStack.top_and_bottom() do
+      {%{name: top, config: config}, %{name: bottom}} ->
+        write_cached_deps(top, {env, target}, load_and_cache(config, top, bottom, env, target))
+
+      _ ->
+        converge(env: env, target: target)
+    end
+  end
+
+  defp load_and_cache(_config, top, top, env, target) do
+    converge(env: env, target: target)
+  end
+
+  defp load_and_cache(config, _top, bottom, _env, _target) do
+    {_, deps} =
+      Mix.State.read_cache({:cached_deps, bottom}) ||
+        raise "cannot retrieve dependencies information because dependencies were not loaded. " <>
+                "Please invoke one of \"deps.loadpaths\", \"loadpaths\", or \"compile\" Mix task"
+
+    app = Keyword.fetch!(config, :app)
+    seen = populate_seen(MapSet.new(), [app])
+    children = get_deps(deps, tl(Enum.uniq(get_children(deps, seen, [app]))))
+
+    top_level =
+      for dep <- deps,
+          dep.app == app,
+          child <- dep.deps,
+          do: {child.app, Keyword.get(child.opts, :optional, false)},
+          into: %{}
+
+    Enum.map(children, fn %{app: app, opts: opts} = dep ->
+      # optional only matters at the top level. Any non-top level dependency
+      # that is optional and is still available means it has been fulfilled.
+      case top_level do
+        %{^app => optional} ->
+          %{dep | top_level: true, opts: Keyword.put(opts, :optional, optional)}
+
+        %{} ->
+          %{dep | top_level: false, opts: Keyword.delete(opts, :optional)}
+      end
+    end)
+  end
+
+  defp read_cached_deps(project, env_target) do
+    case Mix.State.read_cache({:cached_deps, project}) do
+      {^env_target, deps} -> deps
+      _ -> nil
+    end
+  end
+
+  defp write_cached_deps(project, env_target, deps) do
+    Mix.State.write_cache({:cached_deps, project}, {env_target, deps})
+    deps
+  end
+
+  @doc """
+  Clears loaded dependencies from the cache for the current environment.
+  """
+  def clear_cached() do
+    if project = Mix.Project.get() do
+      key = {:cached_deps, project}
+      Mix.State.delete_cache(key)
+    end
+  end
+
+  @doc """
+  Returns loaded dependencies recursively on the given environment.
+
+  If no environment is passed, dependencies are loaded across all
+  environments. The result is not cached.
+
+  ## Exceptions
+
+  This function raises an exception if any of the dependencies
+  provided in the project are in the wrong format.
+  """
+  def load_on_environment(opts) do
+    converge(opts)
+  end
+
+  defp converge(opts) do
     Mix.Dep.Converger.converge(nil, nil, opts, &{&1, &2, &3}) |> elem(0)
   end
 
   @doc """
-  Receives a list of dependency names and returns loaded `Mix.Dep`s.
-  Logs a message if the dependency could not be found.
+  Filters the given dependencies by name.
 
-  ## Exceptions
-
-  This function raises an exception if any of the dependencies
-  provided in the project are in the wrong format.
+  Raises if any of the names are missing.
   """
-  def loaded_by_name(given, all_deps \\ nil, opts) do
-    all_deps = all_deps || loaded(opts)
-
+  def filter_by_name(given, all_deps, opts \\ []) do
     # Ensure all apps are atoms
     apps = to_app_names(given)
 
     deps =
       if opts[:include_children] do
-        get_deps_with_children(all_deps, apps)
+        seen = populate_seen(MapSet.new(), apps)
+        get_deps(all_deps, Enum.uniq(get_children(all_deps, seen, apps)))
       else
         get_deps(all_deps, apps)
       end
@@ -150,26 +223,20 @@ defmodule Mix.Dep do
     Enum.filter(all_deps, &(&1.app in apps))
   end
 
-  defp get_deps_with_children(all_deps, apps) do
-    deps = get_children(all_deps, apps)
-    apps = deps |> Enum.map(& &1.app) |> Enum.uniq()
-    get_deps(all_deps, apps)
-  end
+  defp get_children(_all_deps, _seen, []), do: []
 
-  defp get_children(_all_deps, []), do: []
-
-  defp get_children(all_deps, apps) do
-    # Current deps
-    deps = get_deps(all_deps, apps)
-
-    # Children apps
-    apps =
-      for %{deps: children} <- deps,
+  defp get_children(all_deps, seen, apps) do
+    children_apps =
+      for %{deps: children} <- get_deps(all_deps, apps),
           %{app: app} <- children,
+          app not in seen,
           do: app
 
-    # Current deps + children deps
-    deps ++ get_children(all_deps, apps)
+    apps ++ get_children(all_deps, populate_seen(seen, children_apps), children_apps)
+  end
+
+  defp populate_seen(seen, apps) do
+    Enum.reduce(apps, seen, &MapSet.put(&2, &1))
   end
 
   @doc """
@@ -187,10 +254,15 @@ defmodule Mix.Dep do
     # mix.exs file can be different than the actual name and we
     # choose to respect the one in the mix.exs
     config =
-      Keyword.merge(Mix.Project.deps_config(), config)
+      Mix.Project.deps_config()
+      |> Keyword.merge(config)
       |> Keyword.put(:app_path, opts[:build])
       |> Keyword.put(:build_scm, scm)
 
+    # If the dependency is not fetchable, then it is never compiled
+    # from scratch and therefore it needs the parent configuration
+    # files to know when to recompile.
+    config = [inherit_parent_config_files: not scm.fetchable?] ++ config
     env = opts[:env] || :prod
     old_env = Mix.env()
 
@@ -209,11 +281,19 @@ defmodule Mix.Dep do
     "ok"
   end
 
-  def format_status(%Mix.Dep{status: {:noappfile, path}}) do
+  def format_status(%Mix.Dep{status: {:noappfile, {path, nil}}}) do
     "could not find an app file at #{inspect(Path.relative_to_cwd(path))}. " <>
-      "This may happen if the dependency was not yet compiled, " <>
-      "or you specified the wrong application name in your deps, " <>
+      "This may happen if the dependency was not yet compiled " <>
       "or the dependency indeed has no app file (then you can pass app: false as option)"
+  end
+
+  def format_status(%Mix.Dep{status: {:noappfile, {path, other_path}}}) do
+    other_app = Path.rootname(Path.basename(other_path))
+
+    "could not find an app file at #{inspect(Path.relative_to_cwd(path))}. " <>
+      "Another app file was found in the same directory " <>
+      "#{inspect(Path.relative_to_cwd(other_path))}, " <>
+      "try changing the dependency name to :#{other_app}"
   end
 
   def format_status(%Mix.Dep{status: {:invalidapp, path}}) do
@@ -227,7 +307,7 @@ defmodule Mix.Dep do
   def format_status(%Mix.Dep{status: {:nosemver, vsn}, requirement: req}) do
     "the app file specified a non-Semantic Versioning format: #{inspect(vsn)}. Mix can only match the " <>
       "requirement #{inspect(req)} against semantic versions. Please fix the application version " <>
-      "or use a regex as a requirement to match against any version"
+      "or use a regular expression as a requirement to match against any version"
   end
 
   def format_status(%Mix.Dep{status: {:nomatchvsn, vsn}, requirement: req}) do
@@ -273,16 +353,28 @@ defmodule Mix.Dep do
       dep_status(other) <> "\n  #{recommendation}"
   end
 
+  def format_status(%Mix.Dep{app: app, status: {:divergedtargets, other}} = dep) do
+    recommendation =
+      if Keyword.has_key?(other.opts, :targets) do
+        "Ensure you specify at least the same targets in :targets in your dep"
+      else
+        "Remove the :targets restriction from your dep"
+      end
+
+    "the :targets option for dependency #{app}\n" <>
+      dep_status(dep) <>
+      "\n  does not match the :targets option calculated for\n" <>
+      dep_status(other) <> "\n  #{recommendation}"
+  end
+
   def format_status(%Mix.Dep{app: app, status: {:diverged, other}} = dep) do
     "different specs were given for the #{app} app:\n" <>
-      "#{dep_status(dep)}#{dep_status(other)}" <>
-      "\n  Ensure they match or specify one of the above in your deps and set \"override: true\""
+      "#{dep_status(dep)}#{dep_status(other)}\n  " <> override_diverge_recommendation(dep, other)
   end
 
   def format_status(%Mix.Dep{app: app, status: {:overridden, other}} = dep) do
     "the dependency #{app} in #{Path.relative_to_cwd(dep.from)} is overriding a child dependency:\n" <>
-      "#{dep_status(dep)}#{dep_status(other)}" <>
-      "\n  Ensure they match or specify one of the above in your deps and set \"override: true\""
+      "#{dep_status(dep)}#{dep_status(other)}\n  " <> override_diverge_recommendation(dep, other)
   end
 
   def format_status(%Mix.Dep{status: {:unavailable, _}, scm: scm}) do
@@ -301,11 +393,30 @@ defmodule Mix.Dep do
     "the dependency was built with another SCM, run \"#{mix_env_var()}mix deps.compile\""
   end
 
-  defp dep_status(%Mix.Dep{app: app, requirement: req, manager: manager, opts: opts, from: from}) do
+  defp override_diverge_recommendation(dep, other) do
+    if dep.opts[:from_umbrella] || other.opts[:from_umbrella] do
+      "Please remove the conflicting options from your definition"
+    else
+      "Ensure they match or specify one of the above in your deps and set \"override: true\""
+    end
+  end
+
+  defp dep_status(%Mix.Dep{} = dep) do
+    %{
+      app: app,
+      requirement: req,
+      manager: manager,
+      opts: opts,
+      from: from,
+      system_env: system_env
+    } = dep
+
     opts =
-      opts
-      |> Keyword.drop([:dest, :build, :lock, :manager, :checkout])
+      []
       |> Kernel.++(if manager, do: [manager: manager], else: [])
+      |> Kernel.++(if system_env != [], do: [system_env: system_env], else: [])
+      |> Kernel.++(opts)
+      |> Keyword.drop([:dest, :build, :lock, :manager, :checkout])
 
     info = if req, do: {app, req, opts}, else: {app, opts}
     "\n  > In #{Path.relative_to_cwd(from)}:\n    #{inspect(info)}\n"
@@ -336,7 +447,7 @@ defmodule Mix.Dep do
   defp check_manifest(%{scm: scm} = dep, build_path) do
     vsn = {System.version(), :erlang.system_info(:otp_release)}
 
-    case Mix.Dep.ElixirSCM.read(build_path) do
+    case Mix.Dep.ElixirSCM.read(Path.join(build_path, ".mix")) do
       {:ok, old_vsn, _} when old_vsn != vsn ->
         %{dep | status: {:elixirlock, old_vsn}}
 
@@ -367,9 +478,19 @@ defmodule Mix.Dep do
   """
   def diverged?(%Mix.Dep{status: {:overridden, _}}), do: true
   def diverged?(%Mix.Dep{status: {:diverged, _}}), do: true
-  def diverged?(%Mix.Dep{status: {:divergedreq, _}}), do: true
+  def diverged?(%Mix.Dep{status: {:divergedreq, _, _}}), do: true
   def diverged?(%Mix.Dep{status: {:divergedonly, _}}), do: true
+  def diverged?(%Mix.Dep{status: {:divergedtargets, _}}), do: true
   def diverged?(%Mix.Dep{}), do: false
+
+  @doc """
+  Returns `true` if the dependency is compilable.
+  """
+  def compilable?(%Mix.Dep{status: {:elixirlock, _}}), do: true
+  def compilable?(%Mix.Dep{status: {:noappfile, {_, _}}}), do: true
+  def compilable?(%Mix.Dep{status: {:scmlock, _}}), do: true
+  def compilable?(%Mix.Dep{status: :compile}), do: true
+  def compilable?(_), do: false
 
   @doc """
   Formats a dependency for printing.
@@ -389,36 +510,9 @@ defmodule Mix.Dep do
 
   Automatically derived from source paths.
   """
-  def load_paths(%Mix.Dep{opts: opts} = dep) do
+  def load_paths(%Mix.Dep{app: app, opts: opts}) do
     build_path = Path.dirname(opts[:build])
-
-    Enum.map(source_paths(dep), fn {_, base} ->
-      Path.join([build_path, base, "ebin"])
-    end)
-  end
-
-  @doc """
-  Returns all source paths.
-
-  Source paths are the directories that contain ebin files for a given
-  dependency. All managers, except `:rebar`, have only one source path.
-  """
-  def source_paths(%Mix.Dep{manager: :rebar, app: app, opts: opts, extra: extra}) do
-    sub_dirs = extra[:sub_dirs] || []
-    dest = opts[:dest]
-
-    # Add root dir and all sub dirs with ebin/ directory
-    in_sub_dirs =
-      for sub_dir <- sub_dirs,
-          path <- Path.wildcard(Path.join(dest, sub_dir)),
-          File.dir?(Path.join(path, "ebin")),
-          do: {path, Path.basename(path)}
-
-    [{opts[:dest], Atom.to_string(app)}] ++ in_sub_dirs
-  end
-
-  def source_paths(%Mix.Dep{app: app, opts: opts}) do
-    [{opts[:dest], Atom.to_string(app)}]
+    [Path.join([build_path, Atom.to_string(app), "ebin"])]
   end
 
   @doc """
@@ -432,7 +526,7 @@ defmodule Mix.Dep do
   Returns `true` if dependency is a Rebar project.
   """
   def rebar?(%Mix.Dep{manager: manager}) do
-    manager in [:rebar, :rebar3]
+    manager == :rebar3
   end
 
   @doc """

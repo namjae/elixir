@@ -32,7 +32,6 @@ defmodule ExUnit.CallbacksTest do
       end
     end
 
-    ExUnit.Server.modules_loaded()
     assert capture_io(fn -> ExUnit.run() end) =~ "1 test, 0 failures"
   end
 
@@ -63,7 +62,6 @@ defmodule ExUnit.CallbacksTest do
       defp store_5(context), do: store(context, 5)
     end
 
-    ExUnit.Server.modules_loaded()
     assert capture_io(fn -> ExUnit.run() end) =~ "1 test, 0 failures"
   end
 
@@ -81,8 +79,6 @@ defmodule ExUnit.CallbacksTest do
 
       defp error, do: :error
     end
-
-    ExUnit.Server.modules_loaded()
 
     assert capture_io(fn -> ExUnit.run() end) =~
              "** (MatchError) no match of right hand side value: :error"
@@ -103,8 +99,6 @@ defmodule ExUnit.CallbacksTest do
       defp error, do: :error
     end
 
-    ExUnit.Server.modules_loaded()
-
     assert capture_io(fn -> ExUnit.run() end) =~
              "** (MatchError) no match of right hand side value: :error"
   end
@@ -124,7 +118,6 @@ defmodule ExUnit.CallbacksTest do
       end
     end
 
-    ExUnit.Server.modules_loaded()
     assert capture_io(fn -> ExUnit.run() end) =~ "supervisor shutdown timed out after 500ms"
   end
 
@@ -140,8 +133,6 @@ defmodule ExUnit.CallbacksTest do
       defp error, do: :error
     end
 
-    ExUnit.Server.modules_loaded()
-
     assert capture_io(fn -> ExUnit.run() end) =~
              "** (MatchError) no match of right hand side value: :error"
   end
@@ -156,8 +147,28 @@ defmodule ExUnit.CallbacksTest do
       end
     end
 
-    ExUnit.Server.modules_loaded()
     assert capture_io(fn -> ExUnit.run() end) =~ ">) killed"
+  end
+
+  test "invalidates all tests when on_exit errors within setup_all" do
+    defmodule InvalidatesTestsOnExitErrorTest do
+      use ExUnit.Case
+
+      setup_all do
+        on_exit(fn -> raise "boom" end)
+        :ok
+      end
+
+      test "succeeds" do
+        assert true
+      end
+
+      test "fails" do
+        assert false
+      end
+    end
+
+    assert capture_io(fn -> ExUnit.run() end) =~ "2 tests, 2 failures"
   end
 
   defp no_formatters! do
@@ -199,7 +210,6 @@ defmodule ExUnit.CallbacksTest do
       end
     end
 
-    ExUnit.Server.modules_loaded()
     output = capture_io(fn -> ExUnit.run() end)
     assert output =~ "on_exit run"
     assert output =~ "1 test, 0 failures"
@@ -251,7 +261,6 @@ defmodule ExUnit.CallbacksTest do
     end
 
     no_formatters!()
-    ExUnit.Server.modules_loaded()
     output = capture_io(fn -> ExUnit.run() end)
 
     assert output =~ """
@@ -295,7 +304,6 @@ defmodule ExUnit.CallbacksTest do
     end
 
     no_formatters!()
-    ExUnit.Server.modules_loaded()
     output = capture_io(fn -> ExUnit.run() end)
 
     assert output =~ """
@@ -318,8 +326,6 @@ defmodule ExUnit.CallbacksTest do
       end
     end
 
-    ExUnit.Server.modules_loaded()
-
     assert capture_io(fn -> ExUnit.run() end) =~
              "** (RuntimeError) expected ExUnit callback in " <>
                "ExUnit.CallbacksTest.SetupErrorTest to return " <>
@@ -338,8 +344,6 @@ defmodule ExUnit.CallbacksTest do
         :ok
       end
     end
-
-    ExUnit.Server.modules_loaded()
 
     assert capture_io(fn -> ExUnit.run() end) =~
              "** (RuntimeError) ExUnit callback in " <>

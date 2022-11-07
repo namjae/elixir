@@ -3,29 +3,11 @@ Code.require_file("test_helper.exs", __DIR__)
 defmodule ExceptionTest do
   use ExUnit.Case, async: true
 
+  defp capture_err(fun) do
+    ExUnit.CaptureIO.capture_io(:stderr, fun)
+  end
+
   doctest Exception
-
-  test "raising preserves the stacktrace" do
-    stacktrace =
-      try do
-        raise "a"
-      rescue
-        _ ->
-          [top | _] = System.stacktrace()
-          top
-      end
-
-    file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
-
-    assert {__MODULE__, :"test raising preserves the stacktrace", _, [file: ^file, line: 11]} =
-             stacktrace
-  end
-
-  test "exception?/1" do
-    assert Exception.exception?(%RuntimeError{})
-    refute Exception.exception?(%Regex{})
-    refute Exception.exception?({})
-  end
 
   test "message/1" do
     defmodule BadException do
@@ -46,11 +28,17 @@ defmodule ExceptionTest do
   end
 
   test "normalize/2" do
-    assert Exception.normalize(:throw, :badarg) == :badarg
-    assert Exception.normalize(:exit, :badarg) == :badarg
-    assert Exception.normalize({:EXIT, self()}, :badarg) == :badarg
-    assert Exception.normalize(:error, :badarg).__struct__ == ArgumentError
-    assert Exception.normalize(:error, %ArgumentError{}).__struct__ == ArgumentError
+    assert Exception.normalize(:throw, :badarg, []) == :badarg
+    assert Exception.normalize(:exit, :badarg, []) == :badarg
+    assert Exception.normalize({:EXIT, self()}, :badarg, []) == :badarg
+    assert Exception.normalize(:error, :badarg, []).__struct__ == ArgumentError
+    assert Exception.normalize(:error, %ArgumentError{}, []).__struct__ == ArgumentError
+
+    assert %ErlangError{original: :no_translation, reason: ": foo"} =
+             Exception.normalize(:error, :no_translation, [
+               {:io, :put_chars, [self(), <<222>>],
+                [error_info: %{module: __MODULE__, function: :dummy_error_extras}]}
+             ])
   end
 
   test "format/2 without stacktrace" do
@@ -58,10 +46,10 @@ defmodule ExceptionTest do
       try do
         throw(:stack)
       catch
-        :stack -> System.stacktrace()
+        :stack -> __STACKTRACE__
       end
 
-    assert Exception.format(:error, :badarg) ==
+    assert Exception.format(:error, :badarg, stacktrace) ==
              "** (ArgumentError) argument error\n" <> Exception.format_stacktrace(stacktrace)
   end
 
@@ -70,7 +58,7 @@ defmodule ExceptionTest do
   end
 
   test "format/2 with EXIT (has no stacktrace)" do
-    assert Exception.format({:EXIT, self()}, :badarg) ==
+    assert Exception.format({:EXIT, self()}, :badarg, []) ==
              "** (EXIT from #{inspect(self())}) :badarg"
   end
 
@@ -84,23 +72,29 @@ defmodule ExceptionTest do
   end
 
   test "format_stacktrace/1 from file" do
-    assert_raise ArgumentError, fn ->
+    try do
       Code.eval_string("def foo do end", [], file: "my_file")
+    rescue
+      ArgumentError ->
+        assert Exception.format_stacktrace(__STACKTRACE__) =~ "my_file:1: (file)"
+    else
+      _ -> flunk("expected failure")
     end
-
-    assert Exception.format_stacktrace(System.stacktrace()) =~ "my_file:1: (file)"
   end
 
   test "format_stacktrace/1 from module" do
-    assert_raise ArgumentError, fn ->
+    try do
       Code.eval_string(
         "defmodule FmtStack do raise ArgumentError, ~s(oops) end",
         [],
         file: "my_file"
       )
+    rescue
+      ArgumentError ->
+        assert Exception.format_stacktrace(__STACKTRACE__) =~ "my_file:1: (module)"
+    else
+      _ -> flunk("expected failure")
     end
-
-    assert Exception.format_stacktrace(System.stacktrace()) =~ "my_file:1: (module)"
   end
 
   test "format_stacktrace_entry/1 with no file or line" do
@@ -110,39 +104,38 @@ defmodule ExceptionTest do
   end
 
   test "format_stacktrace_entry/1 with file and line" do
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex", line: 10]}) ==
              "file.ex:10: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry(
+             {Foo, :bar, [1, 2, 3], [file: ~c"file.ex", line: 10]}
+           ) ==
              "file.ex:10: Foo.bar(1, 2, 3)"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: ~c"file.ex", line: 10]}) ==
              "file.ex:10: Foo.bar/1"
   end
 
   test "format_stacktrace_entry/1 with file no line" do
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex', line: 0]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex", line: 0]}) ==
              "file.ex: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar(1, 2, 3)"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar/1"
   end
 
   test "format_stacktrace_entry/1 with application" do
-    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: 'file.ex']}) ==
-             "(elixir) file.ex: Exception.bar()"
+    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: ~c"file.ex"]}) ==
+             "(elixir #{System.version()}) file.ex: Exception.bar()"
 
-    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: 'file.ex', line: 10]}) ==
-             "(elixir) file.ex:10: Exception.bar()"
-
-    assert Exception.format_stacktrace_entry({:lists, :bar, [1, 2, 3], []}) ==
-             "(stdlib) :lists.bar(1, 2, 3)"
+    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: ~c"file.ex", line: 10]}) ==
+             "(elixir #{System.version()}) file.ex:10: Exception.bar()"
   end
 
   test "format_stacktrace_entry/1 with fun" do
@@ -175,20 +168,14 @@ defmodule ExceptionTest do
     assert Exception.format_mfa(Foo, :..., 1) == "Foo.\"...\"/1"
   end
 
-  # TODO: Remove this check once we depend only on 20
-  # TODO: Remove String.to_atom/1 when we support 20+
-  if :erlang.system_info(:otp_release) >= '20' do
-    test "format_mfa/3 with unicode" do
-      assert Exception.format_mfa(Foo, String.to_atom("olá"), [1, 2]) == "Foo.olá(1, 2)"
-      assert Exception.format_mfa(Foo, String.to_atom("Olá"), [1, 2]) == "Foo.\"Olá\"(1, 2)"
-      assert Exception.format_mfa(Foo, String.to_atom("Ólá"), [1, 2]) == "Foo.\"Ólá\"(1, 2)"
+  test "format_mfa/3 with Unicode" do
+    assert Exception.format_mfa(Foo, :olá, [1, 2]) == "Foo.olá(1, 2)"
+    assert Exception.format_mfa(Foo, :Olá, [1, 2]) == "Foo.\"Olá\"(1, 2)"
+    assert Exception.format_mfa(Foo, :Ólá, [1, 2]) == "Foo.\"Ólá\"(1, 2)"
+    assert Exception.format_mfa(Foo, :こんにちは世界, [1, 2]) == "Foo.こんにちは世界(1, 2)"
 
-      hello_world = String.to_atom("こんにちは世界")
-      assert Exception.format_mfa(Foo, hello_world, [1, 2]) == "Foo.こんにちは世界(1, 2)"
-
-      nfd = :unicode.characters_to_nfd_binary("olá")
-      assert Exception.format_mfa(Foo, String.to_atom(nfd), [1, 2]) == "Foo.\"#{nfd}\"(1, 2)"
-    end
+    nfd = :unicode.characters_to_nfd_binary("olá")
+    assert Exception.format_mfa(Foo, String.to_atom(nfd), [1, 2]) == "Foo.\"#{nfd}\"(1, 2)"
   end
 
   test "format_fa/2" do
@@ -196,113 +183,115 @@ defmodule ExceptionTest do
              ~r"#Function<\d+\.\d+/0 in ExceptionTest\.\"test format_fa/2\"/1>/1"
   end
 
-  ## Format exits
+  describe "format_exit/1" do
+    test "with atom/tuples" do
+      assert Exception.format_exit(:bye) == ":bye"
+      assert Exception.format_exit(:noconnection) == "no connection"
+      assert Exception.format_exit({:nodedown, :node@host}) == "no connection to node@host"
+      assert Exception.format_exit(:timeout) == "time out"
+      assert Exception.format_exit(:noproc) |> String.starts_with?("no process:")
+      assert Exception.format_exit(:killed) == "killed"
+      assert Exception.format_exit(:normal) == "normal"
+      assert Exception.format_exit(:shutdown) == "shutdown"
+      assert Exception.format_exit(:calling_self) == "process attempted to call itself"
+      assert Exception.format_exit({:shutdown, :bye}) == "shutdown: :bye"
 
-  test "format_exit/1" do
-    assert Exception.format_exit(:bye) == ":bye"
-    assert Exception.format_exit(:noconnection) == "no connection"
-    assert Exception.format_exit({:nodedown, :node@host}) == "no connection to node@host"
-    assert Exception.format_exit(:timeout) == "time out"
-    assert Exception.format_exit(:noproc) |> String.starts_with?("no process:")
-    assert Exception.format_exit(:killed) == "killed"
-    assert Exception.format_exit(:normal) == "normal"
-    assert Exception.format_exit(:shutdown) == "shutdown"
-    assert Exception.format_exit(:calling_self) == "process attempted to call itself"
-    assert Exception.format_exit({:shutdown, :bye}) == "shutdown: :bye"
+      assert Exception.format_exit({:badarg, [{:not_a_real_module, :function, 0, []}]}) ==
+               "an exception was raised:\n    ** (ArgumentError) argument error\n        :not_a_real_module.function/0"
 
-    assert Exception.format_exit({:badarg, [{:not_a_real_module, :function, 0, []}]}) ==
-             "an exception was raised:\n    ** (ArgumentError) argument error\n        :not_a_real_module.function/0"
+      assert Exception.format_exit({:bad_call, :request}) == "bad call: :request"
+      assert Exception.format_exit({:bad_cast, :request}) == "bad cast: :request"
 
-    assert Exception.format_exit({:bad_call, :request}) == "bad call: :request"
-    assert Exception.format_exit({:bad_cast, :request}) == "bad cast: :request"
+      assert Exception.format_exit({:start_spec, :unexpected}) ==
+               "bad child specification, got: :unexpected"
 
-    assert Exception.format_exit({:start_spec, :unexpected}) ==
-             "bad child specification, got: :unexpected"
+      assert Exception.format_exit({:supervisor_data, :unexpected}) ==
+               "bad supervisor configuration, got: :unexpected"
+    end
 
-    assert Exception.format_exit({:supervisor_data, :unexpected}) ==
-             "bad supervisor configuration, got: :unexpected"
-  end
+    defmodule Sup do
+      def start_link(fun), do: :supervisor.start_link(__MODULE__, fun)
 
-  defmodule Sup do
-    def start_link(fun), do: :supervisor.start_link(__MODULE__, fun)
+      def init(fun), do: fun.()
+    end
 
-    def init(fun), do: fun.()
-  end
+    test "with supervisor errors" do
+      Process.flag(:trap_exit, true)
 
-  test "format_exit/1 with supervisor errors" do
-    Process.flag(:trap_exit, true)
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> :foo end)
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> :foo end)
+      assert Exception.format_exit(reason) ==
+               "#{inspect(__MODULE__.Sup)}.init/1 returned a bad value: :foo"
 
-    assert Exception.format_exit(reason) ==
-             "#{inspect(__MODULE__.Sup)}.init/1 returned a bad value: :foo"
+      return = {:ok, {:foo, []}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) == "bad supervisor configuration, invalid type: :foo"
 
-    return = {:ok, {:foo, []}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) == "bad supervisor configuration, invalid type: :foo"
+      return = {:ok, {{:foo, 1, 1}, []}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    return = {:ok, {{:foo, 1, 1}, []}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) == "bad supervisor configuration, invalid strategy: :foo"
+      assert Exception.format_exit(reason) ==
+               "bad supervisor configuration, invalid strategy: :foo"
 
-    return = {:ok, {{:one_for_one, :foo, 1}, []}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      return = {:ok, {{:one_for_one, :foo, 1}, []}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) ==
-             "bad supervisor configuration, invalid max_restarts (intensity): :foo"
+      assert Exception.format_exit(reason) ==
+               "bad supervisor configuration, invalid max_restarts (intensity): :foo"
 
-    return = {:ok, {{:one_for_one, 1, :foo}, []}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      return = {:ok, {{:one_for_one, 1, :foo}, []}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) ==
-             "bad supervisor configuration, invalid max_seconds (period): :foo"
+      assert Exception.format_exit(reason) ==
+               "bad supervisor configuration, invalid max_seconds (period): :foo"
 
-    return = {:ok, {{:simple_one_for_one, 1, 1}, :foo}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) == "bad child specification, invalid children: :foo"
+      return = {:ok, {{:simple_one_for_one, 1, 1}, :foo}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) == "bad child specification, invalid children: :foo"
 
-    return = {:ok, {{:one_for_one, 1, 1}, [:foo]}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      return = {:ok, {{:one_for_one, 1, 1}, [:foo]}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) ==
-             "bad child specification, invalid child specification: :foo"
+      assert Exception.format_exit(reason) ==
+               "bad child specification, invalid child specification: :foo"
 
-    return = {:ok, {{:one_for_one, 1, 1}, [{:child, :foo, :temporary, 1, :worker, []}]}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) == "bad child specification, invalid mfa: :foo"
+      return = {:ok, {{:one_for_one, 1, 1}, [{:child, :foo, :temporary, 1, :worker, []}]}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) == "bad child specification, invalid mfa: :foo"
 
-    return = {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :foo, 1, :worker, []}]}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) =~ "bad child specification, invalid restart type: :foo"
+      return = {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :foo, 1, :worker, []}]}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    return =
-      {
+      assert Exception.format_exit(reason) =~
+               "bad child specification, invalid restart type: :foo"
+
+      return = {
         :ok,
         {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, :foo, :worker, []}]}
       }
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) =~ "bad child specification, invalid shutdown: :foo"
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) =~ "bad child specification, invalid shutdown: :foo"
 
-    return = {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, 1, :foo, []}]}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) =~ "bad child specification, invalid child type: :foo"
+      return = {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, 1, :foo, []}]}}
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) =~ "bad child specification, invalid child type: :foo"
 
-    return = {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, 1, :worker, :foo}]}}
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) =~ "bad child specification, invalid modules: :foo"
+      return =
+        {:ok, {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, 1, :worker, :foo}]}}
 
-    return =
-      {
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) =~ "bad child specification, invalid modules: :foo"
+
+      return = {
         :ok,
         {{:one_for_one, 1, 1}, [{:child, {:m, :f, []}, :temporary, 1, :worker, [{:foo}]}]}
       }
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
-    assert Exception.format_exit(reason) =~ "bad child specification, invalid module: {:foo}"
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      assert Exception.format_exit(reason) =~ "bad child specification, invalid module: {:foo}"
 
-    return =
-      {
+      return = {
         :ok,
         {
           {:one_for_one, 1, 1},
@@ -313,24 +302,22 @@ defmodule ExceptionTest do
         }
       }
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) =~
-             "bad child specification, more than one child specification has the id: :child"
+      assert Exception.format_exit(reason) =~
+               "bad child specification, more than one child specification has the id: :child"
 
-    return =
-      {
+      return = {
         :ok,
         {{:one_for_one, 1, 1}, [{:child, {Kernel, :exit, [:foo]}, :temporary, 1, :worker, []}]}
       }
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) ==
-             "shutdown: failed to start child: :child\n    ** (EXIT) :foo"
+      assert Exception.format_exit(reason) ==
+               "shutdown: failed to start child: :child\n    ** (EXIT) :foo"
 
-    return =
-      {
+      return = {
         :ok,
         {
           {:one_for_one, 1, 1},
@@ -338,161 +325,490 @@ defmodule ExceptionTest do
         }
       }
 
-    {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
+      {:error, reason} = __MODULE__.Sup.start_link(fn -> return end)
 
-    assert Exception.format_exit(reason) ==
-             "shutdown: failed to start child: :child\n    ** (EXIT) :foo"
-  end
+      assert Exception.format_exit(reason) ==
+               "shutdown: failed to start child: :child\n    ** (EXIT) :foo"
+    end
 
-  test "format_exit/1 with call" do
-    reason =
-      try do
-        :gen_server.call(:does_not_exist, :hello)
-      catch
-        :exit, reason -> reason
-      end
-
-    expected_to_start_with =
-      "exited in: :gen_server.call(:does_not_exist, :hello)\n    ** (EXIT) no process:"
-
-    assert Exception.format_exit(reason) |> String.starts_with?(expected_to_start_with)
-  end
-
-  test "format_exit/1 with nested calls" do
-    Process.flag(:trap_exit, true)
-    # Fake reason to prevent error_logger printing to stdout
-    exit_fun = fn -> receive do: (_ -> exit(:normal)) end
-
-    outer_pid =
-      spawn_link(fn ->
-        Process.flag(:trap_exit, true)
-
-        receive do
-          _ ->
-            :gen_event.call(spawn_link(exit_fun), :handler, :hello)
+    test "with call" do
+      reason =
+        try do
+          :gen_server.call(:does_not_exist, :hello)
+        catch
+          :exit, reason -> reason
         end
-      end)
 
-    reason =
-      try do
-        :gen_server.call(outer_pid, :hi)
-      catch
-        :exit, reason -> reason
-      end
+      expected_to_start_with =
+        "exited in: :gen_server.call(:does_not_exist, :hello)\n    ** (EXIT) no process:"
 
-    formatted = Exception.format_exit(reason)
-    assert formatted =~ ~r"exited in: :gen_server\.call\(#PID<\d+\.\d+\.\d+>, :hi\)\n"
+      assert Exception.format_exit(reason) |> String.starts_with?(expected_to_start_with)
+    end
 
-    assert formatted =~
-             ~r"\s{4}\*\* \(EXIT\) exited in: :gen_event\.call\(#PID<\d+\.\d+\.\d+>, :handler, :hello\)\n"
+    test "with nested calls" do
+      Process.flag(:trap_exit, true)
+      # Fake reason to prevent error_logger printing to stdout
+      exit_fun = fn -> receive do: (_ -> exit(:normal)) end
 
-    assert formatted =~ ~r"\s{8}\*\* \(EXIT\) normal"
+      outer_pid =
+        spawn_link(fn ->
+          Process.flag(:trap_exit, true)
+
+          receive do
+            _ ->
+              :gen_event.call(spawn_link(exit_fun), :handler, :hello)
+          end
+        end)
+
+      reason =
+        try do
+          :gen_server.call(outer_pid, :hi)
+        catch
+          :exit, reason -> reason
+        end
+
+      formatted = Exception.format_exit(reason)
+      assert formatted =~ ~r"exited in: :gen_server\.call\(#PID<\d+\.\d+\.\d+>, :hi\)\n"
+
+      assert formatted =~
+               ~r"\s{4}\*\* \(EXIT\) exited in: :gen_event\.call\(#PID<\d+\.\d+\.\d+>, :handler, :hello\)\n"
+
+      assert formatted =~ ~r"\s{8}\*\* \(EXIT\) normal"
+    end
+
+    test "format_exit/1 with nested calls and exception" do
+      Process.flag(:trap_exit, true)
+      # Fake reason to prevent error_logger printing to stdout
+      exit_reason = {%ArgumentError{}, [{:not_a_real_module, :function, 0, []}]}
+      exit_fun = fn -> receive do: (_ -> exit(exit_reason)) end
+
+      outer_pid =
+        spawn_link(fn ->
+          Process.flag(:trap_exit, true)
+          :gen_event.call(spawn_link(exit_fun), :handler, :hello)
+        end)
+
+      reason =
+        try do
+          :gen_server.call(outer_pid, :hi)
+        catch
+          :exit, reason -> reason
+        end
+
+      formatted = Exception.format_exit(reason)
+      assert formatted =~ ~r"exited in: :gen_server\.call\(#PID<\d+\.\d+\.\d+>, :hi\)\n"
+
+      assert formatted =~
+               ~r"\s{4}\*\* \(EXIT\) exited in: :gen_event\.call\(#PID<\d+\.\d+\.\d+>, :handler, :hello\)\n"
+
+      assert formatted =~ ~r"\s{8}\*\* \(EXIT\) an exception was raised:\n"
+      assert formatted =~ ~r"\s{12}\*\* \(ArgumentError\) argument error\n"
+      assert formatted =~ ~r"\s{16}:not_a_real_module\.function/0"
+    end
   end
 
-  test "format_exit/1 with nested calls and exception" do
-    Process.flag(:trap_exit, true)
-    # Fake reason to prevent error_logger printing to stdout
-    exit_reason = {%ArgumentError{}, [{:not_a_real_module, :function, 0, []}]}
-    exit_fun = fn -> receive do: (_ -> exit(exit_reason)) end
+  describe "blaming" do
+    test "does not annotate throws/exits" do
+      stack = [{Keyword, :pop, [%{}, :key, nil], [line: 13]}]
+      assert Exception.blame(:throw, :function_clause, stack) == {:function_clause, stack}
+      assert Exception.blame(:exit, :function_clause, stack) == {:function_clause, stack}
+    end
 
-    outer_pid =
-      spawn_link(fn ->
-        Process.flag(:trap_exit, true)
-        :gen_event.call(spawn_link(exit_fun), :handler, :hello)
+    test "reverts is_struct macro on guards for blaming" do
+      import PathHelpers
+
+      write_beam(
+        defmodule Req do
+          def get!(url)
+              when is_binary(url) or (is_struct(url) and is_struct(url, URI) and false) do
+            url
+          end
+
+          def get!(url, url_module)
+              when is_binary(url) or (is_struct(url) and is_struct(url, url_module) and false) do
+            url
+          end
+        end
+      )
+
+      :code.delete(Req)
+      :code.purge(Req)
+
+      assert blame_message(Req, & &1.get!(url: "https://elixir-lang.org")) =~ """
+             no function clause matching in ExceptionTest.Req.get!/1
+
+             The following arguments were given to ExceptionTest.Req.get!/1:
+
+                 # 1
+                 [url: "https://elixir-lang.org"]
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url) when -is_binary(url)- or -is_struct(url)- and -is_struct(url, URI)- and -false-
+             """
+
+      elixir_uri = %URI{} = URI.parse("https://elixir-lang.org")
+
+      assert blame_message(Req, & &1.get!(elixir_uri, URI)) =~ """
+             no function clause matching in ExceptionTest.Req.get!/2
+
+             The following arguments were given to ExceptionTest.Req.get!/2:
+
+                 # 1
+                 %URI{scheme: \"https\", authority: \"elixir-lang.org\", userinfo: nil, host: \"elixir-lang.org\", port: 443, path: nil, query: nil, fragment: nil}
+
+                 # 2
+                 URI
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url, url_module) when -is_binary(url)- or is_struct(url) and is_struct(url, url_module) and -false-
+             """
+
+      assert blame_message(Req, & &1.get!(elixir_uri)) =~ """
+             no function clause matching in ExceptionTest.Req.get!/1
+
+             The following arguments were given to ExceptionTest.Req.get!/1:
+
+                 # 1
+                 %URI{scheme: \"https\", authority: \"elixir-lang.org\", userinfo: nil, host: \"elixir-lang.org\", port: 443, path: nil, query: nil, fragment: nil}
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url) when -is_binary(url)- or is_struct(url) and is_struct(url, URI) and -false-
+             """
+    end
+
+    test "annotates badarg on apply" do
+      assert blame_message([], & &1.foo()) ==
+               "you attempted to apply a function named :foo on []. If you are using Kernel.apply/3, make sure " <>
+                 "the module is an atom. If you are using the dot syntax, such as " <>
+                 "module.function(), make sure the left-hand side of the dot is a module atom"
+
+      assert blame_message([], &apply(&1, :foo, [])) ==
+               "you attempted to apply a function named :foo on []. If you are using Kernel.apply/3, make sure " <>
+                 "the module is an atom. If you are using the dot syntax, such as " <>
+                 "module.function(), make sure the left-hand side of the dot is a module atom"
+
+      assert blame_message([], &apply(Kernel, &1, [1, 2])) ==
+               "you attempted to apply a function named [] on module Kernel. However, [] is not a valid function name. " <>
+                 "Function names (the second argument of apply) must always be an atom"
+
+      assert blame_message(123, &apply(Kernel, :+, &1)) ==
+               "you attempted to apply a function named :+ on module Kernel with arguments 123. " <>
+                 "Arguments (the third argument of apply) must always be a proper list"
+
+      assert blame_message(123, &apply(Kernel, :+, [&1 | 456])) ==
+               "you attempted to apply a function named :+ on module Kernel with arguments [123 | 456]. " <>
+                 "Arguments (the third argument of apply) must always be a proper list"
+    end
+
+    test "annotates function clause errors" do
+      assert blame_message(Access, & &1.fetch(:foo, :bar)) =~ """
+             no function clause matching in Access.fetch/2
+
+             The following arguments were given to Access.fetch/2:
+
+                 # 1
+                 :foo
+
+                 # 2
+                 :bar
+
+             Attempted function clauses (showing 5 out of 5):
+
+                 def fetch(-%module{} = container-, key)
+             """
+    end
+
+    test "annotates undefined function error with suggestions" do
+      assert blame_message(Enum, & &1.map(:ok)) == """
+             function Enum.map/1 is undefined or private. Did you mean:
+
+                   * map/2
+             """
+
+      assert blame_message(Enum, & &1.man(:ok)) == """
+             function Enum.man/1 is undefined or private. Did you mean:
+
+                   * map/2
+                   * max/1
+                   * max/2
+                   * max/3
+                   * min/1
+             """
+
+      message = blame_message(:erlang, & &1.gt_cookie())
+      assert message =~ "function :erlang.gt_cookie/0 is undefined or private. Did you mean:"
+      assert message =~ "* get_cookie/0"
+      assert message =~ "* set_cookie/2"
+    end
+
+    test "annotates undefined function clause error with macro hints" do
+      assert blame_message(Integer, & &1.is_odd(1)) ==
+               "function Integer.is_odd/1 is undefined or private. However, there is " <>
+                 "a macro with the same name and arity. Be sure to require Integer if " <>
+                 "you intend to invoke this macro"
+    end
+
+    test "annotates undefined function clause error with callback hints" do
+      capture_err(fn ->
+        Code.eval_string("""
+          defmodule Behaviour do
+            @callback callback() :: :ok
+          end
+
+          defmodule Implementation do
+            @behaviour Behaviour
+          end
+        """)
       end)
 
-    reason =
-      try do
-        :gen_server.call(outer_pid, :hi)
-      catch
-        :exit, reason -> reason
+      assert blame_message(Implementation, & &1.callback()) ==
+               "function Implementation.callback/0 is undefined or private" <>
+                 ", but the behaviour Behaviour expects it to be present"
+    end
+
+    test "does not annotate undefined function clause error with callback hints when callback is optional" do
+      defmodule BehaviourWithOptional do
+        @callback callback() :: :ok
+        @callback optional() :: :ok
+        @optional_callbacks callback: 0, optional: 0
       end
 
-    formatted = Exception.format_exit(reason)
-    assert formatted =~ ~r"exited in: :gen_server\.call\(#PID<\d+\.\d+\.\d+>, :hi\)\n"
+      defmodule ImplementationWithOptional do
+        @behaviour BehaviourWithOptional
+        def callback(), do: :ok
+      end
 
-    assert formatted =~
-             ~r"\s{4}\*\* \(EXIT\) exited in: :gen_event\.call\(#PID<\d+\.\d+\.\d+>, :handler, :hello\)\n"
+      assert blame_message(ImplementationWithOptional, & &1.optional()) ==
+               "function ExceptionTest.ImplementationWithOptional.optional/0 is undefined or private"
+    end
 
-    assert formatted =~ ~r"\s{8}\*\* \(EXIT\) an exception was raised:\n"
-    assert formatted =~ ~r"\s{12}\*\* \(ArgumentError\) argument error\n"
-    assert formatted =~ ~r"\s{16}:not_a_real_module\.function/0"
+    test "annotates undefined function clause error with otp obsolete hints" do
+      assert blame_message(:erlang, & &1.hash(1, 2)) ==
+               "function :erlang.hash/2 is undefined or private, use erlang:phash2/2 instead"
+    end
+
+    test "annotates undefined key error with nil hints" do
+      assert blame_message(nil, & &1.foo) ==
+               "key :foo not found in: nil. If you are using the dot syntax, " <>
+                 "such as map.field, make sure the left-hand side of the dot is a map"
+
+      # we use `Code.eval_string/1` to escape the formatter and warnings
+      assert blame_message("nil.foo", &Code.eval_string/1) ==
+               "key :foo not found in: nil. If you are using the dot syntax, " <>
+                 "such as map.field, make sure the left-hand side of the dot is a map"
+    end
+
+    test "annotates undefined function clause error with nil hints" do
+      assert blame_message(nil, & &1.foo()) ==
+               "function nil.foo/0 is undefined. If you are using the dot syntax, " <>
+                 "such as module.function(), make sure the left-hand side of " <>
+                 "the dot is a module atom"
+
+      assert blame_message("nil.foo()", &Code.eval_string/1) ==
+               "function nil.foo/0 is undefined. If you are using the dot syntax, " <>
+                 "such as module.function(), make sure the left-hand side of " <>
+                 "the dot is a module atom"
+    end
+
+    test "annotates key error with suggestions if keys are atoms" do
+      message = blame_message(%{first: nil, second: nil}, fn map -> map.firts end)
+
+      assert message == """
+             key :firts not found in: %{first: nil, second: nil}. Did you mean:
+
+                   * :first
+             """
+
+      message = blame_message(%{"first" => nil, "second" => nil}, fn map -> map.firts end)
+
+      assert message == "key :firts not found in: %{\"first\" => nil, \"second\" => nil}"
+
+      message =
+        blame_message(%{"first" => nil, "second" => nil}, fn map -> Map.fetch!(map, "firts") end)
+
+      assert message == "key \"firts\" not found in: %{\"first\" => nil, \"second\" => nil}"
+
+      message =
+        blame_message([first: nil, second: nil], fn kwlist -> Keyword.fetch!(kwlist, :firts) end)
+
+      assert message == """
+             key :firts not found in: [first: nil, second: nil]. Did you mean:
+
+                   * :first
+             """
+    end
+
+    test "annotates key error with suggestions for structs" do
+      message = blame_message(%URI{}, fn map -> map.schema end)
+      assert message =~ "key :schema not found in: %URI{"
+      assert message =~ "Did you mean:"
+      assert message =~ "* :scheme"
+    end
+
+    test "annotates +/1 arithmetic errors" do
+      assert blame_message(:foo, &(+&1)) == "bad argument in arithmetic expression: +(:foo)"
+    end
+
+    test "annotates -/1 arithmetic errors" do
+      assert blame_message(:foo, &(-&1)) == "bad argument in arithmetic expression: -(:foo)"
+    end
+
+    test "annotates div arithmetic errors" do
+      assert blame_message(0, &div(10, &1)) ==
+               "bad argument in arithmetic expression: div(10, 0)"
+    end
+
+    test "annotates rem arithmetic errors" do
+      assert blame_message(0, &rem(10, &1)) ==
+               "bad argument in arithmetic expression: rem(10, 0)"
+    end
+
+    test "annotates band arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &band(&1, 10)) ==
+               "bad argument in arithmetic expression: Bitwise.band(:foo, 10)"
+
+      assert blame_message(:foo, &(&1 &&& 10)) ==
+               "bad argument in arithmetic expression: Bitwise.band(:foo, 10)"
+    end
+
+    test "annotates bor arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &bor(&1, 10)) ==
+               "bad argument in arithmetic expression: Bitwise.bor(:foo, 10)"
+
+      assert blame_message(:foo, &(&1 ||| 10)) ==
+               "bad argument in arithmetic expression: Bitwise.bor(:foo, 10)"
+    end
+
+    test "annotates bxor arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &bxor(&1, 10)) ==
+               "bad argument in arithmetic expression: Bitwise.bxor(:foo, 10)"
+    end
+
+    test "annotates bsl arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &bsl(10, &1)) ==
+               "bad argument in arithmetic expression: Bitwise.bsl(10, :foo)"
+
+      assert blame_message(:foo, &(10 <<< &1)) ==
+               "bad argument in arithmetic expression: Bitwise.bsl(10, :foo)"
+    end
+
+    test "annotates bsr arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &bsr(10, &1)) ==
+               "bad argument in arithmetic expression: Bitwise.bsr(10, :foo)"
+
+      assert blame_message(:foo, &(10 >>> &1)) ==
+               "bad argument in arithmetic expression: Bitwise.bsr(10, :foo)"
+    end
+
+    test "annotates bnot arithmetic errors" do
+      import Bitwise
+
+      assert blame_message(:foo, &bnot(&1)) ==
+               "bad argument in arithmetic expression: Bitwise.bnot(:foo)"
+    end
+
+    defp blame_message(arg, fun) do
+      try do
+        fun.(arg)
+      rescue
+        e ->
+          Exception.blame(:error, e, __STACKTRACE__) |> elem(0) |> Exception.message()
+      end
+    end
   end
 
-  # TODO: Remove this check once we depend only on 20
-  if :erlang.system_info(:otp_release) >= '20' do
-    describe "blaming" do
-      test "annotates function clause errors" do
-        args = [%{}, :key, nil]
+  describe "blaming unit tests" do
+    test "annotates clauses errors" do
+      args = [%{}, :key, nil]
 
-        {exception, stack} =
-          Exception.blame(:error, :function_clause, [{Keyword, :pop, args, [line: 13]}])
+      {exception, stack} =
+        Exception.blame(:error, :function_clause, [{Keyword, :pop, args, [line: 13]}])
 
-        assert %FunctionClauseError{kind: :def, args: ^args, clauses: [_]} = exception
-        assert stack == [{Keyword, :pop, 3, [line: 13]}]
-      end
+      assert %FunctionClauseError{kind: :def, args: ^args, clauses: [_]} = exception
+      assert stack == [{Keyword, :pop, 3, [line: 13]}]
+    end
 
-      test "does not annotate throws/exits" do
-        stack = [{Keyword, :pop, [%{}, :key, nil], [line: 13]}]
-        assert Exception.blame(:throw, :function_clause, stack) == {:function_clause, stack}
-        assert Exception.blame(:exit, :function_clause, stack) == {:function_clause, stack}
-      end
+    test "annotates args and clauses from mfa" do
+      import PathHelpers
 
-      test "annotates args and clauses from mfa" do
-        {:ok, :def, clauses} = Exception.blame_mfa(Keyword, :pop, [%{}, :key, nil])
+      write_beam(
+        defmodule Blaming do
+          def with_elem(x, y) when elem(x, 1) == 0 and elem(x, y) == 1 do
+            {x, y}
+          end
 
-        assert annotated_clauses_to_string(clauses) == [
-                 "{[+keywords+, +key+, +default+], [-is_list(keywords)-]}"
-               ]
+          def fetch(%module{} = container, key), do: {module, container, key}
+          def fetch(map, key) when is_map(map), do: {map, key}
+          def fetch(list, key) when is_list(list) and is_atom(key), do: {list, key}
+          def fetch(nil, _key), do: nil
 
-        {:ok, :def, clauses} = Exception.blame_mfa(Keyword, :fetch, [[], "oops"])
+          require Integer
+          def even_and_odd(foo, bar) when Integer.is_even(foo) and Integer.is_odd(bar), do: :ok
+        end
+      )
 
-        assert annotated_clauses_to_string(clauses) == [
-                 "{[+keywords+, +key+], [+is_list(keywords)+ and -is_atom(key)-]}"
-               ]
+      :code.delete(Blaming)
+      :code.purge(Blaming)
 
-        {:ok, :def, clauses} = Exception.blame_mfa(Path, :type, [self()])
+      {:ok, :def, clauses} = Exception.blame_mfa(Blaming, :with_elem, [1, 2])
 
-        assert annotated_clauses_to_string(clauses) == [
-                 "{[+name+], [-is_list(name)-, -is_binary(name)-]}"
-               ]
+      assert annotated_clauses_to_string(clauses) == [
+               "{[+x+, +y+], [-elem(x, 1) == 0- and -elem(x, y) == 1-]}"
+             ]
 
-        {:ok, :def, clauses} = Exception.blame_mfa(Access, :fetch, [self(), "oops"])
+      {:ok, :def, clauses} = Exception.blame_mfa(Blaming, :fetch, [self(), "oops"])
 
-        assert annotated_clauses_to_string(clauses) == [
-                 "{[-%module{} = container-, +key+], []}",
-                 "{[+map+, +key+], [-is_map(map)-]}",
-                 "{[+list+, +key+], [-is_list(list)- and -is_atom(key)-]}",
-                 "{[+list+, +key+], [-is_list(list)-]}",
-                 "{[-nil-, +_key+], []}"
-               ]
+      assert annotated_clauses_to_string(clauses) == [
+               "{[-%module{} = container-, +key+], []}",
+               "{[+map+, +key+], [-is_map(map)-]}",
+               "{[+list+, +key+], [-is_list(list)- and -is_atom(key)-]}",
+               "{[-nil-, +_key+], []}"
+             ]
 
-        {:ok, :defmacro, clauses} = Exception.blame_mfa(Kernel, :!, [true])
+      {:ok, :def, clauses} = Exception.blame_mfa(Blaming, :even_and_odd, [1, 1])
 
-        assert annotated_clauses_to_string(clauses) == [
-                 "{[-{:!, _, [value]}-], []}",
-                 "{[+value+], []}"
-               ]
-      end
+      assert annotated_clauses_to_string(clauses) == [
+               "{[+foo+, +bar+], [+is_integer(foo)+ and -Bitwise.band(foo, 1) == 0- and +is_integer(bar)+ and +Bitwise.band(bar, 1) == 1+]}"
+             ]
+
+      {:ok, :defmacro, clauses} = Exception.blame_mfa(Kernel, :!, [true])
+
+      assert annotated_clauses_to_string(clauses) == [
+               "{[-{:!, _, [value]}-], []}",
+               "{[+value+], []}"
+             ]
     end
 
     defp annotated_clauses_to_string(clauses) do
-      Enum.map(clauses, fn args_and_clauses ->
-        Macro.to_string(args_and_clauses, fn
-          %{match?: true, node: node}, _string ->
-            "+" <> Macro.to_string(node) <> "+"
-
-          %{match?: false, node: node}, _string ->
-            "-" <> Macro.to_string(node) <> "-"
-
-          _node, string ->
-            string
-        end)
+      Enum.map(clauses, fn {args, clauses} ->
+        args = Enum.map_join(args, ", ", &arg_to_string/1)
+        clauses = Enum.map_join(clauses, ", ", &clause_to_string/1)
+        "{[#{args}], [#{clauses}]}"
       end)
     end
-  end
 
-  ## Exception messages
+    defp arg_to_string(%{match?: true, node: node}), do: "+" <> Macro.to_string(node) <> "+"
+    defp arg_to_string(%{match?: false, node: node}), do: "-" <> Macro.to_string(node) <> "-"
+
+    defp clause_to_string({op, _, [left, right]}),
+      do: clause_to_string(left) <> " #{op} " <> clause_to_string(right)
+
+    defp clause_to_string(other),
+      do: arg_to_string(other)
+  end
 
   describe "exception messages" do
     import Exception, only: [message: 1]
@@ -512,6 +828,11 @@ defmodule ExceptionTest do
     test "ArgumentError" do
       assert %ArgumentError{} |> message == "argument error"
       assert %ArgumentError{message: "unexpected comté"} |> message == "unexpected comté"
+    end
+
+    test "KeyError" do
+      assert %KeyError{} |> message == "key nil not found"
+      assert %KeyError{message: "key missed"} |> message == "key missed"
     end
 
     test "Enum.OutOfBoundsError" do
@@ -537,46 +858,11 @@ defmodule ExceptionTest do
       assert %UndefinedFunctionError{module: Foo, function: :bar, arity: 1}
              |> message == "function Foo.bar/1 is undefined (module Foo is not available)"
 
+      assert %UndefinedFunctionError{module: nil, function: :bar, arity: 3}
+             |> message == "function nil.bar/3 is undefined"
+
       assert %UndefinedFunctionError{module: nil, function: :bar, arity: 0}
-             |> message == "function nil.bar/0 is undefined or private"
-    end
-
-    test "UndefinedFunctionError with suggestions" do
-      assert %UndefinedFunctionError{module: Enum, function: :map, arity: 1}
-             |> message == """
-             function Enum.map/1 is undefined or private. Did you mean one of:
-
-                   * map/2
-             """
-
-      assert %UndefinedFunctionError{module: Enum, function: :man, arity: 1}
-             |> message == """
-             function Enum.man/1 is undefined or private. Did you mean one of:
-
-                   * map/2
-                   * max/1
-                   * max/2
-                   * min/1
-                   * min/2
-             """
-
-      assert %UndefinedFunctionError{module: :erlang, function: :gt_cookie, arity: 0}
-             |> message == """
-             function :erlang.gt_cookie/0 is undefined or private. Did you mean one of:
-
-                   * get_cookie/0
-                   * set_cookie/2
-             """
-    end
-
-    test "UndefinedFunctionError when the mfa is a macro but require wasn't called" do
-      _ = Code.ensure_loaded(Integer)
-
-      assert %UndefinedFunctionError{module: Integer, function: :is_odd, arity: 1}
-             |> message ==
-               "function Integer.is_odd/1 is undefined or private. However there is " <>
-                 "a macro with the same name and arity. Be sure to require Integer if " <>
-                 "you intend to invoke this macro"
+             |> message == "function nil.bar/0 is undefined"
     end
 
     test "FunctionClauseError" do
@@ -586,32 +872,63 @@ defmodule ExceptionTest do
              |> message == "no function clause matching in Foo.bar/1"
     end
 
-    # TODO: Remove this check once we depend only on 20
-    if :erlang.system_info(:otp_release) >= '20' do
-      test "FunctionClauseError with blame" do
-        {exception, _} =
-          Exception.blame(:error, :function_clause, [{Access, :fetch, [:foo, :bar], [line: 13]}])
-
-        assert message(exception) =~ """
-               no function clause matching in Access.fetch/2
-
-               The following arguments were given to Access.fetch/2:
-
-                   # 1
-                   :foo
-
-                   # 2
-                   :bar
-
-               Attempted function clauses (showing 5 out of 5):
-
-                   def fetch(-%module{} = container-, key)
-               """
-      end
-    end
-
     test "ErlangError" do
       assert %ErlangError{original: :sample} |> message == "Erlang error: :sample"
     end
   end
+
+  describe "error_info" do
+    test "badarg on erlang" do
+      assert message(:erlang, & &1.element("foo", "bar")) == """
+             errors were found at the given arguments:
+
+               * 1st argument: not an integer
+               * 2nd argument: not a tuple
+             """
+    end
+
+    test "badarg on ets" do
+      ets = :ets.new(:foo, [])
+      :ets.delete(ets)
+
+      assert message(:ets, & &1.insert(ets, 1)) == """
+             errors were found at the given arguments:
+
+               * 1st argument: the table identifier does not refer to an existing ETS table
+               * 2nd argument: not a tuple
+             """
+    end
+
+    test "system_limit on counters" do
+      assert message(:counters, & &1.new(123_456_789_123_456_789_123_456_789, [])) == """
+             a system limit has been reached due to errors at the given arguments:
+
+               * 1st argument: counters array size reached a system limit
+             """
+    end
+  end
+
+  if System.otp_release() >= "25" do
+    describe "binary constructor error info" do
+      defp concat(a, b), do: a <> b
+
+      test "on binary concatenation" do
+        assert message(123, &concat(&1, "bar")) ==
+                 "construction of binary failed: segment 1 of type 'binary': expected a binary but got: 123"
+
+        assert message(~D[0001-02-03], &concat(&1, "bar")) ==
+                 "construction of binary failed: segment 1 of type 'binary': expected a binary but got: ~D[0001-02-03]"
+      end
+    end
+  end
+
+  defp message(arg, fun) do
+    try do
+      fun.(arg)
+    rescue
+      e -> Exception.message(e)
+    end
+  end
+
+  def dummy_error_extras(_exception, _stacktrace), do: %{general: "foo"}
 end

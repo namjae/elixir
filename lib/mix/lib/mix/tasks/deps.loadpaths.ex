@@ -1,11 +1,10 @@
 defmodule Mix.Tasks.Deps.Loadpaths do
   use Mix.Task
 
-  import Mix.Dep,
-    only: [loaded_by_name: 2, format_dep: 1, ok?: 1, format_status: 1, check_lock: 1]
+  import Mix.Dep, only: [format_dep: 1, format_status: 1, check_lock: 1]
 
   @moduledoc """
-  Checks and loads all dependencies along the way.
+  Checks, compiles, and loads all dependencies along the way.
 
   If there is an invalid dependency, its status is printed
   before aborting.
@@ -15,68 +14,63 @@ defmodule Mix.Tasks.Deps.Loadpaths do
 
   ## Command line options
 
-    * `--no-deps-check` - does not check or compile deps, only load available ones
     * `--no-compile` - does not compile dependencies
+    * `--no-deps-check` - does not check or compile deps, only load available ones
+    * `--no-deps-loading` - does not add deps loadpaths to the code path
+    * `--no-elixir-version-check` - does not check Elixir version
+    * `--no-optional-deps` - does not compile or load optional deps
 
   """
 
+  @impl true
   def run(args) do
-    all = Mix.Dep.cached()
+    all = Mix.Dep.load_and_cache()
+
+    all =
+      if "--no-optional-deps" in args do
+        for dep <- all, dep.opts[:optional] != true, do: dep
+      else
+        all
+      end
+
+    config = Mix.Project.config()
+
+    unless "--no-elixir-version-check" in args do
+      check_elixir_version(config)
+    end
 
     unless "--no-deps-check" in args do
       deps_check(all, "--no-compile" in args)
     end
 
-    load_paths =
+    unless "--no-deps-loading" in args do
       for dep <- all,
           path <- Mix.Dep.load_paths(dep) do
         _ = Code.prepend_path(path)
         path
       end
-
-    # Since MIX_NO_DEPS returns no dependencies, it would
-    # cause all paths to be pruned, so we never enter here.
-    unless System.get_env("MIX_NO_DEPS") in ~w(1 true) do
-      prune_deps(load_paths, "--no-deps-check" in args)
     end
   end
 
-  # If the build is per environment, we should be able to look
-  # at all dependencies and remove the builds that no longer
-  # have a dependency defined for them.
-  #
-  # Notice we require the build_path to be nil. If it is not nil,
-  # it means the build_path is shared so we don't delete entries.
-  #
-  # We also expect env_path to be nil. If it is not nil, it means
-  # it was set by a parent application and the parent application
-  # should be the one doing the pruning.
-  defp prune_deps(load_paths, no_check?) do
-    config = Mix.Project.config()
+  defp check_elixir_version(config) do
+    if req = config[:elixir] do
+      case Version.parse_requirement(req) do
+        {:ok, req} ->
+          unless Version.match?(System.version(), req) do
+            raise Mix.ElixirVersionError,
+              target: config[:app] || Mix.Project.get(),
+              expected: req,
+              actual: System.version()
+          end
 
-    shared_build? =
-      no_check? or config[:build_path] != nil or config[:build_per_environment] == false
-
-    config
-    |> Mix.Project.build_path()
-    |> Path.join("lib/*/ebin")
-    |> Path.wildcard()
-    |> List.delete(config[:app] && Mix.Project.compile_path(config))
-    |> Kernel.--(load_paths)
-    |> Enum.each(&prune_path(&1, shared_build?))
-  end
-
-  defp prune_path(path, shared_build?) do
-    _ = Code.delete_path(path)
-
-    unless shared_build? do
-      path |> Path.dirname() |> File.rm_rf!()
+        :error ->
+          Mix.raise("Invalid Elixir version requirement #{req} in mix.exs file")
+      end
     end
   end
 
   defp deps_check(all, no_compile?) do
     all = Enum.map(all, &check_lock/1)
-
     {not_ok, compile} = partition(all, [], [])
 
     cond do
@@ -91,22 +85,22 @@ defmodule Mix.Tasks.Deps.Loadpaths do
 
         compile
         |> Enum.map(& &1.app)
-        |> loaded_by_name(env: Mix.env())
-        |> Enum.filter(&(not ok?(&1)))
+        |> Mix.Dep.filter_by_name(Mix.Dep.load_and_cache())
+        |> Enum.filter(&(not Mix.Dep.ok?(&1)))
         |> show_not_ok!
     end
   end
 
   defp partition([dep | deps], not_ok, compile) do
     cond do
-      compilable?(dep) ->
+      Mix.Dep.compilable?(dep) or (Mix.Dep.ok?(dep) and local?(dep)) ->
         if from_umbrella?(dep) do
           partition(deps, not_ok, compile)
         else
           partition(deps, not_ok, [dep | compile])
         end
 
-      ok?(dep) ->
+      Mix.Dep.ok?(dep) ->
         partition(deps, not_ok, compile)
 
       true ->
@@ -120,7 +114,7 @@ defmodule Mix.Tasks.Deps.Loadpaths do
 
   # Those are compiled by umbrella.
   defp from_umbrella?(dep) do
-    dep.opts()[:from_umbrella]
+    dep.opts[:from_umbrella]
   end
 
   # Every local dependency (i.e. that are not fetchable)
@@ -128,13 +122,6 @@ defmodule Mix.Tasks.Deps.Loadpaths do
   defp local?(dep) do
     not dep.scm.fetchable?
   end
-
-  # Can the dependency be compiled automatically without user intervention?
-  defp compilable?(%Mix.Dep{status: {:elixirlock, _}}), do: true
-  defp compilable?(%Mix.Dep{status: {:noappfile, _}}), do: true
-  defp compilable?(%Mix.Dep{status: {:scmlock, _}}), do: true
-  defp compilable?(%Mix.Dep{status: :compile}), do: true
-  defp compilable?(%Mix.Dep{} = dep), do: ok?(dep) and local?(dep)
 
   defp show_not_ok!([]) do
     :ok

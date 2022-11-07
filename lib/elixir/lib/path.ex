@@ -3,24 +3,29 @@ defmodule Path do
   This module provides conveniences for manipulating or
   retrieving file system paths.
 
-  The functions in this module may receive a chardata as
-  argument (i.e. a string or a list of characters / string)
-  and will always return a string (encoded in UTF-8).
+  The functions in this module may receive chardata as
+  arguments and will always return a string encoded in UTF-8. Chardata
+  is a string or a list of characters and strings, see `t:IO.chardata/0`.
+  If a binary is given, in whatever encoding, its encoding will be kept.
 
   The majority of the functions in this module do not
   interact with the file system, except for a few functions
   that require it (like `wildcard/2` and `expand/1`).
   """
 
-  @type t :: :unicode.chardata()
+  @typedoc """
+  A path.
+  """
+  @type t :: IO.chardata()
 
   @doc """
-  Converts the given path to an absolute one. Unlike
-  `expand/1`, no attempt is made to resolve `..`, `.` or `~`.
+  Converts the given path to an absolute one.
+
+  Unlike `expand/1`, no attempt is made to resolve `..`, `.`, or `~`.
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.absname("foo")
       #=> "/usr/local/foo"
@@ -30,15 +35,16 @@ defmodule Path do
 
   ### Windows
 
-      Path.absname("foo").
+      Path.absname("foo")
       #=> "D:/usr/local/foo"
-      Path.absname("../x").
+
+      Path.absname("../x")
       #=> "D:/usr/local/../x"
 
   """
   @spec absname(t) :: binary
   def absname(path) do
-    absname(path, System.cwd!())
+    absname(path, File.cwd!())
   end
 
   @doc """
@@ -65,7 +71,7 @@ defmodule Path do
 
     case type(path) do
       :relative ->
-        absname_join(relative_to, path)
+        absname_join([relative_to, path])
 
       :absolute ->
         absname_join([path])
@@ -79,11 +85,11 @@ defmodule Path do
   # Absolute path on current drive
   defp absname_vr(["/" | rest], [volume | _], _relative), do: absname_join([volume | rest])
 
-  # Relative to current directory on current drive.
+  # Relative to current directory on current drive
   defp absname_vr([<<x, ?:>> | rest], [<<x, _::binary>> | _], relative),
     do: absname(absname_join(rest), relative)
 
-  # Relative to current directory on another drive.
+  # Relative to current directory on another drive
   defp absname_vr([<<x, ?:>> | name], _, _relative) do
     cwd =
       case :file.get_cwd([x, ?:]) do
@@ -94,20 +100,27 @@ defmodule Path do
     absname(absname_join(name), cwd)
   end
 
-  # Joins a list
-  defp absname_join([name1, name2 | rest]), do: absname_join([absname_join(name1, name2) | rest])
+  @slash [?/, ?\\]
 
-  defp absname_join([name]),
-    do: do_absname_join(IO.chardata_to_string(name), <<>>, [], major_os_type())
+  defp absname_join([]), do: ""
+  defp absname_join(list), do: absname_join(list, major_os_type())
 
-  # Joins two paths
-  defp absname_join(left, right),
-    do: do_absname_join(IO.chardata_to_string(left), relative(right), [], major_os_type())
+  defp absname_join([name1, name2 | rest], os_type) do
+    joined = do_absname_join(IO.chardata_to_string(name1), relative(name2), [], os_type)
+    absname_join([joined | rest], os_type)
+  end
+
+  defp absname_join([name], os_type) do
+    do_absname_join(IO.chardata_to_string(name), <<>>, [], os_type)
+  end
 
   defp do_absname_join(<<uc_letter, ?:, rest::binary>>, relativename, [], :win32)
-       when uc_letter in ?A..?Z do
-    do_absname_join(rest, relativename, [?:, uc_letter + ?a - ?A], :win32)
-  end
+       when uc_letter in ?A..?Z,
+       do: do_absname_join(rest, relativename, [?:, uc_letter + ?a - ?A], :win32)
+
+  defp do_absname_join(<<c1, c2, rest::binary>>, relativename, [], :win32)
+       when c1 in @slash and c2 in @slash,
+       do: do_absname_join(rest, relativename, ~c"//", :win32)
 
   defp do_absname_join(<<?\\, rest::binary>>, relativename, result, :win32),
     do: do_absname_join(<<?/, rest::binary>>, relativename, result, :win32)
@@ -139,18 +152,18 @@ defmodule Path do
   defp reverse_maybe_remove_dir_sep(name, _), do: :lists.reverse(name)
 
   @doc """
-  Converts the path to an absolute one and expands
-  any `.` and `..` characters and a leading `~`.
+  Converts the path to an absolute one, expanding
+  any `.` and `..` components and a leading `~`.
 
   ## Examples
 
-      Path.expand("/foo/bar/../bar")
-      #=> "/foo/bar"
+      Path.expand("/foo/bar/../baz")
+      #=> "/foo/baz"
 
   """
   @spec expand(t) :: binary
   def expand(path) do
-    expand_dot(absname(expand_home(path), System.cwd!()))
+    expand_dot(absname(expand_home(path), File.cwd!()))
   end
 
   @doc """
@@ -171,14 +184,15 @@ defmodule Path do
       #=> "/quux/baz/foo/bar"
 
       Path.expand("foo/bar/../bar", "/baz")
-      "/baz/foo/bar"
+      #=> "/baz/foo/bar"
+
       Path.expand("/foo/bar/../bar", "/baz")
-      "/foo/bar"
+      #=> "/foo/bar"
 
   """
   @spec expand(t, t) :: binary
   def expand(path, relative_to) do
-    expand_dot(absname(absname(expand_home(path), expand_home(relative_to)), System.cwd!()))
+    expand_dot(absname(absname(expand_home(path), expand_home(relative_to)), File.cwd!()))
   end
 
   @doc """
@@ -186,7 +200,7 @@ defmodule Path do
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.type("/")                #=> :absolute
       Path.type("/usr/local/bin")   #=> :absolute
@@ -214,7 +228,7 @@ defmodule Path do
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.relative("/usr/local/bin")   #=> "usr/local/bin"
       Path.relative("usr/local/bin")    #=> "usr/local/bin"
@@ -246,13 +260,11 @@ defmodule Path do
     end
   end
 
-  defp unix_pathtype(path) when path in ["/", '/'], do: {:absolute, "."}
+  defp unix_pathtype(path) when path in ["/", ~c"/"], do: {:absolute, "."}
   defp unix_pathtype(<<?/, relative::binary>>), do: {:absolute, relative}
   defp unix_pathtype([?/ | relative]), do: {:absolute, relative}
   defp unix_pathtype([list | rest]) when is_list(list), do: unix_pathtype(list ++ rest)
   defp unix_pathtype(relative), do: {:relative, relative}
-
-  @slash [?/, ?\\]
 
   defp win32_pathtype([list | rest]) when is_list(list), do: win32_pathtype(list ++ rest)
 
@@ -306,11 +318,18 @@ defmodule Path do
       iex> Path.relative_to("/usr/local/foo", "/etc")
       "/usr/local/foo"
 
+      iex> Path.relative_to("/usr/local/foo", "/usr/local/foo")
+      "."
+
   """
   @spec relative_to(t, t) :: binary
   def relative_to(path, from) do
     path = IO.chardata_to_string(path)
     relative_to(split(path), split(from), path)
+  end
+
+  defp relative_to(path, path, _original) do
+    "."
   end
 
   defp relative_to([h | t1], [h | t2], original) do
@@ -351,6 +370,9 @@ defmodule Path do
 
       iex> Path.basename("foo/bar")
       "bar"
+
+      iex> Path.basename("lib/module/submodule.ex")
+      "submodule.ex"
 
       iex> Path.basename("/")
       ""
@@ -399,6 +421,9 @@ defmodule Path do
       iex> Path.dirname("/foo/bar/")
       "/foo/bar"
 
+      iex> Path.dirname("bar.ex")
+      "."
+
   """
   @spec dirname(t) :: binary
   def dirname(path) do
@@ -408,12 +433,21 @@ defmodule Path do
   @doc """
   Returns the extension of the last component of `path`.
 
+  For filenames starting with a dot and without an extension, it returns
+  an empty string.
+
+  See `basename/1` and `rootname/1` for related functions to extract
+  information from paths.
+
   ## Examples
 
       iex> Path.extname("foo.erl")
       ".erl"
 
       iex> Path.extname("~/foo/bar")
+      ""
+
+      iex> Path.extname(".gitignore")
       ""
 
   """
@@ -465,6 +499,8 @@ defmodule Path do
   This function should be used to convert a list of paths to a path.
   Note that any trailing slash is removed when joining.
 
+  Raises an error if the given list of paths is empty.
+
   ## Examples
 
       iex> Path.join(["~", "foo"])
@@ -504,6 +540,7 @@ defmodule Path do
       iex> Path.join(["foo", "bar"], "fiz")
       "foobar/fiz"
 
+  Use `join/1` if you need to join a list of paths instead.
   """
   @spec join(t, t) :: binary
   def join(left, right) do
@@ -512,6 +549,7 @@ defmodule Path do
     do_join(left, right, os_type) |> remove_dir_sep(os_type)
   end
 
+  defp do_join(left, "/", os_type), do: remove_dir_sep(left, os_type)
   defp do_join("", right, os_type), do: relative(right, os_type)
   defp do_join("/", right, os_type), do: "/" <> relative(right, os_type)
 
@@ -536,7 +574,7 @@ defmodule Path do
 
   If an empty string is given, returns an empty list.
 
-  On Windows, path is split on both "\" and "/" separators
+  On Windows, path is split on both `"\"` and `"/"` separators
   and the driver letter, if there is one, is always returned
   in lowercase.
 
@@ -553,10 +591,6 @@ defmodule Path do
 
   """
   @spec split(t) :: [binary]
-
-  # Work around a bug in Erlang on UNIX
-  def split(""), do: []
-
   def split(path) do
     :filename.split(IO.chardata_to_string(path))
   end
@@ -565,26 +599,14 @@ defmodule Path do
     @moduledoc false
 
     def read_link_info(file) do
-      call({:read_link_info, file})
+      :file.read_link_info(file)
     end
 
     def list_dir(dir) do
-      case call({:list_dir, dir}) do
-        {:ok, files} ->
-          {:ok, for(file <- files, hd(file) != ?., do: file)}
-
-        other ->
-          other
+      case :file.list_dir(dir) do
+        {:ok, files} -> {:ok, for(file <- files, hd(file) != ?., do: file)}
+        other -> other
       end
-    end
-
-    @compile {:inline, call: 1}
-
-    defp call(tuple) do
-      x = :erlang.dt_spread_tag(true)
-      y = :gen_server.call(:file_server_2, tuple)
-      :erlang.dt_restore_tag(x)
-      y
     end
   end
 
@@ -592,24 +614,23 @@ defmodule Path do
   Traverses paths according to the given `glob` expression and returns a
   list of matches.
 
-  The wildcard looks like an ordinary path, except that certain
-  "wildcard characters" are interpreted in a special way. The
-  following characters are special:
+  The wildcard looks like an ordinary path, except that the following
+  "wildcard characters" are interpreted in a special way:
 
-    * `?` - matches one character
+    * `?` - matches one character.
 
     * `*` - matches any number of characters up to the end of the filename, the
-      next dot, or the next slash
+      next dot, or the next slash.
 
     * `**` - two adjacent `*`'s used as a single pattern will match all
-      files and zero or more directories and subdirectories
+      files and zero or more directories and subdirectories.
 
     * `[char1,char2,...]` - matches any of the characters listed; two
       characters separated by a hyphen will match a range of characters.
       Do not add spaces before and after the comma as it would then match
       paths containing the space character itself.
 
-    * `{item1,item2,...}` - matches one of the alternatives
+    * `{item1,item2,...}` - matches one of the alternatives.
       Do not add spaces before and after the comma as it would then match
       paths containing the space character itself.
 
@@ -617,8 +638,23 @@ defmodule Path do
   exactly the same character in the same position will match. Note
   that matching is case-sensitive: `"a"` will not match `"A"`.
 
+  Directory separators must always be written as `/`, even on Windows.
+  You may call `Path.expand/1` to normalize the path before invoking
+  this function.
+
+  A character preceded by \ loses its special meaning.
+  Note that \ must be written as \\ in a string literal.
+  For example, "\\?*" will match any filename starting with ?.
+
   By default, the patterns `*` and `?` do not match files starting
-  with a dot `.` unless `match_dot: true` is given in `opts`.
+  with a dot `.`. See the `:match_dot` option in the "Options" section
+  below.
+
+  ## Options
+
+    * `:match_dot` - (boolean) if `false`, the special wildcard characters `*` and `?`
+      will not match files starting with a dot (`.`). If `true`, files starting with
+      a `.` will not be treated specially. Defaults to `false`.
 
   ## Examples
 
@@ -634,7 +670,7 @@ defmodule Path do
 
   """
   @spec wildcard(t, keyword) :: [binary]
-  def wildcard(glob, opts \\ []) do
+  def wildcard(glob, opts \\ []) when is_list(opts) do
     mod = if Keyword.get(opts, :match_dot), do: :file, else: Path.Wildcard
 
     glob
@@ -672,14 +708,9 @@ defmodule Path do
 
   defp resolve_home(rest) do
     case {rest, major_os_type()} do
-      {"\\" <> _, :win32} ->
-        System.user_home!() <> rest
-
-      {"/" <> _, _} ->
-        System.user_home!() <> rest
-
-      _ ->
-        rest
+      {"\\" <> _, :win32} -> System.user_home!() <> rest
+      {"/" <> _, _} -> System.user_home!() <> rest
+      _ -> "~" <> rest
     end
   end
 
@@ -701,5 +732,75 @@ defmodule Path do
 
   defp major_os_type do
     :os.type() |> elem(0)
+  end
+
+  @doc """
+  Returns a relative path that is protected from directory-traversal attacks.
+
+  The given relative path is sanitized by eliminating `..` and `.` components.
+
+  This function checks that, after expanding those components, the path is still "safe".
+  Paths are considered unsafe if either of these is true:
+
+    * The path is not relative, such as `"/foo/bar"`.
+
+    * A `..` component would make it so that the path would travers up above
+      the root of `relative_to`.
+
+    * A symbolic link in the path points to something above the root of `relative_to`.
+
+  ## Examples
+
+      iex> Path.safe_relative_to("deps/my_dep/app.beam", "deps")
+      {:ok, "deps/my_dep/app.beam"}
+
+      iex> Path.safe_relative_to("deps/my_dep/./build/../app.beam", "deps")
+      {:ok, "deps/my_dep/app.beam"}
+
+      iex> Path.safe_relative_to("my_dep/../..", "deps")
+      :error
+
+      iex> Path.safe_relative_to("/usr/local", ".")
+      :error
+
+  """
+  @doc since: "1.14.0"
+  @spec safe_relative_to(t, t) :: {:ok, binary} | :error
+  def safe_relative_to(path, relative_to) do
+    path = IO.chardata_to_string(path)
+
+    case :filelib.safe_relative_path(path, relative_to) do
+      :unsafe -> :error
+      relative_path -> {:ok, IO.chardata_to_string(relative_path)}
+    end
+  end
+
+  @doc """
+  Returns a path relative to the current working directory that is
+  protected from directory-traversal attacks.
+
+  Same as `safe_relative_to/2` with the current working directory as
+  the second argument. If there is an issue retrieving the current working
+  directory, this function raises an error.
+
+  ## Examples
+
+      iex> Path.safe_relative("foo")
+      {:ok, "foo"}
+
+      iex> Path.safe_relative("foo/../bar")
+      {:ok, "bar"}
+
+      iex> Path.safe_relative("foo/../..")
+      :error
+
+      iex> Path.safe_relative("/usr/local")
+      :error
+
+  """
+  @doc since: "1.14.0"
+  @spec safe_relative(t) :: {:ok, binary} | :error
+  def safe_relative(path) do
+    safe_relative_to(path, File.cwd!())
   end
 end

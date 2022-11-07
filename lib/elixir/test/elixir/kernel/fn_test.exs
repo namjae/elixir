@@ -8,23 +8,17 @@ defmodule Kernel.FnTest do
     assert (fn +1 -> true end).(1)
   end
 
+  defp fun_match(x) do
+    fn
+      ^x -> true
+      _ -> false
+    end
+  end
+
   test "pin operator on match" do
-    x = 1
-
-    refute (fn
-              ^x -> true
-              _ -> false
-            end).(0)
-
-    assert (fn
-              ^x -> true
-              _ -> false
-            end).(1)
-
-    refute (fn
-              ^x -> true
-              _ -> false
-            end).(1.0)
+    refute fun_match(1).(0)
+    assert fun_match(1).(1)
+    refute fun_match(1).(1.0)
   end
 
   test "guards with no args" do
@@ -52,19 +46,19 @@ defmodule Kernel.FnTest do
   end
 
   test "capture remote" do
-    assert (&:erlang.atom_to_list/1).(:a) == 'a'
-    assert (&Atom.to_charlist/1).(:a) == 'a'
+    assert (&:erlang.atom_to_list/1).(:a) == ~c"a"
+    assert (&Atom.to_charlist/1).(:a) == ~c"a"
 
     assert (&List.flatten/1).([[0]]) == [0]
     assert (&List.flatten/1).([[0]]) == [0]
     assert (&List.flatten(&1)).([[0]]) == [0]
-    assert (&List.flatten(&1)) == &List.flatten/1
+    assert (&List.flatten(&1)) == (&List.flatten/1)
   end
 
   test "capture local" do
-    assert (&atl/1).(:a) == 'a'
-    assert (&atl/1).(:a) == 'a'
-    assert (&atl(&1)).(:a) == 'a'
+    assert (&atl/1).(:a) == ~c"a"
+    assert (&atl/1).(:a) == ~c"a"
+    assert (&atl(&1)).(:a) == ~c"a"
   end
 
   test "capture local with question mark" do
@@ -77,7 +71,7 @@ defmodule Kernel.FnTest do
     assert (&is_atom/1).(:a)
     assert (&is_atom/1).(:a)
     assert (&is_atom(&1)).(:a)
-    assert (&is_atom(&1)) == &is_atom/1
+    assert (&is_atom(&1)) == (&is_atom/1)
   end
 
   test "capture macro" do
@@ -102,12 +96,12 @@ defmodule Kernel.FnTest do
     mod = List
     assert (&mod.flatten(&1)).([1, [2], 3]) == [1, 2, 3]
     assert (&mod.flatten/1).([1, [2], 3]) == [1, 2, 3]
-    assert (&mod.flatten/1) == &List.flatten/1
+    assert (&mod.flatten/1) == (&List.flatten/1)
   end
 
   test "local partial application" do
     assert (&atb(&1, :utf8)).(:a) == "a"
-    assert (&atb(List.to_atom(&1), :utf8)).('a') == "a"
+    assert (&atb(List.to_atom(&1), :utf8)).(~c"a") == "a"
   end
 
   test "imported partial application" do

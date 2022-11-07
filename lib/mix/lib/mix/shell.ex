@@ -3,6 +3,9 @@ defmodule Mix.Shell do
   Defines `Mix.Shell` contract.
   """
 
+  @doc false
+  defstruct [:callback]
+
   @doc """
   Prints the given ANSI message to the shell.
   """
@@ -15,6 +18,8 @@ defmodule Mix.Shell do
 
   @doc """
   Executes the given command and returns its exit status.
+
+  Shortcut for `cmd/2` with empty options.
   """
   @callback cmd(command :: String.t()) :: integer
 
@@ -43,8 +48,19 @@ defmodule Mix.Shell do
 
   @doc """
   Prompts the user for confirmation.
+
+  Shortcut for `yes?/2` with empty options.
   """
   @callback yes?(message :: binary) :: boolean
+
+  @doc """
+  Prompts the user for confirmation.
+
+  ## Options
+
+    * `:default` - `:yes` or `:no` (the default is `:yes`)
+  """
+  @callback yes?(message :: binary, options :: keyword) :: boolean
 
   @doc """
   Prints the current application to the shell if
@@ -76,77 +92,40 @@ defmodule Mix.Shell do
 
   ## Options
 
+    * `:cd` - (since v1.11.0) the directory to run the command in
+
     * `:stderr_to_stdout` - redirects stderr to stdout, defaults to true
+
     * `:env` - a list of environment variables, defaults to `[]`
+
     * `:quiet` - overrides the callback to no-op
 
   """
-  def cmd(command, options, callback) when is_function(callback, 1) do
+  def cmd(command, options \\ [], callback) when is_function(callback, 1) do
     callback =
-      if Keyword.get(options, :quiet, false) do
+      if options[:quiet] do
         fn x -> x end
       else
         callback
       end
 
-    env = validate_env(Keyword.get(options, :env, []))
+    options =
+      options
+      |> Keyword.take([:cd, :stderr_to_stdout, :env])
+      |> Keyword.put(:into, %Mix.Shell{callback: callback})
+      |> Keyword.put_new(:stderr_to_stdout, true)
 
-    args =
-      if Keyword.get(options, :stderr_to_stdout, true) do
-        [:stderr_to_stdout]
-      else
-        []
-      end
-
-    opts = [:stream, :binary, :exit_status, :hide, :use_stdio, {:env, env} | args]
-    port = Port.open({:spawn, shell_command(command)}, opts)
-    port_read(port, callback)
+    {_, status} = System.shell(command, options)
+    status
   end
 
-  defp port_read(port, callback) do
-    receive do
-      {^port, {:data, data}} ->
-        _ = callback.(data)
-        port_read(port, callback)
-
-      {^port, {:exit_status, status}} ->
-        status
+  defimpl Collectable do
+    def into(%Mix.Shell{callback: fun}) do
+      {:ok,
+       fn
+         _, {:cont, data} -> fun.(data)
+         _, _ -> :ok
+       end}
     end
-  end
-
-  # Finding shell command logic from :os.cmd in OTP
-  # https://github.com/erlang/otp/blob/8deb96fb1d017307e22d2ab88968b9ef9f1b71d0/lib/kernel/src/os.erl#L184
-  defp shell_command(command) do
-    case :os.type() do
-      {:unix, _} ->
-        command =
-          command
-          |> String.replace("\"", "\\\"")
-          |> String.to_charlist()
-
-        'sh -c "' ++ command ++ '"'
-
-      {:win32, osname} ->
-        command = '"' ++ String.to_charlist(command) ++ '"'
-
-        case {System.get_env("COMSPEC"), osname} do
-          {nil, :windows} -> 'command.com /s /c ' ++ command
-          {nil, _} -> 'cmd /s /c ' ++ command
-          {cmd, _} -> '#{cmd} /s /c ' ++ command
-        end
-    end
-  end
-
-  defp validate_env(enum) do
-    Enum.map(enum, fn
-      {k, nil} ->
-        {String.to_charlist(k), false}
-
-      {k, v} ->
-        {String.to_charlist(k), String.to_charlist(v)}
-
-      other ->
-        raise ArgumentError, "invalid environment key-value #{inspect(other)}"
-    end)
   end
 end

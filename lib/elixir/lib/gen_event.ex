@@ -1,15 +1,13 @@
 defmodule GenEvent do
-  # TODO: Remove by 2.0
-
   # Functions from this module are deprecated in elixir_dispatch.
 
   @moduledoc """
-  WARNING: this module is deprecated.
+  An event manager with event handlers behaviour.
 
   If you are interested in implementing an event manager, please read the
   "Alternatives" section below. If you have to implement an event handler to
   integrate with an existing system, such as Elixir's Logger, please use
-  `:gen_event` instead.
+  [`:gen_event`](`:gen_event`) instead.
 
   ## Alternatives
 
@@ -40,8 +38,10 @@ defmodule GenEvent do
 
   If your use case requires exactly what GenEvent provided, or you have to
   integrate with an existing `:gen_event`-based system, you can still use the
-  [`:gen_event`](http://erlang.org/doc/man/gen_event.html) Erlang module.
+  [`:gen_event`](`:gen_event`) Erlang module.
   """
+
+  @moduledoc deprecated: "Use Erlang/OTP's :gen_event module instead"
 
   @callback init(args :: term) ::
               {:ok, state}
@@ -83,14 +83,15 @@ defmodule GenEvent do
 
   @type handler :: atom | {atom, term}
 
+  message = "Use one of the alternatives described in the documentation for the GenEvent module"
+
+  @deprecated message
   @doc false
   defmacro __using__(_) do
-    %{file: file, line: line} = __CALLER__
-
     deprecation_message =
       "the GenEvent module is deprecated, see its documentation for alternatives"
 
-    :elixir_errors.warn(line, file, deprecation_message)
+    IO.warn(deprecation_message, __CALLER__)
 
     quote location: :keep do
       @behaviour :gen_event
@@ -148,12 +149,14 @@ defmodule GenEvent do
   end
 
   @doc false
+  @deprecated message
   @spec start_link(options) :: on_start
   def start_link(options \\ []) when is_list(options) do
     do_start(:link, options)
   end
 
   @doc false
+  @deprecated message
   @spec start(options) :: on_start
   def start(options \\ []) when is_list(options) do
     do_start(:nolink, options)
@@ -177,7 +180,7 @@ defmodule GenEvent do
 
       other ->
         raise ArgumentError, """
-        expected :name option to be one of:
+        expected :name option to be one of the following:
 
           * nil
           * atom
@@ -190,24 +193,28 @@ defmodule GenEvent do
   end
 
   @doc false
+  @deprecated message
   @spec stream(manager, keyword) :: GenEvent.Stream.t()
   def stream(manager, options \\ []) do
     %GenEvent.Stream{manager: manager, timeout: Keyword.get(options, :timeout, :infinity)}
   end
 
   @doc false
+  @deprecated message
   @spec add_handler(manager, handler, term) :: :ok | {:error, term}
   def add_handler(manager, handler, args) do
     rpc(manager, {:add_handler, handler, args})
   end
 
   @doc false
+  @deprecated message
   @spec add_mon_handler(manager, handler, term) :: :ok | {:error, term}
   def add_mon_handler(manager, handler, args) do
     rpc(manager, {:add_mon_handler, handler, args, self()})
   end
 
   @doc false
+  @deprecated message
   @spec notify(manager, term) :: :ok
   def notify(manager, event)
 
@@ -238,18 +245,21 @@ defmodule GenEvent do
   end
 
   @doc false
+  @deprecated message
   @spec sync_notify(manager, term) :: :ok
   def sync_notify(manager, event) do
     rpc(manager, {:sync_notify, event})
   end
 
   @doc false
+  @deprecated message
   @spec ack_notify(manager, term) :: :ok
   def ack_notify(manager, event) do
     rpc(manager, {:ack_notify, event})
   end
 
   @doc false
+  @deprecated message
   @spec call(manager, handler, term, timeout) :: term | {:error, term}
   def call(manager, handler, request, timeout \\ 5000) do
     try do
@@ -263,30 +273,35 @@ defmodule GenEvent do
   end
 
   @doc false
+  @deprecated message
   @spec remove_handler(manager, handler, term) :: term | {:error, term}
   def remove_handler(manager, handler, args) do
     rpc(manager, {:delete_handler, handler, args})
   end
 
   @doc false
+  @deprecated message
   @spec swap_handler(manager, handler, term, handler, term) :: :ok | {:error, term}
   def swap_handler(manager, handler1, args1, handler2, args2) do
     rpc(manager, {:swap_handler, handler1, args1, handler2, args2})
   end
 
   @doc false
+  @deprecated message
   @spec swap_mon_handler(manager, handler, term, handler, term) :: :ok | {:error, term}
   def swap_mon_handler(manager, handler1, args1, handler2, args2) do
     rpc(manager, {:swap_mon_handler, handler1, args1, handler2, args2, self()})
   end
 
   @doc false
+  @deprecated message
   @spec which_handlers(manager) :: [handler]
   def which_handlers(manager) do
     rpc(manager, :which_handlers)
   end
 
   @doc false
+  @deprecated message
   @spec stop(manager, reason :: term, timeout) :: :ok
   def stop(manager, reason \\ :normal, timeout \\ :infinity) do
     :gen.stop(manager, reason, timeout)
@@ -309,14 +324,7 @@ defmodule GenEvent do
 
   def init_it(starter, parent, name, _mod, _args, options) do
     Process.put(:"$initial_call", {__MODULE__, :init_it, 6})
-
-    debug =
-      if function_exported?(:gen, :debug_options, 2) do
-        :gen.debug_options(name, options)
-      else
-        :gen.debug_options(options)
-      end
-
+    debug = :gen.debug_options(name, options)
     :proc_lib.init_ack(starter, {:ok, self()})
     loop(parent, name(name), [], debug, false)
   end
@@ -502,7 +510,7 @@ defmodule GenEvent do
   @doc false
   def format_status(opt, status_data) do
     [pdict, sys_state, parent, _debug, [name, handlers, _hib]] = status_data
-    header = :gen.format_status_header('Status for event handler', name)
+    header = :gen.format_status_header(~c"Status for event handler", name)
 
     formatted =
       for handler <- handlers do
@@ -522,8 +530,8 @@ defmodule GenEvent do
 
     [
       header: header,
-      data: [{'Status', sys_state}, {'Parent', parent}],
-      items: {'Installed handlers', formatted}
+      data: [{~c"Status", sys_state}, {~c"Parent", parent}],
+      items: {~c"Installed handlers", formatted}
     ]
   end
 
@@ -829,7 +837,7 @@ defmodule GenEvent do
       apply(mod, fun, args)
     catch
       :throw, val -> {:ok, val}
-      :error, val -> {:error, {val, System.stacktrace()}}
+      :error, val -> {:error, {val, __STACKTRACE__}}
       :exit, val -> {:error, val}
     else
       res -> {:ok, res}
@@ -874,9 +882,9 @@ defmodule GenEvent do
     formatted = report_status(handler, state)
 
     :error_logger.error_msg(
-      '** gen_event handler ~p crashed.~n' ++
-        '** Was installed in ~p~n' ++
-        '** Last event was: ~p~n' ++ '** When handler state == ~p~n' ++ '** Reason == ~p~n',
+      ~c"** gen_event handler ~p crashed.~n" ++
+        ~c"** Was installed in ~p~n" ++
+        ~c"** Last event was: ~p~n" ++ ~c"** When handler state == ~p~n" ++ ~c"** Reason == ~p~n",
       [handler(handler, :id), name, last_in, formatted, reason]
     )
   end

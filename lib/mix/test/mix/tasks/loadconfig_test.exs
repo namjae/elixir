@@ -3,11 +3,10 @@ Code.require_file("../../test_helper.exs", __DIR__)
 defmodule Mix.Tasks.LoadconfigTest do
   use MixTest.Case
 
-  @tag apps: [:my_app]
   test "reads and persists project configuration", context do
-    Mix.Project.push(MixTest.Case.Sample)
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
 
-    in_tmp context.test, fn ->
       write_config("""
       [my_app: [key: :project]]
       """)
@@ -17,22 +16,37 @@ defmodule Mix.Tasks.LoadconfigTest do
       assert Application.fetch_env(:my_app, :key) == {:ok, :project}
 
       # App configuration should have lower precedence
-      :ok = :application.load({:application, :my_app, [vsn: '1.0.0', env: [key: :app]]})
+      :ok = :application.load({:application, :my_app, [vsn: ~c"1.0.0", env: [key: :app]]})
       assert Application.fetch_env(:my_app, :key) == {:ok, :project}
 
       # loadconfig can be called multiple times
       # Later values should have higher precedence
-      Mix.Task.run("loadconfig", [fixture_path("configs/good_config.exs")])
+      Mix.Task.run("loadconfig", [fixture_path("config.exs")])
       assert Application.fetch_env(:my_app, :key) == {:ok, :value}
-    end
+    end)
   end
 
-  @tag apps: [:config_app]
+  test "sets config_env() and config_target()", context do
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
+      write_config("""
+      import Config
+      config :opts_app, :key, {config_env(), config_target()}
+      """)
+
+      assert Application.fetch_env(:opts_app, :key) == :error
+      Mix.Task.run("loadconfig", [])
+      assert Application.fetch_env(:opts_app, :key) == {:ok, {:dev, :host}}
+    end)
+  end
+
   test "reads from custom config_path", context do
     Mix.ProjectStack.post_config(config_path: "fresh.config")
-    Mix.Project.push(MixTest.Case.Sample)
 
-    in_tmp context.test, fn ->
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       write_config("fresh.config", """
       [config_app: [key: :value]]
       """)
@@ -43,10 +57,31 @@ defmodule Mix.Tasks.LoadconfigTest do
 
       File.rm("fresh.config")
 
-      assert_raise Mix.Config.LoadError, ~r"could not load config fresh\.config", fn ->
+      assert_raise File.Error, ~r"could not read file .*/fresh\.config", fn ->
         Mix.Task.run("loadconfig", [])
       end
-    end
+    end)
+  end
+
+  test "updates config files and config mtime", context do
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
+      mtime = Mix.Project.config_mtime()
+      config = Path.expand("config/config.exs")
+      refute config in Mix.Project.config_files()
+
+      write_config(config, "[]")
+      Mix.Task.run("loadconfig", [config])
+      assert config in Mix.Project.config_files()
+      assert Mix.Project.config_mtime() > mtime
+
+      # Touching it should not have any deadlocks
+      File.touch!(config, {{2038, 1, 1}, {0, 0, 0}})
+      Mix.Task.run("loadconfig", [config])
+      assert config in Mix.Project.config_files()
+      assert Mix.Project.config_mtime() > mtime
+    end)
   end
 
   defp write_config(path \\ "config/config.exs", contents) do

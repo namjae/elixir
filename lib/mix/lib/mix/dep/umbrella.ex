@@ -15,7 +15,14 @@ defmodule Mix.Dep.Umbrella do
       for {app, path} <- apps_paths do
         dest_path = Path.expand(path)
         build_path = Path.join([build, "lib", Atom.to_string(app)])
-        opts = [path: path, dest: dest_path, from_umbrella: true, env: env, build: build_path]
+
+        opts = [
+          path: path,
+          dest: dest_path,
+          from_umbrella: true,
+          env: env,
+          build: build_path
+        ]
 
         %Mix.Dep{
           scm: Mix.SCM.Path,
@@ -38,7 +45,7 @@ defmodule Mix.Dep.Umbrella do
   def cached do
     if project = Mix.Project.get() do
       key = {:umbrella_deps, Mix.env(), project}
-      Mix.ProjectStack.read_cache(key) || Mix.ProjectStack.write_cache(key, loaded())
+      Mix.State.read_cache(key) || Mix.State.write_cache(key, loaded())
     else
       loaded()
     end
@@ -52,7 +59,7 @@ defmodule Mix.Dep.Umbrella do
     apps = Enum.map(deps, & &1.app)
 
     Enum.map(deps, fn umbrella_dep ->
-      umbrella_dep = Mix.Dep.Loader.load(umbrella_dep, nil)
+      umbrella_dep = Mix.Dep.Loader.load(umbrella_dep, nil, false)
 
       deps =
         Enum.filter(umbrella_dep.deps, fn dep ->

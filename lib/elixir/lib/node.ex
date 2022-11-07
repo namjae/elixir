@@ -13,8 +13,23 @@ defmodule Node do
   @doc """
   Turns a non-distributed node into a distributed node.
 
-  This functionality starts the `:net_kernel` and other
-  related processes.
+  This functionality starts the `:net_kernel` and other related
+  processes.
+
+  This function is rarely invoked in practice. Instead, nodes are
+  named and started via the command line by using the `--sname` and
+  `--name` flags. If you need to use this function to dynamically
+  name a node, please make sure the `epmd` operating system process
+  is running by calling `epmd -daemon`.
+
+  Invoking this function when the distribution has already been started,
+  either via the command line interface or dynamically, will return an
+  error.
+
+  ## Examples
+
+      {:ok, pid} = Node.start(:example, :shortnames, 15000)
+
   """
   @spec start(node, :longnames | :shortnames, non_neg_integer) :: {:ok, pid} | {:error, term}
   def start(name, type \\ :longnames, tick_time \\ 15000) do
@@ -59,6 +74,8 @@ defmodule Node do
   the local node.
 
   Same as `list(:visible)`.
+
+  Inlined by the compiler.
   """
   @spec list :: [t]
   def list do
@@ -72,8 +89,10 @@ defmodule Node do
   satisfying the disjunction(s) of the list elements.
 
   For more information, see `:erlang.nodes/1`.
+
+  Inlined by the compiler.
   """
-  @typep state :: :visible | :hidden | :connected | :this | :known
+  @type state :: :visible | :hidden | :connected | :this | :known
   @spec list(state | [state]) :: [t]
   def list(args) do
     :erlang.nodes(args)
@@ -87,7 +106,7 @@ defmodule Node do
 
   For more information, see `:erlang.monitor_node/2`.
 
-  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
+  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/2`.
   """
   @spec monitor(t, boolean) :: true
   def monitor(node, flag) do
@@ -100,7 +119,7 @@ defmodule Node do
 
   For more information, see `:erlang.monitor_node/3`.
 
-  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/3`.
+  For monitoring status changes of all nodes, see `:net_kernel.monitor_nodes/2`.
   """
   @spec monitor(t, boolean, [:allow_passive_connect]) :: true
   def monitor(node, flag, options) do
@@ -159,7 +178,7 @@ defmodule Node do
 
   Inlined by the compiler.
   """
-  @spec spawn(t, (() -> any)) :: pid
+  @spec spawn(t, (-> any)) :: pid
   def spawn(node, fun) do
     :erlang.spawn(node, fun)
   end
@@ -174,7 +193,7 @@ defmodule Node do
 
   Inlined by the compiler.
   """
-  @spec spawn(t, (() -> any), Process.spawn_opts()) :: pid | {pid, reference}
+  @spec spawn(t, (-> any), Process.spawn_opts()) :: pid | {pid, reference}
   def spawn(node, fun, opts) do
     :erlang.spawn_opt(node, fun, opts)
   end
@@ -200,7 +219,7 @@ defmodule Node do
 
   If `node` does not exist, a useless PID is returned.
 
-  For the list of available options, see `:erlang.spawn/5`.
+  For the list of available options, see `:erlang.spawn/4`.
 
   Inlined by the compiler.
   """
@@ -218,7 +237,7 @@ defmodule Node do
 
   Inlined by the compiler.
   """
-  @spec spawn_link(t, (() -> any)) :: pid
+  @spec spawn_link(t, (-> any)) :: pid
   def spawn_link(node, fun) do
     :erlang.spawn_link(node, fun)
   end
@@ -239,6 +258,30 @@ defmodule Node do
   end
 
   @doc """
+  Spawns the given function on a node, monitors it and returns its PID
+  and monitoring reference.
+
+  Inlined by the compiler.
+  """
+  @doc since: "1.14.0"
+  @spec spawn_monitor(t, (-> any)) :: {pid, reference}
+  def spawn_monitor(node, fun) do
+    :erlang.spawn_monitor(node, fun)
+  end
+
+  @doc """
+  Spawns the given module and function passing the given args on a node,
+  monitors it and returns its PID and monitoring reference.
+
+  Inlined by the compiler.
+  """
+  @doc since: "1.14.0"
+  @spec spawn_monitor(t, module, atom, [any]) :: {pid, reference}
+  def spawn_monitor(node, module, fun, args) do
+    :erlang.spawn_monitor(node, module, fun, args)
+  end
+
+  @doc """
   Sets the magic cookie of `node` to the atom `cookie`.
 
   The default node is `Node.self/0`, the local node. If `node` is the local node,
@@ -246,6 +289,7 @@ defmodule Node do
 
   This function will raise `FunctionClauseError` if the given `node` is not alive.
   """
+  @spec set_cookie(t, atom) :: true
   def set_cookie(node \\ Node.self(), cookie) when is_atom(cookie) do
     :erlang.set_cookie(node, cookie)
   end
@@ -255,6 +299,7 @@ defmodule Node do
 
   Returns the cookie if the node is alive, otherwise `:nocookie`.
   """
+  @spec get_cookie() :: atom
   def get_cookie() do
     :erlang.get_cookie()
   end

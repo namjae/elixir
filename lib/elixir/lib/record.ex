@@ -4,7 +4,7 @@ defmodule Record do
 
   Records are simply tuples where the first element is an atom:
 
-      iex> Record.is_record {User, "john", 27}
+      iex> Record.is_record({User, "john", 27})
       true
 
   This module provides conveniences for working with records at
@@ -28,12 +28,18 @@ defmodule Record do
 
       defmodule MyModule do
         require Record
-        Record.defrecord :user, name: "john", age: 25
+        Record.defrecord(:user, name: "john", age: 25)
 
-        @type user :: record(:user, name: String.t, age: integer)
-        # expands to: "@type user :: {:user, String.t, integer}"
+        @type user :: record(:user, name: String.t(), age: integer)
+        # expands to: "@type user :: {:user, String.t(), integer}"
       end
 
+  ## Reflection
+
+  A list of all records in a module, if any, can be retrieved by reading the
+  `@__records__` module attribute. It returns a list of maps with the record
+  kind, name, tag, and fields. The attribute is only available inside the
+  module definition.
   """
 
   @doc """
@@ -47,17 +53,28 @@ defmodule Record do
 
   ## Options
 
-  This function accepts the following options, which are exclusive to each other
-  (i.e., only one of them can be used in the same call):
+  This function requires one of the following options, which are exclusive to each
+  other (i.e., only one of them can be used in the same call):
 
     * `:from` - (binary representing a path to a file) path to the Erlang file
       that contains the record definition to extract; with this option, this
       function uses the same path lookup used by the `-include` attribute used in
       Erlang modules.
+
     * `:from_lib` - (binary representing a path to a file) path to the Erlang
       file that contains the record definition to extract; with this option,
       this function uses the same path lookup used by the `-include_lib`
       attribute used in Erlang modules.
+
+  It additionally accepts the following optional, non-exclusive options:
+
+    * `:includes` - (a list of directories as binaries) if the record being
+      extracted depends on relative includes, this option allows developers
+      to specify the directory where those relative includes exist.
+
+    * `:macros` - (keyword list of macro names and values) if the record
+      being extracted depends on the values of macros, this option allows
+      the value of those macros to be set.
 
   These options are expected to be literals (including the binary values) at
   compile time.
@@ -65,10 +82,21 @@ defmodule Record do
   ## Examples
 
       iex> Record.extract(:file_info, from_lib: "kernel/include/file.hrl")
-      [size: :undefined, type: :undefined, access: :undefined, atime: :undefined,
-       mtime: :undefined, ctime: :undefined, mode: :undefined, links: :undefined,
-       major_device: :undefined, minor_device: :undefined, inode: :undefined,
-       uid: :undefined, gid: :undefined]
+      [
+        size: :undefined,
+        type: :undefined,
+        access: :undefined,
+        atime: :undefined,
+        mtime: :undefined,
+        ctime: :undefined,
+        mode: :undefined,
+        links: :undefined,
+        major_device: :undefined,
+        minor_device: :undefined,
+        inode: :undefined,
+        uid: :undefined,
+        gid: :undefined
+      ]
 
   """
   @spec extract(name :: atom, keyword) :: keyword
@@ -85,20 +113,8 @@ defmodule Record do
 
   ## Options
 
-  This function accepts the following options, which are exclusive to each other
-  (i.e., only one of them can be used in the same call):
+  Accepts the same options as listed for `Record.extract/2`.
 
-    * `:from` - (binary representing a path to a file) path to the Erlang file
-      that contains the record definitions to extract; with this option, this
-      function uses the same path lookup used by the `-include` attribute used in
-      Erlang modules.
-    * `:from_lib` - (binary representing a path to a file) path to the Erlang
-      file that contains the record definitions to extract; with this option,
-      this function uses the same path lookup used by the `-include_lib`
-      attribute used in Erlang modules.
-
-  These options are expected to be literals (including the binary values) at
-  compile time.
   """
   @spec extract_all(keyword) :: [{name :: atom, keyword}]
   def extract_all(opts) when is_list(opts) do
@@ -128,12 +144,11 @@ defmodule Record do
 
   ## Examples
 
-      iex> record = {User, "john", 27}
-      iex> Record.is_record(record)
-      true
-      iex> tuple = {}
-      iex> Record.is_record(tuple)
-      false
+      Record.is_record({User, "john", 27})
+      #=> true
+
+      Record.is_record({})
+      #=> false
 
   """
   defguard is_record(data)
@@ -166,7 +181,7 @@ defmodule Record do
 
       defmodule User do
         require Record
-        Record.defrecord :user, [name: "meg", age: "25"]
+        Record.defrecord(:user, name: "meg", age: "25")
       end
 
   In the example above, a set of macros named `user` but with different
@@ -206,7 +221,7 @@ defmodule Record do
 
       defmodule User do
         require Record
-        Record.defrecord :user, Customer, name: nil
+        Record.defrecord(:user, Customer, name: nil)
       end
 
       require User
@@ -219,16 +234,16 @@ defmodule Record do
   a record after extracting it from an Erlang library that uses anonymous
   functions for defaults.
 
-      Record.defrecord :my_rec, Record.extract(...)
-      #=> ** (ArgumentError) invalid value for record field fun_field,
-      #=>   cannot escape #Function<12.90072148/2 in :erl_eval.expr/5>.
+      Record.defrecord(:my_rec, Record.extract(...))
+      ** (ArgumentError) invalid value for record field fun_field,
+          cannot escape #Function<12.90072148/2 in :erl_eval.expr/5>.
 
   To work around this error, redefine the field with your own &M.f/a function,
   like so:
 
       defmodule MyRec do
         require Record
-        Record.defrecord :my_rec, Record.extract(...) |> Keyword.merge(fun_field: &__MODULE__.foo/2)
+        Record.defrecord(:my_rec, Record.extract(...) |> Keyword.merge(fun_field: &__MODULE__.foo/2))
         def foo(bar, baz), do: IO.inspect({bar, baz})
       end
 
@@ -236,7 +251,7 @@ defmodule Record do
   defmacro defrecord(name, tag \\ nil, kv) do
     quote bind_quoted: [name: name, tag: tag, kv: kv] do
       tag = tag || name
-      fields = Record.__fields__(:defrecord, kv)
+      fields = Record.__record__(__MODULE__, :defrecord, name, tag, kv)
 
       defmacro unquote(name)(args \\ []) do
         Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
@@ -254,7 +269,7 @@ defmodule Record do
   defmacro defrecordp(name, tag \\ nil, kv) do
     quote bind_quoted: [name: name, tag: tag, kv: kv] do
       tag = tag || name
-      fields = Record.__fields__(:defrecordp, kv)
+      fields = Record.__record__(__MODULE__, :defrecordp, name, tag, kv)
 
       defmacrop unquote(name)(args \\ []) do
         Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
@@ -266,9 +281,53 @@ defmodule Record do
     end
   end
 
-  # Normalizes of record fields to have default values.
+  defp error_on_duplicate_record(module, name) do
+    defined_arity =
+      Enum.find(0..2, fn arity ->
+        Module.defines?(module, {name, arity})
+      end)
+
+    if defined_arity do
+      raise ArgumentError,
+            "cannot define record #{inspect(name)} because a definition #{name}/#{defined_arity} already exists"
+    end
+  end
+
+  defp warn_on_duplicate_key([]) do
+    :ok
+  end
+
+  defp warn_on_duplicate_key([{key, _} | [{key, _} | _] = rest]) do
+    IO.warn("duplicate key #{inspect(key)} found in record")
+    warn_on_duplicate_key(rest)
+  end
+
+  defp warn_on_duplicate_key([_ | rest]) do
+    warn_on_duplicate_key(rest)
+  end
+
+  # Callback invoked from the record/2 macro.
   @doc false
-  def __fields__(type, fields) do
+  def __record__(module, kind, name, tag, kv) do
+    error_on_duplicate_record(module, name)
+
+    fields = fields(kind, kv)
+    Module.register_attribute(module, :__records__, accumulate: true)
+
+    Module.put_attribute(module, :__records__, %{
+      kind: kind,
+      name: name,
+      tag: tag,
+      fields: :lists.map(&elem(&1, 0), fields)
+    })
+
+    # TODO: Make it raise on v2.0
+    warn_on_duplicate_key(:lists.keysort(1, fields))
+    fields
+  end
+
+  # Normalizes of record fields to have default values.
+  defp fields(kind, fields) do
     normalizer_fun = fn
       {key, value} when is_atom(key) ->
         try do
@@ -284,7 +343,7 @@ defmodule Record do
         {key, nil}
 
       other ->
-        raise ArgumentError, "#{type} fields must be atoms, got: #{inspect(other)}"
+        raise ArgumentError, "#{kind} fields must be atoms, got: #{inspect(other)}"
     end
 
     :lists.map(normalizer_fun, fields)
@@ -336,38 +395,32 @@ defmodule Record do
 
   # Gets the index of field.
   defp index(tag, fields, field) do
-    if index = find_index(fields, field, 0) do
-      # Convert to Elixir index
-      index - 1
-    else
+    find_index(fields, field, 1) ||
       raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(field)}"
-    end
   end
 
   # Creates a new record with the given default fields and keyword values.
   defp create(tag, fields, keyword, caller) do
-    in_match = Macro.Env.in_match?(caller)
-    keyword = apply_underscore(fields, keyword)
+    # Using {} here is safe, since it's not valid AST
+    default = if Macro.Env.in_match?(caller), do: {:_, [], nil}, else: {}
+    {default, keyword} = Keyword.pop(keyword, :_, default)
+    {keyword, exprs} = hoist_expressions(keyword, caller)
 
-    {match, remaining} =
-      Enum.map_reduce(fields, keyword, fn {field, default}, each_keyword ->
-        new_fields =
-          case Keyword.fetch(each_keyword, field) do
-            {:ok, value} -> value
-            :error when in_match -> {:_, [], nil}
-            :error -> Macro.escape(default)
-          end
-
-        {new_fields, Keyword.delete(each_keyword, field)}
+    {elements, remaining} =
+      Enum.map_reduce(fields, keyword, fn {key, field_default}, remaining ->
+        case Keyword.pop(remaining, key, default) do
+          {{}, remaining} -> {Macro.escape(field_default), remaining}
+          {default, remaining} -> {default, remaining}
+        end
       end)
 
     case remaining do
       [] ->
-        {:{}, [], [tag | match]}
+        quote(do: {unquote(tag), unquote_splicing(elements)})
+        |> maybe_prepend_reversed_exprs(exprs)
 
-      _ ->
-        keys = for {key, _} <- remaining, do: key
-        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(hd(keys))}"
+      [{key, _} | _] ->
+        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
     end
   end
 
@@ -377,35 +430,68 @@ defmodule Record do
       raise ArgumentError, "cannot invoke update style macro inside match"
     end
 
-    keyword = apply_underscore(fields, keyword)
+    {keyword, exprs} = hoist_expressions(keyword, caller)
 
-    Enum.reduce(keyword, var, fn {key, value}, acc ->
-      index = find_index(fields, key, 0)
+    if Keyword.has_key?(keyword, :_) do
+      message = "updating a record with a default (:_) is equivalent to creating a new record"
+      IO.warn(message, caller)
+      create(tag, fields, keyword, caller)
+    else
+      updates =
+        Enum.map(keyword, fn {key, value} ->
+          if index = find_index(fields, key, 2) do
+            {index, value}
+          else
+            raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+          end
+        end)
 
-      if index do
-        quote do
-          :erlang.setelement(unquote(index), unquote(acc), unquote(value))
-        end
+      build_update(updates, var) |> maybe_prepend_reversed_exprs(exprs)
+    end
+  end
+
+  defp hoist_expressions(keyword, %{context: nil, module: module}) do
+    Enum.map_reduce(keyword, [], fn {key, expr}, acc ->
+      if simple_argument?(expr) do
+        {{key, expr}, acc}
       else
-        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+        var = Macro.unique_var(key, module)
+        {{key, var}, [{:=, [], [var, expr]} | acc]}
       end
     end)
   end
 
+  defp hoist_expressions(keyword, _), do: {keyword, []}
+
+  defp maybe_prepend_reversed_exprs(expr, []),
+    do: expr
+
+  defp maybe_prepend_reversed_exprs(expr, exprs),
+    do: {:__block__, [], :lists.reverse([expr | exprs])}
+
+  defp build_update(updates, initial) do
+    updates
+    |> Enum.sort(fn {left, _}, {right, _} -> right <= left end)
+    |> Enum.reduce(initial, fn {key, value}, acc ->
+      quote(do: :erlang.setelement(unquote(key), unquote(acc), unquote(value)))
+    end)
+  end
+
+  defp simple_argument?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp simple_argument?(other), do: Macro.quoted_literal?(other)
+
   # Gets a record key from the given var.
   defp get(tag, fields, var, key) do
-    index = find_index(fields, key, 0)
+    index =
+      find_index(fields, key, 2) ||
+        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
 
-    if index do
-      quote do
-        :erlang.element(unquote(index), unquote(var))
-      end
-    else
-      raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+    quote do
+      :erlang.element(unquote(index), unquote(var))
     end
   end
 
-  defp find_index([{k, _} | _], k, i), do: i + 2
+  defp find_index([{k, _} | _], k, i), do: i
   defp find_index([{_, _} | t], k, i), do: find_index(t, k, i + 1)
   defp find_index([], _k, _i), do: nil
 
@@ -437,17 +523,4 @@ defmodule Record do
 
   defp join_keyword([], [], acc), do: :lists.reverse(acc)
   defp join_keyword(rest_fields, _rest_values, acc), do: length(acc) + length(rest_fields)
-
-  defp apply_underscore(fields, keyword) do
-    case Keyword.fetch(keyword, :_) do
-      {:ok, default} ->
-        fields
-        |> Enum.map(fn {k, _} -> {k, default} end)
-        |> Keyword.merge(keyword)
-        |> Keyword.delete(:_)
-
-      :error ->
-        keyword
-    end
-  end
 end

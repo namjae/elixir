@@ -31,11 +31,13 @@
 # 4. Finally, in some other circumstances, printing messages may become
 #    borked. This can be verified with:
 #
-#      $ iex -e ':error_logger.info_msg("foo~nbar", [])'
+#      $ iex -e ":logger.info('foo~nbar', [])"
 #
 # By the time those instructions have been written, all tests above pass.
 defmodule IEx.CLI do
   @moduledoc false
+
+  @compile {:no_warn_undefined, {:user, :start, 0}}
 
   @doc """
   In order to work properly, IEx needs to be set as the
@@ -50,12 +52,28 @@ defmodule IEx.CLI do
   a dumb terminal version is started instead.
   """
   def start do
-    if tty_works?() do
-      :user_drv.start([:"tty_sl -c -e", tty_args()])
-    else
-      :application.set_env(:stdlib, :shell_prompt_func, {__MODULE__, :prompt})
-      :user.start()
-      local_start()
+    # TODO: We can remove the -user callback on Erlang/OTP 26+ in favor of eval
+    cond do
+      Code.ensure_loaded?(:prim_tty) ->
+        :user_drv.start(%{initial_shell: tty_args()})
+
+      tty_works?() ->
+        :user_drv.start([:"tty_sl -c -e", tty_args()])
+
+      true ->
+        if get_remsh(:init.get_plain_arguments()) do
+          IO.puts(
+            :stderr,
+            "warning: the --remsh option will be ignored because IEx is running on limited shell"
+          )
+        end
+
+        :user.start()
+
+        # IEx.Broker is capable of considering all groups under user_drv but
+        # when we use :user.start(), we need to explicitly register it instead.
+        # If we don't register, pry doesn't work.
+        IEx.start([register: true] ++ options(), {:elixir, :start_cli, []})
     end
   end
 
@@ -69,7 +87,7 @@ defmodule IEx.CLI do
   # to do it just once.
   defp tty_works? do
     try do
-      port = Port.open({:spawn, 'tty_sl -c -e'}, [:eof])
+      port = Port.open({:spawn, ~c"tty_sl -c -e"}, [:eof])
       Port.close(port)
     catch
       _, _ -> false
@@ -78,32 +96,35 @@ defmodule IEx.CLI do
 
   defp tty_args do
     if remote = get_remsh(:init.get_plain_arguments()) do
-      if Node.alive?() do
-        case :rpc.call(remote, :code, :ensure_loaded, [IEx]) do
-          {:badrpc, reason} ->
-            abort(
+      # Explicitly connect the node in case the rpc node was started with --sname/--name undefined.
+      _ = :net_kernel.connect_node(remote)
+
+      case :rpc.call(remote, :code, :ensure_loaded, [IEx]) do
+        {:badrpc, reason} ->
+          message =
+            if reason == :nodedown and :net_kernel.nodename() == :ignored do
+              "In order to use --remsh, you need to name the current node using --name or --sname. Aborting..."
+            else
               "Could not contact remote node #{remote}, reason: #{inspect(reason)}. Aborting..."
-            )
+            end
 
-          {:module, IEx} ->
-            {mod, fun, args} = remote_start_mfa()
-            {remote, mod, fun, args}
+          abort(message)
 
-          _ ->
-            abort("Could not find IEx on remote node #{remote}. Aborting...")
-        end
-      else
-        abort(
-          "In order to use --remsh, you need to name the current node using --name or --sname. Aborting..."
-        )
+        {:module, IEx} ->
+          case :rpc.call(remote, :net_kernel, :get_net_ticktime, []) do
+            seconds when is_integer(seconds) -> :net_kernel.set_net_ticktime(seconds)
+            _ -> :ok
+          end
+
+          {mod, fun, args} = remote_start_mfa()
+          {remote, mod, fun, args}
+
+        _ ->
+          abort("Could not find IEx on remote node #{remote}. Aborting...")
       end
     else
-      {:erlang, :apply, [local_start_function(), []]}
+      local_start_mfa()
     end
-  end
-
-  def local_start do
-    IEx.start(options(), {:elixir, :start_cli, []})
   end
 
   def remote_start(parent, ref) do
@@ -111,8 +132,8 @@ defmodule IEx.CLI do
     receive do: ({:done, ^ref} -> :ok)
   end
 
-  defp local_start_function do
-    &local_start/0
+  defp local_start_mfa do
+    {IEx, :start, [options(), {:elixir, :start_cli, []}]}
   end
 
   defp remote_start_mfa do
@@ -132,7 +153,7 @@ defmodule IEx.CLI do
   end
 
   defp options do
-    [dot_iex_path: find_dot_iex(:init.get_plain_arguments())]
+    [dot_iex_path: find_dot_iex(:init.get_plain_arguments()), on_eof: :halt]
   end
 
   defp abort(msg) do
@@ -144,11 +165,20 @@ defmodule IEx.CLI do
     {:erlang, :apply, [function, []]}
   end
 
-  defp find_dot_iex(['--dot-iex', h | _]), do: List.to_string(h)
+  defp find_dot_iex([~c"--dot-iex", h | _]), do: List.to_string(h)
   defp find_dot_iex([_ | t]), do: find_dot_iex(t)
   defp find_dot_iex([]), do: nil
 
-  defp get_remsh(['--remsh', h | _]), do: List.to_atom(h)
+  defp get_remsh([~c"--remsh", h | _]), do: List.to_atom(append_hostname(h))
   defp get_remsh([_ | t]), do: get_remsh(t)
   defp get_remsh([]), do: nil
+
+  defp append_hostname(node) do
+    with :nomatch <- :string.find(node, "@"),
+         [_ | _] = suffix <- :string.find(Atom.to_charlist(:net_kernel.nodename()), "@") do
+      node ++ suffix
+    else
+      _ -> node
+    end
+  end
 end

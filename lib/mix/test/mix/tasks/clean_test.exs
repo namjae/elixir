@@ -16,13 +16,10 @@ defmodule Mix.Tasks.CleanTest do
     end
   end
 
-  setup do
-    Mix.Project.push(Sample)
-    :ok
-  end
-
   test "cleans the application build" do
-    in_fixture "deps_status", fn ->
+    in_fixture("deps_status", fn ->
+      Mix.Project.push(Sample)
+
       File.mkdir_p!("_build/dev/lib/sample/consolidated")
       File.mkdir_p!("_build/dev/lib/sample")
       File.mkdir_p!("_build/test/lib/sample")
@@ -33,11 +30,13 @@ defmodule Mix.Tasks.CleanTest do
       refute File.exists?("_build/dev/lib/sample")
       refute File.exists?("_build/test/lib/sample")
       assert File.exists?("_build/dev/lib/ok")
-    end
+    end)
   end
 
   test "cleans dependencies build" do
-    in_fixture "deps_status", fn ->
+    in_fixture("deps_status", fn ->
+      Mix.Project.push(Sample)
+
       File.mkdir_p!("_build/dev/lib/ok")
       File.mkdir_p!("_build/test/lib/ok")
 
@@ -47,6 +46,39 @@ defmodule Mix.Tasks.CleanTest do
 
       Mix.Tasks.Clean.run(["--deps"])
       refute File.exists?("_build/test")
-    end
+    end)
+  end
+
+  test "invokes compiler hook defined in project" do
+    Mix.ProjectStack.post_config(compilers: Mix.compilers() ++ [:testc])
+
+    in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
+      File.write!("lib/testc.ex", """
+      defmodule Mix.Tasks.Compile.Testc do
+        use Mix.Task.Compiler
+
+        @impl true
+        def run(_args) do
+          Mix.shell().info("Compiling...")
+          :ok
+        end
+
+        @impl true
+        def clean do
+          Mix.shell().info("Cleaning...")
+          :ok
+        end
+      end
+      """)
+
+      Mix.Task.run("compile")
+      assert_received {:mix_shell, :info, ["Compiling..."]}
+      purge([Mix.Tasks.Compile.Testc])
+
+      Mix.Task.run("clean")
+      assert_received {:mix_shell, :info, ["Cleaning..."]}
+    end)
   end
 end

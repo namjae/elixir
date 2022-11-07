@@ -11,13 +11,21 @@ defmodule IEx.Evaluator do
 
   """
   def init(command, server, leader, opts) do
+    ref = make_ref()
     old_leader = Process.group_leader()
     Process.group_leader(self(), leader)
 
-    evaluator? = !!Process.get(:iex_evaluator)
-    Process.put(:iex_evaluator, true)
+    old_server = Process.get(:iex_server)
+    Process.put(:iex_server, server)
 
-    state = loop_state(server, IEx.History.init(), opts)
+    old_evaluator = Process.get(:iex_evaluator)
+    Process.put(:iex_evaluator, ref)
+
+    if old_evaluator do
+      send(self(), {:done, old_evaluator, false})
+    end
+
+    state = loop_state(ref, server, IEx.History.init(), opts)
     command == :ack && :proc_lib.init_ack(self())
 
     try do
@@ -25,9 +33,14 @@ defmodule IEx.Evaluator do
     after
       Process.group_leader(self(), old_leader)
 
-      # If there was an evaluator, nest failures.
-      if evaluator? do
-        send(self(), {:done, server})
+      if old_server do
+        Process.put(:iex_server, old_server)
+      else
+        Process.delete(:iex_server)
+      end
+
+      if old_evaluator do
+        Process.put(:iex_evaluator, old_evaluator)
       else
         Process.delete(:iex_evaluator)
       end
@@ -35,6 +48,91 @@ defmodule IEx.Evaluator do
       :ok
     end
   end
+
+  # If parsing fails, this might be a TokenMissingError which we treat in
+  # a special way (to allow for continuation of an expression on the next
+  # line in IEx).
+  #
+  # The first two clauses provide support for the break-trigger allowing to
+  # break out from a pending incomplete expression. See
+  # https://github.com/elixir-lang/elixir/issues/1089 for discussion.
+  @break_trigger "#iex:break\n"
+
+  @op_tokens [:or_op, :and_op, :comp_op, :rel_op, :arrow_op, :in_op] ++
+               [:three_op, :concat_op, :mult_op]
+
+  @doc false
+  def parse(input, opts, parser_state)
+
+  def parse(input, opts, ""), do: parse(input, opts, {"", :other})
+
+  def parse(@break_trigger, _opts, {"", _} = parser_state) do
+    {:incomplete, parser_state}
+  end
+
+  def parse(@break_trigger, opts, _parser_state) do
+    :elixir_errors.parse_error(
+      [line: opts[:line]],
+      opts[:file],
+      "incomplete expression",
+      "",
+      {~c"", Keyword.get(opts, :line, 1), Keyword.get(opts, :column, 1)}
+    )
+  end
+
+  def parse(input, opts, {buffer, last_op}) do
+    input = buffer <> input
+    file = Keyword.get(opts, :file, "nofile")
+    line = Keyword.get(opts, :line, 1)
+    column = Keyword.get(opts, :column, 1)
+    charlist = String.to_charlist(input)
+
+    result =
+      with {:ok, tokens} <- :elixir.string_to_tokens(charlist, line, column, file, opts),
+           {:ok, adjusted_tokens} <- adjust_operator(tokens, line, column, file, opts, last_op),
+           {:ok, forms} <- :elixir.tokens_to_quoted(adjusted_tokens, file, opts) do
+        last_op =
+          case forms do
+            {:=, _, [_, _]} -> :match
+            _ -> :other
+          end
+
+        {:ok, forms, last_op}
+      end
+
+    case result do
+      {:ok, forms, last_op} ->
+        {:ok, forms, {"", last_op}}
+
+      {:error, {_, _, ""}} ->
+        {:incomplete, {input, last_op}}
+
+      {:error, {location, error, token}} ->
+        :elixir_errors.parse_error(
+          location,
+          file,
+          error,
+          token,
+          {charlist, line, column}
+        )
+    end
+  end
+
+  defp adjust_operator([{op_type, _, token} | _] = _tokens, line, column, _file, _opts, :match)
+       when op_type in @op_tokens,
+       do:
+         {:error,
+          {[line: line, column: column],
+           "pipe shorthand is not allowed immediately after a match expression in IEx. To make it work, surround the whole pipeline with parentheses ",
+           "'#{token}'"}}
+
+  defp adjust_operator([{op_type, _, _} | _] = tokens, line, column, file, opts, _last_op)
+       when op_type in @op_tokens do
+    {:ok, prefix} = :elixir.string_to_tokens(~c"v(-1)", line, column, file, opts)
+    {:ok, prefix ++ tokens}
+  end
+
+  defp adjust_operator(tokens, _line, _column, _file, _opts, _last_op), do: {:ok, tokens}
 
   @doc """
   Gets a value out of the binding, using the provided
@@ -83,11 +181,11 @@ defmodule IEx.Evaluator do
     end
   end
 
-  defp loop(%{server: server} = state) do
+  defp loop(%{server: server, ref: ref} = state) do
     receive do
-      {:eval, ^server, code, iex_state} ->
-        {result, state} = eval(code, iex_state, state)
-        send(server, {:evaled, self(), result})
+      {:eval, ^server, code, counter, parser_state} ->
+        {status, parser_state, state} = parse_eval_inspect(code, counter, parser_state, state)
+        send(server, {:evaled, self(), status, parser_state})
         loop(state)
 
       {:fields_from_env, ^server, ref, receiver, fields} ->
@@ -104,8 +202,11 @@ defmodule IEx.Evaluator do
         send(receiver, {ref, value})
         loop(state)
 
-      {:done, ^server} ->
-        :ok
+      {:done, ^server, next?} ->
+        {:ok, next?}
+
+      {:done, ^ref, next?} ->
+        {:ok, next?}
     end
   end
 
@@ -126,21 +227,19 @@ defmodule IEx.Evaluator do
         do: var_name
   end
 
-  defp loop_state(server, history, opts) do
-    env = opts[:env] || :elixir.env_for_eval(file: "iex")
-    env = %{env | match_vars: :apply}
-    {_, _, env, scope} = :elixir.eval('import IEx.Helpers', [], env)
+  defp loop_state(ref, server, history, opts) do
+    env = opts[:env] || Code.env_for_eval(file: "iex")
+    {_, _, env} = Code.eval_quoted_with_env(quote(do: import(IEx.Helpers)), [], env)
     stacktrace = opts[:stacktrace]
-
-    binding = Keyword.get(opts, :binding, [])
+    binding = opts[:binding] || []
 
     state = %{
       binding: binding,
-      scope: scope,
       env: env,
       server: server,
       history: history,
-      stacktrace: stacktrace
+      stacktrace: stacktrace,
+      ref: ref
     }
 
     case opts[:dot_iex_path] do
@@ -169,63 +268,47 @@ defmodule IEx.Evaluator do
   defp eval_dot_iex(state, path) do
     try do
       code = File.read!(path)
-      env = :elixir.env_for_eval(state.env, file: path, line: 1)
+      quoted = :elixir.string_to_quoted!(String.to_charlist(code), 1, 1, path, [])
+      Process.put(:iex_imported_paths, MapSet.new([path]))
 
       # Evaluate the contents in the same environment server_loop will run in
-      {_result, binding, env, _scope} = :elixir.eval(String.to_charlist(code), state.binding, env)
-
-      %{state | binding: binding, env: :elixir.env_for_eval(env, file: "iex", line: 1)}
+      env = %{state.env | file: path, line: 1}
+      {_result, binding, env} = eval_expr_by_expr(quoted, state.binding, env)
+      %{state | binding: binding, env: %{env | file: "iex", line: 1}}
     catch
       kind, error ->
-        stacktrace = System.stacktrace()
         io_result("Error while evaluating: #{path}")
-        print_error(kind, error, stacktrace)
-        System.halt(1)
+        print_error(kind, error, __STACKTRACE__)
+        state
+    after
+      Process.delete(:iex_imported_paths)
     end
   end
 
-  # Instead of doing just :elixir.eval, we first parse the expression to see
-  # if it's well formed. If parsing succeeds, we evaluate the AST as usual.
-  #
-  # If parsing fails, this might be a TokenMissingError which we treat in
-  # a special way (to allow for continuation of an expression on the next
-  # line in IEx).
-  #
-  # Returns updated state.
-  #
-  # The first two clauses provide support for the break-trigger allowing to
-  # break out from a pending incomplete expression. See
-  # https://github.com/elixir-lang/elixir/issues/1089 for discussion.
-  @break_trigger '#iex:break\n'
-
-  defp eval(code, iex_state, state) do
+  defp parse_eval_inspect(code, counter, parser_state, state) do
     try do
-      do_eval(String.to_charlist(code), iex_state, state)
+      {parser_module, parser_fun, args} = IEx.Config.parser()
+      args = [code, [line: counter, file: "iex"], parser_state | args]
+      eval_and_inspect_parsed(apply(parser_module, parser_fun, args), counter, state)
     catch
       kind, error ->
-        print_error(kind, error, System.stacktrace())
-        {%{iex_state | cache: ''}, state}
+        print_error(kind, error, __STACKTRACE__)
+        {:error, "", state}
     end
   end
 
-  defp do_eval(@break_trigger, %IEx.State{cache: ''} = iex_state, state) do
-    {iex_state, state}
-  end
-
-  defp do_eval(@break_trigger, iex_state, _state) do
-    :elixir_errors.parse_error(iex_state.counter, "iex", "incomplete expression", "")
-  end
-
-  defp do_eval(latest_input, iex_state, state) do
-    code = iex_state.cache ++ latest_input
-    line = iex_state.counter
+  defp eval_and_inspect_parsed({:ok, forms, parser_state}, counter, state) do
     put_history(state)
     put_whereami(state)
-    quoted = Code.string_to_quoted(code, line: line, file: "iex")
-    handle_eval(quoted, code, line, iex_state, state)
+    state = eval_and_inspect(forms, counter, state)
+    {:ok, parser_state, state}
   after
     Process.delete(:iex_history)
     Process.delete(:iex_whereami)
+  end
+
+  defp eval_and_inspect_parsed({:incomplete, parser_state}, _counter, state) do
+    {:incomplete, parser_state, state}
   end
 
   defp put_history(%{history: history}) do
@@ -240,34 +323,51 @@ defmodule IEx.Evaluator do
     Process.put(:iex_whereami, {file, line, stacktrace})
   end
 
-  defp handle_eval({:ok, forms}, code, line, iex_state, state) do
-    {result, binding, env, scope} =
-      :elixir.eval_forms(forms, state.binding, state.env, state.scope)
+  defp eval_and_inspect(forms, line, state) do
+    %{env: env, binding: binding} = state
+    forms = add_if_undefined_apply_to_vars(forms, env)
+    {result, binding, env} = eval_expr_by_expr(forms, binding, env)
 
     unless result == IEx.dont_display_result() do
       io_inspect(result)
     end
 
-    iex_state = %{iex_state | cache: '', counter: iex_state.counter + 1}
-    state = %{state | env: env, scope: scope, binding: binding}
-    {iex_state, update_history(state, line, code, result)}
+    history = IEx.History.append(state.history, {line, result}, IEx.Config.history_size())
+    %{state | env: env, binding: binding, history: history}
   end
 
-  defp handle_eval({:error, {_, _, ""}}, code, _line, iex_state, state) do
-    # Update iex_state.cache so that IEx continues to add new input to
-    # the unfinished expression in "code"
-    {%{iex_state | cache: code}, state}
+  defp add_if_undefined_apply_to_vars(forms, env) do
+    Macro.prewalk(forms, fn
+      {var, meta, context} when is_atom(var) and is_atom(context) ->
+        if Macro.Env.lookup_import(env, {var, 0}) != [] do
+          {var, Keyword.put_new(meta, :if_undefined, :apply), context}
+        else
+          {var, meta, context}
+        end
+
+      other ->
+        other
+    end)
   end
 
-  defp handle_eval({:error, {line, error, token}}, _code, _line, _iex_state, _state) do
-    # Encountered malformed expression
-    :elixir_errors.parse_error(line, "iex", error, token)
+  defp eval_expr_by_expr(expr, binding, env) do
+    case maybe_expand(expr, env) do
+      {:__block__, _, exprs} ->
+        Enum.reduce(exprs, {nil, binding, env}, fn expr, {_result, binding, env} ->
+          eval_expr_by_expr(expr, binding, env)
+        end)
+
+      expr ->
+        Code.eval_quoted_with_env(expr, binding, env)
+    end
   end
 
-  defp update_history(state, counter, cache, result) do
-    history_size = IEx.Config.history_size()
-    update_in(state.history, &IEx.History.append(&1, {counter, cache, result}, history_size))
-  end
+  defp maybe_expand({import_file, _, [_ | _]} = expr, env)
+       when import_file in [:import_file, :import_file_if_available],
+       do: Macro.expand(expr, env)
+
+  defp maybe_expand(expr, _env),
+    do: expr
 
   defp io_inspect(result) do
     io_result(inspect(result, IEx.inspect_opts()))
@@ -287,7 +387,7 @@ defmodule IEx.Evaluator do
         %FunctionClauseError{} ->
           {_, inspect_opts} = pop_in(IEx.inspect_opts()[:syntax_colors][:reset])
           banner = Exception.format_banner(kind, reason, stacktrace)
-          blame = FunctionClauseError.blame(blamed, &inspect(&1, inspect_opts), &blame_match/2)
+          blame = FunctionClauseError.blame(blamed, &inspect(&1, inspect_opts), &blame_match/1)
           [IEx.color(:eval_error, banner), pad(blame)]
 
         _ ->
@@ -302,9 +402,8 @@ defmodule IEx.Evaluator do
     "    " <> String.replace(string, "\n", "\n    ")
   end
 
-  defp blame_match(%{match?: true, node: node}, _), do: Macro.to_string(node)
-  defp blame_match(%{match?: false, node: node}, _), do: blame_ansi(:blame_diff, "-", node)
-  defp blame_match(_, string), do: string
+  defp blame_match(%{match?: true, node: node}), do: Macro.to_string(node)
+  defp blame_match(%{match?: false, node: node}), do: blame_ansi(:blame_diff, "-", node)
 
   defp blame_ansi(color, no_ansi, node) do
     case IEx.Config.color(color) do
@@ -318,22 +417,36 @@ defmodule IEx.Evaluator do
     end
   end
 
-  @elixir_internals [:elixir, :elixir_expand, :elixir_compiler, :elixir_module] ++
-                      [:elixir_clauses, :elixir_lexical, :elixir_def, :elixir_map] ++
-                      [:elixir_erl, :elixir_erl_clauses, :elixir_erl_pass]
+  if System.otp_release() >= "25" do
+    defp prune_stacktrace(stack) do
+      stack
+      |> Enum.reverse()
+      |> Enum.drop_while(&(elem(&1, 0) != :elixir_eval))
+      |> Enum.reverse()
+      |> case do
+        [] -> stack
+        stack -> stack
+      end
+    end
+  else
+    @elixir_internals [:elixir, :elixir_expand, :elixir_compiler, :elixir_module] ++
+                        [:elixir_clauses, :elixir_lexical, :elixir_def, :elixir_map] ++
+                        [:elixir_erl, :elixir_erl_clauses, :elixir_erl_pass] ++
+                        [Kernel.ErrorHandler, Module.ParallelChecker]
 
-  defp prune_stacktrace(stacktrace) do
-    # The order in which each drop_while is listed is important.
-    # For example, the user may call Code.eval_string/2 in IEx
-    # and if there is an error we should not remove erl_eval
-    # and eval_bits information from the user stacktrace.
-    stacktrace
-    |> Enum.reverse()
-    |> Enum.drop_while(&(elem(&1, 0) == :proc_lib))
-    |> Enum.drop_while(&(elem(&1, 0) == __MODULE__))
-    |> Enum.drop_while(&(elem(&1, 0) == :elixir))
-    |> Enum.drop_while(&(elem(&1, 0) in [:erl_eval, :eval_bits]))
-    |> Enum.reverse()
-    |> Enum.reject(&(elem(&1, 0) in @elixir_internals))
+    defp prune_stacktrace(stacktrace) do
+      # The order in which each drop_while is listed is important.
+      # For example, the user may call Code.eval_string/2 in IEx
+      # and if there is an error we should not remove erl_eval
+      # and eval_bits information from the user stacktrace.
+      stacktrace
+      |> Enum.reverse()
+      |> Enum.drop_while(&(elem(&1, 0) == :proc_lib))
+      |> Enum.drop_while(&(elem(&1, 0) == __MODULE__))
+      |> Enum.drop_while(&(elem(&1, 0) in [Code, Module.ParallelChecker, :elixir]))
+      |> Enum.drop_while(&(elem(&1, 0) in [:erl_eval, :eval_bits]))
+      |> Enum.reverse()
+      |> Enum.reject(&(elem(&1, 0) in @elixir_internals))
+    end
   end
 end

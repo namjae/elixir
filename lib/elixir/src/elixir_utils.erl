@@ -1,25 +1,24 @@
 %% Convenience functions used throughout elixir source code
 %% for ast manipulation and querying.
 -module(elixir_utils).
--export([get_line/1, split_last/1, noop/0,
+-export([get_line/1, split_last/1, split_opts/1, noop/0, var_context/2,
   characters_to_list/1, characters_to_binary/1, relative_to_cwd/1,
   macro_name/1, returns_boolean/1, caller/4, meta_keep/1,
-  read_file_type/1, read_link_type/1, read_mtime_and_size/1, change_universal_time/2,
-  guard_op/2, match_op/2, extract_splat_guards/1, extract_guards/1]).
+  read_file_type/1, read_file_type/2, read_link_type/1, read_posix_mtime_and_size/1,
+  change_posix_time/2, change_universal_time/2,
+  guard_op/2, extract_splat_guards/1, extract_guards/1,
+  erlang_comparison_op_to_elixir/1, erl_fa_to_elixir_fa/2]).
 -include("elixir.hrl").
 -include_lib("kernel/include/file.hrl").
-
-% Builds the macro name
 
 macro_name(Macro) ->
   list_to_atom("MACRO-" ++ atom_to_list(Macro)).
 
-% Operators
-
-match_op('++', 2) -> true;
-match_op('+', 1) -> true;
-match_op('-', 1) -> true;
-match_op(_, _) -> false.
+erl_fa_to_elixir_fa(Name, Arity) ->
+  case atom_to_list(Name) of
+    "MACRO-" ++ Rest -> {list_to_atom(Rest), Arity - 1};
+    _ -> {Name, Arity}
+  end.
 
 guard_op('andalso', 2) ->
   true;
@@ -28,12 +27,24 @@ guard_op('orelse', 2) ->
 guard_op(Op, Arity) ->
   try erl_internal:op_type(Op, Arity) of
     arith -> true;
-    list  -> true;
     comp  -> true;
     bool  -> true;
+    list  -> false;
     send  -> false
   catch
     _:_ -> false
+  end.
+
+erlang_comparison_op_to_elixir('/=') -> '!=';
+erlang_comparison_op_to_elixir('=<') -> '<=';
+erlang_comparison_op_to_elixir('=:=') -> '===';
+erlang_comparison_op_to_elixir('=/=') -> '!==';
+erlang_comparison_op_to_elixir(Other) -> Other.
+
+var_context(Meta, Kind) ->
+  case lists:keyfind(counter, 1, Meta) of
+    {counter, Counter} -> Counter;
+    false -> Kind
   end.
 
 % Extract guards
@@ -62,8 +73,25 @@ split_last(List)         -> split_last(List, []).
 split_last([H], Acc)     -> {lists:reverse(Acc), H};
 split_last([H | T], Acc) -> split_last(T, [H | Acc]).
 
+%% Useful to handle options similarly in `opts, do ... end` and `opts, do: ...`.
+split_opts(Args) ->
+  case elixir_utils:split_last(Args) of
+    {OuterCases, OuterOpts} when is_list(OuterOpts) ->
+      case elixir_utils:split_last(OuterCases) of
+        {InnerCases, InnerOpts} when is_list(InnerOpts) ->
+          {InnerCases, InnerOpts ++ OuterOpts};
+        _ ->
+          {OuterCases, OuterOpts}
+      end;
+    _ ->
+      {Args, []}
+  end.
+
 read_file_type(File) ->
-  case file:read_file_info(File) of
+  read_file_type(File, []).
+
+read_file_type(File, Opts) ->
+  case file:read_file_info(File, [{time, posix} | Opts]) of
     {ok, #file_info{type=Type}} -> {ok, Type};
     {error, _} = Error -> Error
   end.
@@ -74,19 +102,22 @@ read_link_type(File) ->
     {error, _} = Error -> Error
   end.
 
-read_mtime_and_size(File) ->
-  case file:read_file_info(File, [{time, universal}]) of
+read_posix_mtime_and_size(File) ->
+  case file:read_file_info(File, [raw, {time, posix}]) of
     {ok, #file_info{mtime=Mtime, size=Size}} -> {ok, Mtime, Size};
     {error, _} = Error -> Error
   end.
 
+change_posix_time(Name, Time) when is_integer(Time) ->
+  file:write_file_info(Name, #file_info{mtime=Time}, [raw, {time, posix}]).
+
 change_universal_time(Name, {{Y, M, D}, {H, Min, Sec}}=Time)
-  when is_integer(Y), is_integer(M), is_integer(D),
-       is_integer(H), is_integer(Min), is_integer(Sec)->
-    file:write_file_info(Name, #file_info{mtime=Time}, [{time, universal}]).
+    when is_integer(Y), is_integer(M), is_integer(D),
+         is_integer(H), is_integer(Min), is_integer(Sec) ->
+  file:write_file_info(Name, #file_info{mtime=Time}, [{time, universal}]).
 
 relative_to_cwd(Path) ->
-  try elixir_compiler:get_opt(relative_paths) of
+  try elixir_config:get(relative_paths) of
     true  -> 'Elixir.Path':relative_to_cwd(Path);
     false -> Path
   catch
@@ -96,18 +127,23 @@ relative_to_cwd(Path) ->
 characters_to_list(Data) when is_list(Data) ->
   Data;
 characters_to_list(Data) ->
-  case elixir_config:safe_get(bootstrap, true) of
-    true  -> unicode:characters_to_list(Data);
-    false -> 'Elixir.String':to_charlist(Data)
+  case unicode:characters_to_list(Data) of
+    Result when is_list(Result) -> Result;
+    {error, Encoded, Rest} -> conversion_error(invalid, Encoded, Rest);
+    {incomplete, Encoded, Rest} -> conversion_error(incomplete, Encoded, Rest)
   end.
 
 characters_to_binary(Data) when is_binary(Data) ->
   Data;
 characters_to_binary(Data) ->
-  case elixir_config:safe_get(bootstrap, true) of
-    true -> unicode:characters_to_binary(Data);
-    false -> 'Elixir.List':to_string(Data)
+  case unicode:characters_to_binary(Data) of
+    Result when is_binary(Result) -> Result;
+    {error, Encoded, Rest} -> conversion_error(invalid, Encoded, Rest);
+    {incomplete, Encoded, Rest} -> conversion_error(incomplete, Encoded, Rest)
   end.
+
+conversion_error(Kind, Encoded, Rest) ->
+  error('Elixir.UnicodeConversionError':exception([{encoded, Encoded}, {rest, Rest}, {kind, Kind}])).
 
 %% Returns the caller as a stacktrace entry.
 caller(Line, File, nil, _) ->
@@ -164,7 +200,7 @@ returns_boolean({{'.', _, [erlang, Fun]}, _, [_]}) when
   Fun == is_tuple;  Fun == is_map;      Fun == is_process_alive -> true;
 
 returns_boolean({{'.', _, [erlang, Fun]}, _, [_, _]}) when
-  Fun == is_function; Fun == is_record -> true;
+  Fun == is_map_key; Fun == is_function; Fun == is_record -> true;
 
 returns_boolean({{'.', _, [erlang, Fun]}, _, [_, _, _]}) when
   Fun == function_exported; Fun == is_record -> true;

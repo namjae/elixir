@@ -3,8 +3,8 @@ defmodule Time do
   A Time struct and functions.
 
   The Time struct contains the fields hour, minute, second and microseconds.
-  New times can be built with the `new/4` function or using the `~T`
-  sigil:
+  New times can be built with the `new/4` function or using the
+  `~T` (see `sigil_T/2`) sigil:
 
       iex> ~T[23:00:07.001]
       ~T[23:00:07.001]
@@ -25,25 +25,33 @@ defmodule Time do
 
   Developers should avoid creating the Time structs directly
   and instead rely on the functions provided by this module as well
-  as the ones in 3rd party calendar libraries.
+  as the ones in third-party calendar libraries.
 
   ## Comparing times
 
-  Comparisons in Elixir using `==`, `>`, `<` and similar are structural
+  Comparisons in Elixir using `==/2`, `>/2`, `</2` and similar are structural
   and based on the `Time` struct fields. For proper comparison between
-  times, use the `compare/2` function.
+  times, use the `compare/2` function. The existence of the `compare/2`
+  function in this module also allows using `Enum.min/2` and `Enum.max/2`
+  functions to get the minimum and maximum time of an `Enum`. For example:
+
+      iex> Enum.min([~T[23:00:07.001], ~T[10:00:07.001]], Time)
+      ~T[10:00:07.001]
   """
 
   @enforce_keys [:hour, :minute, :second]
   defstruct [:hour, :minute, :second, microsecond: {0, 0}, calendar: Calendar.ISO]
 
-  @type t :: %Time{
+  @type t :: %__MODULE__{
           hour: Calendar.hour(),
           minute: Calendar.minute(),
           second: Calendar.second(),
           microsecond: Calendar.microsecond(),
           calendar: Calendar.calendar()
         }
+
+  @parts_per_day 86_400_000_000
+  @seconds_per_day 24 * 60 * 60
 
   @doc """
   Returns the current time in UTC.
@@ -55,6 +63,7 @@ defmodule Time do
       true
 
   """
+  @doc since: "1.4.0"
   @spec utc_now(Calendar.calendar()) :: t
   def utc_now(calendar \\ Calendar.ISO) do
     {:ok, _, time, microsecond} = Calendar.ISO.from_unix(:os.system_time(), :native)
@@ -77,9 +86,10 @@ defmodule Time do
   Expects all values to be integers. Returns `{:ok, time}` if each
   entry fits its appropriate range, returns `{:error, reason}` otherwise.
 
-  Note a time may have 60 seconds in case of leap seconds. Microseconds
-  can also be given with a precision, which must be an integer between
-  0 and 6.
+  Microseconds can also be given with a precision, which must be an
+  integer between 0 and 6.
+
+  The built-in calendar does not support leap seconds.
 
   ## Examples
 
@@ -87,18 +97,12 @@ defmodule Time do
       {:ok, ~T[00:00:00.000000]}
       iex> Time.new(23, 59, 59, 999_999)
       {:ok, ~T[23:59:59.999999]}
-      iex> Time.new(23, 59, 60, 999_999)
-      {:ok, ~T[23:59:60.999999]}
-
-      # Time with microseconds and their precision
-      iex> Time.new(23, 59, 60, {10_000, 2})
-      {:ok, ~T[23:59:60.01]}
 
       iex> Time.new(24, 59, 59, 999_999)
       {:error, :invalid_time}
       iex> Time.new(23, 60, 59, 999_999)
       {:error, :invalid_time}
-      iex> Time.new(23, 59, 61, 999_999)
+      iex> Time.new(23, 59, 60, 999_999)
       {:error, :invalid_time}
       iex> Time.new(23, 59, 59, 1_000_000)
       {:error, :invalid_time}
@@ -112,7 +116,7 @@ defmodule Time do
           Calendar.hour(),
           Calendar.minute(),
           Calendar.second(),
-          Calendar.microsecond() | integer,
+          Calendar.microsecond() | non_neg_integer,
           Calendar.calendar()
         ) :: {:ok, t} | {:error, atom}
   def new(hour, minute, second, microsecond \\ {0, 0}, calendar \\ Calendar.ISO)
@@ -138,6 +142,44 @@ defmodule Time do
 
       false ->
         {:error, :invalid_time}
+    end
+  end
+
+  @doc """
+  Builds a new time.
+
+  Expects all values to be integers. Returns `time` if each
+  entry fits its appropriate range, raises if the time is invalid.
+
+  Microseconds can also be given with a precision, which must be an
+  integer between 0 and 6.
+
+  The built-in calendar does not support leap seconds.
+
+  ## Examples
+
+      iex> Time.new!(0, 0, 0, 0)
+      ~T[00:00:00.000000]
+      iex> Time.new!(23, 59, 59, 999_999)
+      ~T[23:59:59.999999]
+      iex> Time.new!(24, 59, 59, 999_999)
+      ** (ArgumentError) cannot build time, reason: :invalid_time
+  """
+  @doc since: "1.11.0"
+  @spec new!(
+          Calendar.hour(),
+          Calendar.minute(),
+          Calendar.second(),
+          Calendar.microsecond() | non_neg_integer,
+          Calendar.calendar()
+        ) :: t
+  def new!(hour, minute, second, microsecond \\ {0, 0}, calendar \\ Calendar.ISO) do
+    case new(hour, minute, second, microsecond, calendar) do
+      {:ok, time} ->
+        time
+
+      {:error, reason} ->
+        raise ArgumentError, "cannot build time, reason: #{inspect(reason)}"
     end
   end
 
@@ -174,18 +216,13 @@ defmodule Time do
 
   @doc """
   Parses the extended "Local time" format described by
-  [ISO 8601:2004](https://en.wikipedia.org/wiki/ISO_8601).
+  [ISO 8601:2019](https://en.wikipedia.org/wiki/ISO_8601).
 
-  Timezone offset may be included in the string but they will be
+  Time zone offset may be included in the string but they will be
   simply discarded as such information is not included in times.
 
   As specified in the standard, the separator "T" may be omitted if
   desired as there is no ambiguity within this function.
-
-  Time representations with reduced accuracy are not supported.
-
-  Note that while ISO 8601 allows times to specify 24:00:00 as the
-  zero hour of the next day, this notation is not supported by Elixir.
 
   ## Examples
 
@@ -214,32 +251,18 @@ defmodule Time do
 
   """
   @spec from_iso8601(String.t(), Calendar.calendar()) :: {:ok, t} | {:error, atom}
-  def from_iso8601(string, calendar \\ Calendar.ISO)
-
-  def from_iso8601(<<?T, h, rest::binary>>, calendar) when h in ?0..?9 do
-    from_iso8601(<<h, rest::binary>>, calendar)
-  end
-
-  def from_iso8601(<<hour::2-bytes, ?:, min::2-bytes, ?:, sec::2-bytes, rest::binary>>, calendar) do
-    with {hour, ""} <- Integer.parse(hour),
-         {min, ""} <- Integer.parse(min),
-         {sec, ""} <- Integer.parse(sec),
-         {microsec, rest} <- Calendar.ISO.parse_microsecond(rest),
-         {_offset, ""} <- Calendar.ISO.parse_offset(rest) do
-      with {:ok, utc_time} <- new(hour, min, sec, microsec, Calendar.ISO),
-           do: convert(utc_time, calendar)
-    else
-      _ -> {:error, :invalid_format}
+  def from_iso8601(string, calendar \\ Calendar.ISO) do
+    with {:ok, {hour, minute, second, microsecond}} <- Calendar.ISO.parse_time(string) do
+      convert(
+        %Time{hour: hour, minute: minute, second: second, microsecond: microsecond},
+        calendar
+      )
     end
-  end
-
-  def from_iso8601(<<_::binary>>, _calendar) do
-    {:error, :invalid_format}
   end
 
   @doc """
   Parses the extended "Local time" format described by
-  [ISO 8601:2004](https://en.wikipedia.org/wiki/ISO_8601).
+  [ISO 8601:2019](https://en.wikipedia.org/wiki/ISO_8601).
 
   Raises if the format is invalid.
 
@@ -251,6 +274,7 @@ defmodule Time do
       ~T[23:50:07.123]
       iex> Time.from_iso8601!("2015:01:23 23-50-07")
       ** (ArgumentError) cannot parse "2015:01:23 23-50-07" as time, reason: :invalid_format
+
   """
   @spec from_iso8601!(String.t(), Calendar.calendar()) :: t
   def from_iso8601!(string, calendar \\ Calendar.ISO) do
@@ -265,7 +289,7 @@ defmodule Time do
 
   @doc """
   Converts the given time to
-  [ISO 8601:2004](https://en.wikipedia.org/wiki/ISO_8601).
+  [ISO 8601:2019](https://en.wikipedia.org/wiki/ISO_8601).
 
   By default, `Time.to_iso8601/2` returns times formatted in the "extended"
   format, for human readability. It also supports the "basic" format through
@@ -287,15 +311,23 @@ defmodule Time do
 
   """
   @spec to_iso8601(Calendar.time(), :extended | :basic) :: String.t()
-  def to_iso8601(time, format \\ :extended) when format in [:extended, :basic] do
+  def to_iso8601(time, format \\ :extended)
+
+  def to_iso8601(%{calendar: Calendar.ISO} = time, format) when format in [:extended, :basic] do
     %{
       hour: hour,
       minute: minute,
       second: second,
       microsecond: microsecond
-    } = convert!(time, Calendar.ISO)
+    } = time
 
-    Calendar.ISO.time_to_iso8601(hour, minute, second, microsecond, format)
+    Calendar.ISO.time_to_string(hour, minute, second, microsecond, format)
+  end
+
+  def to_iso8601(%{calendar: _} = time, format) when format in [:extended, :basic] do
+    time
+    |> convert!(Calendar.ISO)
+    |> to_iso8601(format)
   end
 
   @doc """
@@ -365,10 +397,72 @@ defmodule Time do
   end
 
   @doc """
-  Adds the `number` of `unit`s to the given `time`.
+  Converts a number of seconds after midnight to a `Time` struct.
 
-  This function accepts the `number` measured according to `Calendar.ISO`.
-  The time is returned in the same calendar as it was given in.
+  ## Examples
+
+      iex> Time.from_seconds_after_midnight(10_000)
+      ~T[02:46:40]
+      iex> Time.from_seconds_after_midnight(30_000, {5000, 3})
+      ~T[08:20:00.005]
+      iex> Time.from_seconds_after_midnight(-1)
+      ~T[23:59:59]
+      iex> Time.from_seconds_after_midnight(100_000)
+      ~T[03:46:40]
+
+  """
+  @doc since: "1.11.0"
+  @spec from_seconds_after_midnight(
+          integer(),
+          Calendar.microsecond(),
+          Calendar.calendar()
+        ) :: t
+  def from_seconds_after_midnight(seconds, microsecond \\ {0, 0}, calendar \\ Calendar.ISO)
+      when is_integer(seconds) do
+    seconds_in_day = Integer.mod(seconds, @seconds_per_day)
+
+    {hour, minute, second, {_, _}} =
+      calendar.time_from_day_fraction({seconds_in_day, @seconds_per_day})
+
+    %Time{
+      calendar: calendar,
+      hour: hour,
+      minute: minute,
+      second: second,
+      microsecond: microsecond
+    }
+  end
+
+  @doc """
+  Converts a `Time` struct to a number of seconds after midnight.
+
+  The returned value is a two-element tuple with the number of seconds and microseconds.
+
+  ## Examples
+
+      iex> Time.to_seconds_after_midnight(~T[23:30:15])
+      {84615, 0}
+      iex> Time.to_seconds_after_midnight(~N[2010-04-17 23:30:15.999])
+      {84615, 999000}
+
+  """
+  @doc since: "1.11.0"
+  @spec to_seconds_after_midnight(Calendar.time()) :: {integer(), non_neg_integer()}
+  def to_seconds_after_midnight(%{microsecond: {microsecond, _precision}} = time) do
+    iso_days = {0, to_day_fraction(time)}
+    {Calendar.ISO.iso_days_to_unit(iso_days, :second), microsecond}
+  end
+
+  @doc """
+  Adds the `amount_to_add` of `unit`s to the given `time`.
+
+  Accepts an `amount_to_add` in any `unit`. `unit` can be
+  `:hour`, `:minute`, `:second` or any subsecond precision from
+  `t:System.time_unit/0`. It defaults to `:second`. Negative values
+  will move backwards in time.
+
+  This function always consider the unit to be computed according
+  to the `Calendar.ISO`.
 
   Note the result value represents the time of day, meaning that it is cyclic,
   for instance, it will never go over 24 hours for the ISO calendar.
@@ -376,34 +470,73 @@ defmodule Time do
   ## Examples
 
       iex> Time.add(~T[10:00:00], 27000)
-      ~T[17:30:00.000000]
+      ~T[17:30:00]
       iex> Time.add(~T[11:00:00.005], 2400)
-      ~T[11:40:00.005000]
-      iex> Time.add(~T[00:00:00], 86399999, :millisecond)
-      ~T[23:59:59.999000]
-      iex> Time.add(~T[17:10:05], 86400)
-      ~T[17:10:05.000000]
+      ~T[11:40:00.005]
+      iex> Time.add(~T[00:00:00.000], 86_399_999, :millisecond)
+      ~T[23:59:59.999]
+
+  Negative values are allowed:
+
       iex> Time.add(~T[23:00:00], -60)
-      ~T[22:59:00.000000]
+      ~T[22:59:00]
+
+  Note that the time is cyclic:
+
+      iex> Time.add(~T[17:10:05], 86400)
+      ~T[17:10:05]
+
+  Hours and minutes are also supported:
+
+      iex> Time.add(~T[17:10:05], 2, :hour)
+      ~T[19:10:05]
+      iex> Time.add(~T[17:10:05], 30, :minute)
+      ~T[17:40:05]
 
   """
-  @spec add(Calendar.time(), integer, System.time_unit()) :: t
-  def add(%{calendar: calendar} = time, number, unit \\ :second) when is_integer(number) do
-    number = System.convert_time_unit(number, unit, :microsecond)
-    iso_days = {0, to_day_fraction(time)}
-    total = Calendar.ISO.iso_days_to_unit(iso_days, :microsecond) + number
-    iso_ppd = 86_400_000_000
-    parts = Integer.mod(total, iso_ppd)
+  @doc since: "1.6.0"
+  @spec add(Calendar.time(), integer, :hour | :minute | System.time_unit()) :: t
+  def add(time, amount_to_add, unit \\ :second)
 
-    {hour, minute, second, microsecond} = calendar.time_from_day_fraction({parts, iso_ppd})
+  def add(time, amount_to_add, :hour) when is_integer(amount_to_add) do
+    add(time, amount_to_add * 3600, :second)
+  end
+
+  def add(time, amount_to_add, :minute) when is_integer(amount_to_add) do
+    add(time, amount_to_add * 60, :second)
+  end
+
+  def add(%{calendar: calendar, microsecond: {_, precision}} = time, amount_to_add, unit)
+      when is_integer(amount_to_add) do
+    amount_to_add = System.convert_time_unit(amount_to_add, unit, :microsecond)
+    total = time_to_microseconds(time) + amount_to_add
+    parts = Integer.mod(total, @parts_per_day)
+
+    {hour, minute, second, {microsecond, _}} =
+      calendar.time_from_day_fraction({parts, @parts_per_day})
 
     %Time{
       hour: hour,
       minute: minute,
       second: second,
-      microsecond: microsecond,
+      microsecond: {microsecond, precision},
       calendar: calendar
     }
+  end
+
+  defp time_to_microseconds(%{
+         calendar: Calendar.ISO,
+         hour: 0,
+         minute: 0,
+         second: 0,
+         microsecond: {0, _}
+       }) do
+    0
+  end
+
+  defp time_to_microseconds(time) do
+    iso_days = {0, to_day_fraction(time)}
+    Calendar.ISO.iso_days_to_unit(iso_days, :microsecond)
   end
 
   @doc """
@@ -433,6 +566,7 @@ defmodule Time do
       :gt
 
   """
+  @doc since: "1.4.0"
   @spec compare(Calendar.time(), Calendar.time()) :: :lt | :eq | :gt
   def compare(%{calendar: calendar} = time1, %{calendar: calendar} = time2) do
     %{hour: hour1, minute: minute1, second: second1, microsecond: {microsecond1, _}} = time1
@@ -457,6 +591,44 @@ defmodule Time do
   end
 
   @doc """
+  Returns true if the first time is strictly earlier than the second.
+
+  ## Examples
+
+      iex> Time.before?(~T[16:04:16], ~T[16:04:28])
+      true
+      iex> Time.before?(~T[16:04:16], ~T[16:04:16])
+      false
+      iex> Time.before?(~T[16:04:16.01], ~T[16:04:16.001])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec before?(Calendar.time(), Calendar.time()) :: boolean()
+  def before?(time1, time2) do
+    compare(time1, time2) == :lt
+  end
+
+  @doc """
+  Returns true if the first time is strictly later than the second.
+
+  ## Examples
+
+      iex> Time.after?(~T[16:04:28], ~T[16:04:16])
+      true
+      iex> Time.after?(~T[16:04:16], ~T[16:04:16])
+      false
+      iex> Time.after?(~T[16:04:16.001], ~T[16:04:16.01])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec after?(Calendar.time(), Calendar.time()) :: boolean()
+  def after?(time1, time2) do
+    compare(time1, time2) == :gt
+  end
+
+  @doc """
   Converts given `time` to a different calendar.
 
   Returns `{:ok, time}` if the conversion was successful,
@@ -472,6 +644,7 @@ defmodule Time do
       {:ok, %Time{calendar: Calendar.Holocene, hour: 13, minute: 30, second: 15, microsecond: {0, 0}}}
 
   """
+  @doc since: "1.5.0"
   @spec convert(Calendar.time(), Calendar.calendar()) :: {:ok, t} | {:error, atom}
 
   # Keep it multiline for proper function clause errors.
@@ -527,6 +700,7 @@ defmodule Time do
       %Time{calendar: Calendar.Holocene, hour: 13, minute: 30, second: 15, microsecond: {0, 0}}
 
   """
+  @doc since: "1.5.0"
   @spec convert!(Calendar.time(), Calendar.calendar()) :: t
   def convert!(time, calendar) do
     case convert(time, calendar) do
@@ -541,21 +715,21 @@ defmodule Time do
   end
 
   @doc """
-  Returns the difference between two times, considering only the hour, minute
+  Returns the difference between two times, considering only the hour, minute,
   second and microsecond.
 
   As with the `compare/2` function both `Time` structs and other structures
   containing time can be used. If for instance a `NaiveDateTime` or `DateTime`
-  is passed, only the hour, month, second, and microsecond is considered. Any
+  is passed, only the hour, minute, second, and microsecond is considered. Any
   additional information about a date or time zone is ignored when calculating
   the difference.
 
-  The answer can be returned in any `unit` available from
-  `t:System.time_unit/0`. If the first unit is smaller than
-  the second, a negative number is returned.
+  The answer can be returned in any `:hour`, `:minute`, `:second` or any
+  subsecond `unit` available from `t:System.time_unit/0`. If the first time
+  value is earlier than the second, a negative number is returned.
 
-  This function returns the difference in seconds where seconds
-  are measured according to `Calendar.ISO`.
+  The unit is measured according to `Calendar.ISO` and defaults to `:second`.
+  Fractional results are not supported and are truncated.
 
   ## Examples
 
@@ -568,7 +742,7 @@ defmodule Time do
 
       # Two `NaiveDateTime` structs could have big differences in the date
       # but only the time part is considered.
-      iex> Time.diff(~N[2017-01-01 00:29:12], (~N[1900-02-03 00:29:10]))
+      iex> Time.diff(~N[2017-01-01 00:29:12], ~N[1900-02-03 00:29:10])
       2
 
       iex> Time.diff(~T[00:29:12], ~T[00:29:10], :microsecond)
@@ -576,9 +750,49 @@ defmodule Time do
       iex> Time.diff(~T[00:29:10], ~T[00:29:12], :microsecond)
       -2_000_000
 
+      iex> Time.diff(~T[02:29:10], ~T[00:29:10], :hour)
+      2
+      iex> Time.diff(~T[02:29:10], ~T[00:29:11], :hour)
+      1
+
   """
-  @spec diff(Calendar.time(), Calendar.time(), System.time_unit()) :: integer
-  def diff(time1, time2, unit \\ :second) do
+  @doc since: "1.5.0"
+  @spec diff(Calendar.time(), Calendar.time(), :hour | :minute | System.time_unit()) :: integer
+  def diff(time1, time2, unit \\ :second)
+
+  def diff(time1, time2, :hour) do
+    diff(time1, time2, :second) |> div(3600)
+  end
+
+  def diff(time1, time2, :minute) do
+    diff(time1, time2, :second) |> div(60)
+  end
+
+  def diff(
+        %{
+          calendar: Calendar.ISO,
+          hour: hour1,
+          minute: minute1,
+          second: second1,
+          microsecond: {microsecond1, @parts_per_day}
+        },
+        %{
+          calendar: Calendar.ISO,
+          hour: hour2,
+          minute: minute2,
+          second: second2,
+          microsecond: {microsecond2, @parts_per_day}
+        },
+        unit
+      ) do
+    total =
+      (hour1 - hour2) * 3_600_000_000 + (minute1 - minute2) * 60_000_000 +
+        (second1 - second2) * 1_000_000 + (microsecond1 - microsecond2)
+
+    System.convert_time_unit(total, :microsecond, unit)
+  end
+
+  def diff(time1, time2, unit) do
     fraction1 = to_day_fraction(time1)
     fraction2 = to_day_fraction(time2)
 
@@ -589,6 +803,9 @@ defmodule Time do
   @doc """
   Returns the given time with the microsecond field truncated to the given
   precision (`:microsecond`, `millisecond` or `:second`).
+
+  The given time is returned unchanged if it already has lower precision than
+  the given precision.
 
   ## Examples
 
@@ -602,6 +819,7 @@ defmodule Time do
       ~T[01:01:01]
 
   """
+  @doc since: "1.6.0"
   @spec truncate(t(), :microsecond | :millisecond | :second) :: t()
   def truncate(%Time{microsecond: microsecond} = time, precision) do
     %{time | microsecond: Calendar.truncate(microsecond, precision)}
@@ -634,20 +852,20 @@ defmodule Time do
   end
 
   defimpl Inspect do
-    def inspect(%{calendar: Calendar.ISO} = time, _) do
+    def inspect(time, _) do
       %{
         hour: hour,
         minute: minute,
         second: second,
         microsecond: microsecond,
-        calendar: Calendar.ISO
+        calendar: calendar
       } = time
 
-      "~T[" <> Calendar.ISO.time_to_string(hour, minute, second, microsecond) <> "]"
+      "~T[" <>
+        calendar.time_to_string(hour, minute, second, microsecond) <> suffix(calendar) <> "]"
     end
 
-    def inspect(time, opts) do
-      Inspect.Any.inspect(time, opts)
-    end
+    defp suffix(Calendar.ISO), do: ""
+    defp suffix(calendar), do: " " <> inspect(calendar)
   end
 end

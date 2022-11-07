@@ -6,41 +6,144 @@ defmodule Kernel.ParallelCompilerTest do
   use ExUnit.Case
   import ExUnit.CaptureIO
 
+  defp purge(modules) do
+    Enum.map(modules, fn mod ->
+      :code.purge(mod)
+      :code.delete(mod)
+    end)
+  end
+
+  defp write_tmp(context, kv) do
+    dir = tmp_path(context)
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+
+    for {key, contents} <- kv do
+      path = Path.join(dir, "#{key}.ex")
+      File.write!(path, contents)
+      path
+    end
+  end
+
   describe "compile" do
+    test "with profiling" do
+      fixtures =
+        write_tmp(
+          "profile_time",
+          bar: """
+          defmodule HelloWorld do
+          end
+          """
+        )
+
+      profile =
+        capture_io(:stderr, fn ->
+          assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures, profile: :time)
+
+          assert HelloWorld in modules
+        end)
+
+      assert profile =~
+               ~r"\[profile\] [\s\d]{6}ms compiling \+      0ms waiting for .*tmp/profile_time/bar.ex"
+
+      assert profile =~ ~r"\[profile\] Finished compilation cycle of 1 modules in \d+ms"
+      assert profile =~ ~r"\[profile\] Finished group pass check of 1 modules in \d+ms"
+    after
+      purge([HelloWorld])
+    end
+
     test "solves dependencies between modules" do
-      fixtures = [
-        fixture_path("parallel_compiler/bar.ex"),
-        fixture_path("parallel_compiler/foo.ex")
-      ]
+      fixtures =
+        write_tmp(
+          "parallel_compiler",
+          bar: """
+          defmodule BarParallel do
+          end
+
+          require FooParallel
+          IO.puts(FooParallel.message())
+          """,
+          foo: """
+          defmodule FooParallel do
+            # We use this ensure_compiled clause so both Foo and
+            # Bar block. Foo depends on Unknown and Bar depends on
+            # Foo. The compiler will see this dependency and first
+            # release Foo and then Bar, compiling with success.
+            {:error, _} = Code.ensure_compiled(Unknown)
+            def message, do: "message_from_foo"
+          end
+          """
+        )
 
       assert capture_io(fn ->
-               assert {:ok, [BarParallel, FooParallel], []} =
-                        Kernel.ParallelCompiler.compile(fixtures)
+               assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
+               assert BarParallel in modules
+               assert FooParallel in modules
              end) =~ "message_from_foo"
     after
-      Enum.map([FooParallel, BarParallel], fn mod ->
-        :code.purge(mod)
-        :code.delete(mod)
-      end)
+      purge([FooParallel, BarParallel])
     end
 
     test "solves dependencies between structs" do
-      fixtures = [
-        fixture_path("parallel_struct/bar.ex"),
-        fixture_path("parallel_struct/foo.ex")
-      ]
+      fixtures =
+        write_tmp(
+          "parallel_struct",
+          bar: """
+          defmodule BarStruct do
+            defstruct name: "", foo: %FooStruct{}
+          end
+          """,
+          foo: """
+          defmodule FooStruct do
+            defstruct name: ""
+            def bar?(%BarStruct{}), do: true
+          end
+          """
+        )
 
       assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
       assert [BarStruct, FooStruct] = Enum.sort(modules)
     after
-      Enum.map([FooStruct, BarStruct], fn mod ->
-        :code.purge(mod)
-        :code.delete(mod)
-      end)
+      purge([FooStruct, BarStruct])
+    end
+
+    test "solves dependencies between structs in typespecs" do
+      fixtures =
+        write_tmp(
+          "parallel_typespec_struct",
+          bar: """
+          defmodule BarStruct do
+            defstruct name: ""
+            @type t :: %FooStruct{}
+          end
+          """,
+          foo: """
+          defmodule FooStruct do
+            defstruct name: ""
+            @type t :: %BarStruct{}
+          end
+          """
+        )
+
+      assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
+      assert [BarStruct, FooStruct] = Enum.sort(modules)
+    after
+      purge([FooStruct, BarStruct])
     end
 
     test "returns struct undefined error when local struct is undefined" do
-      fixture = fixture_path("parallel_struct/undef.ex")
+      [fixture] =
+        write_tmp(
+          "compile_struct",
+          undef: """
+          defmodule Undef do
+            def undef() do
+              %__MODULE__{}
+            end
+          end
+          """
+        )
+
       expected_msg = "Undef.__struct__/1 is undefined, cannot expand struct Undef"
 
       assert capture_io(fn ->
@@ -51,8 +154,62 @@ defmodule Kernel.ParallelCompilerTest do
              end) =~ expected_msg
     end
 
+    test "returns error when fails to expand struct" do
+      [fixture] =
+        write_tmp(
+          "compile_struct_invalid_key",
+          undef: """
+          defmodule InvalidStructKey do
+            def invalid_struct_key() do
+              %Date{invalid_key: 2020}
+            end
+          end
+          """
+        )
+
+      expected_msg = "** (KeyError) key :invalid_key not found"
+
+      assert capture_io(fn ->
+               assert {:error, [{^fixture, 3, msg}], []} =
+                        Kernel.ParallelCompiler.compile([fixture])
+
+               assert msg =~ expected_msg
+             end) =~ expected_msg
+    end
+
+    test "does not crash with pending monitor message" do
+      {pid, ref} = spawn_monitor(fn -> :ok end)
+
+      [fixture] =
+        write_tmp(
+          "quick_example",
+          quick_example: """
+          defmodule QuickExample do
+          end
+          """
+        )
+
+      assert {:ok, [QuickExample], []} = Kernel.ParallelCompiler.compile([fixture])
+      assert_received {:DOWN, ^ref, _, ^pid, :normal}
+    after
+      purge([QuickExample])
+    end
+
     test "does not hang on missing dependencies" do
-      fixture = fixture_path("parallel_compiler/bat.ex")
+      [fixture] =
+        write_tmp(
+          "compile_does_not_hang",
+          with_behaviour_and_struct: """
+          # We need to ensure it won't block even after multiple calls.
+          # So we use both behaviour and struct expansion below.
+          defmodule WithBehaviourAndStruct do
+            # @behaviour will call ensure_compiled().
+            @behaviour :unknown
+            # Struct expansion calls it as well.
+            %ThisModuleWillNeverBeAvailable{}
+          end
+          """
+        )
 
       expected_msg =
         "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
@@ -65,99 +222,279 @@ defmodule Kernel.ParallelCompilerTest do
              end) =~ "== Compilation error"
     end
 
-    test "handles possible deadlocks" do
-      foo = fixture_path("parallel_deadlock/foo.ex")
-      bar = fixture_path("parallel_deadlock/bar.ex")
-      fixtures = [foo, bar]
+    test "does not deadlock on missing dependencies" do
+      [missing_struct, depends_on] =
+        write_tmp(
+          "does_not_deadlock",
+          missing_struct: """
+          defmodule MissingStruct do
+            %ThisModuleWillNeverBeAvailable{}
+            def hello, do: :ok
+          end
+          """,
+          depends_on_missing_struct: """
+          MissingStruct.hello()
+          """
+        )
+
+      expected_msg =
+        "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
+
+      assert capture_io(fn ->
+               assert {:error, [{^missing_struct, 2, msg}], []} =
+                        Kernel.ParallelCompiler.compile([missing_struct, depends_on])
+
+               assert msg =~ expected_msg
+             end) =~ "== Compilation error"
+    end
+
+    test "does not deadlock on missing import/struct dependencies" do
+      [missing_import, depends_on] =
+        write_tmp(
+          "import_and_structs",
+          missing_import: """
+          defmodule MissingStruct do
+            import Unknown.Module
+          end
+          """,
+          depends_on_missing_struct: """
+          %MissingStruct{}
+          """
+        )
+
+      assert capture_io(fn ->
+               assert {:error, [{^missing_import, 2, msg}], []} =
+                        Kernel.ParallelCompiler.compile([missing_import, depends_on])
+
+               assert msg =~ "module Unknown.Module is not loaded and could not be found"
+             end) =~ "== Compilation error"
+    end
+
+    test "handles deadlocks" do
+      [foo, bar] =
+        write_tmp(
+          "parallel_deadlock",
+          foo: """
+          defmodule FooDeadlock do
+            BarDeadlock.__info__(:module)
+          end
+          """,
+          bar: """
+          defmodule BarDeadlock do
+            FooDeadlock.__info__(:module)
+          end
+          """
+        )
 
       msg =
         capture_io(fn ->
+          fixtures = [foo, bar]
           assert {:error, [bar_error, foo_error], []} = Kernel.ParallelCompiler.compile(fixtures)
           assert bar_error == {bar, nil, "deadlocked waiting on module FooDeadlock"}
           assert foo_error == {foo, nil, "deadlocked waiting on module BarDeadlock"}
         end)
 
       assert msg =~ "Compilation failed because of a deadlock between files."
-      assert msg =~ "fixtures/parallel_deadlock/foo.ex => BarDeadlock"
-      assert msg =~ "fixtures/parallel_deadlock/bar.ex => FooDeadlock"
+      assert msg =~ "parallel_deadlock/foo.ex => BarDeadlock"
+      assert msg =~ "parallel_deadlock/bar.ex => FooDeadlock"
       assert msg =~ ~r"== Compilation error in file .+parallel_deadlock/foo\.ex =="
       assert msg =~ "** (CompileError)  deadlocked waiting on module BarDeadlock"
       assert msg =~ ~r"== Compilation error in file .+parallel_deadlock/bar\.ex =="
       assert msg =~ "** (CompileError)  deadlocked waiting on module FooDeadlock"
     end
 
+    test "does not deadlock from Code.ensure_compiled" do
+      [foo, bar] =
+        write_tmp(
+          "parallel_ensure_nodeadlock",
+          foo: """
+          defmodule FooCircular do
+            {:error, :unavailable} = Code.ensure_compiled(BarCircular)
+          end
+          """,
+          bar: """
+          defmodule BarCircular do
+            {:error, :unavailable} = Code.ensure_compiled(FooCircular)
+          end
+          """
+        )
+
+      assert {:ok, _modules, []} = Kernel.ParallelCompiler.compile([foo, bar])
+      assert Enum.sort([FooCircular, BarCircular]) == [BarCircular, FooCircular]
+    after
+      purge([FooCircular, BarCircular])
+    end
+
+    test "handles async compilation" do
+      [foo, bar] =
+        write_tmp(
+          "async_compile",
+          foo: """
+          defmodule FooAsync do
+            true = Code.can_await_module_compilation?()
+
+            Kernel.ParallelCompiler.async(fn ->
+              true = Code.can_await_module_compilation?()
+              BarAsync.__info__(:module)
+            end)
+          end
+          """,
+          bar: """
+          defmodule BarAsync do
+            true = Code.can_await_module_compilation?()
+          end
+          """
+        )
+
+      capture_io(fn ->
+        fixtures = [foo, bar]
+        assert assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
+        assert FooAsync in modules
+        assert BarAsync in modules
+      end)
+    after
+      purge([FooAsync, BarAsync])
+    end
+
+    test "handles async deadlocks" do
+      [foo, bar] =
+        write_tmp(
+          "async_deadlock",
+          foo: """
+          defmodule FooAsyncDeadlock do
+            Kernel.ParallelCompiler.async(fn ->
+              BarAsyncDeadlock.__info__(:module)
+            end)
+
+            BarAsyncDeadlock.__info__(:module)
+          end
+          """,
+          bar: """
+          defmodule BarAsyncDeadlock do
+            FooAsyncDeadlock.__info__(:module)
+          end
+          """
+        )
+
+      capture_io(fn ->
+        fixtures = [foo, bar]
+        assert {:error, [bar_error, foo_error], []} = Kernel.ParallelCompiler.compile(fixtures)
+        assert bar_error == {bar, nil, "deadlocked waiting on module FooAsyncDeadlock"}
+        assert foo_error == {foo, nil, "deadlocked waiting on module BarAsyncDeadlock"}
+      end)
+    end
+
     test "supports warnings as errors" do
-      warnings_as_errors = Code.compiler_options()[:warnings_as_errors]
-      fixture = fixture_path("warnings_sample.ex")
+      warnings_as_errors = Code.get_compiler_option(:warnings_as_errors)
+
+      [fixture] =
+        write_tmp(
+          "warnings_as_errors",
+          warnings_as_errors: """
+          defmodule WarningsSample do
+            def hello(a), do: a
+            def hello(b), do: b
+          end
+          """
+        )
+
+      output = tmp_path("not_to_be_used")
 
       try do
         Code.compiler_options(warnings_as_errors: true)
 
         msg =
           capture_io(:stderr, fn ->
-            assert {:error, [error], []} = Kernel.ParallelCompiler.compile([fixture])
-            msg = "this clause cannot match because a previous clause at line 2 always matches"
-            assert error == {fixture, 3, msg}
+            assert {:error, [error], []} =
+                     Kernel.ParallelCompiler.compile_to_path([fixture], output)
+
+            assert {^fixture, 3, "this clause " <> _} = error
           end)
 
         assert msg =~
                  "Compilation failed due to warnings while using the --warnings-as-errors option\n"
       after
         Code.compiler_options(warnings_as_errors: warnings_as_errors)
-        :code.purge(WarningsSample)
-        :code.delete(WarningsSample)
+        purge([WarningsSample])
       end
+
+      refute File.exists?(output)
     end
 
     test "does not use incorrect line number when error originates in another file" do
       File.mkdir_p!(tmp_path())
 
-      file_a = tmp_path("error_line_a.ex")
-
-      File.write!(file_a, """
-      defmodule A do
-        def fun(arg), do: arg / 2
-      end
-      """)
-
-      file_b = tmp_path("error_line_b.ex")
-
-      File.write!(file_b, """
-      defmodule B do
-        def fun(arg) do
-          A.fun(arg)
-          :ok
-        end
-      end
-      B.fun(:not_a_number)
-      """)
+      [a, b] =
+        write_tmp(
+          "error_line",
+          a: """
+          defmodule A do
+            def fun(arg), do: arg / 2
+          end
+          """,
+          b: """
+          defmodule B do
+            def fun(arg) do
+              A.fun(arg)
+              :ok
+            end
+          end
+          B.fun(:not_a_number)
+          """
+        )
 
       capture_io(fn ->
-        assert {:error, [{^file_b, nil, _}], _} =
-                 Kernel.ParallelCompiler.compile([file_a, file_b])
+        assert {:error, [{^b, 0, _}], _} = Kernel.ParallelCompiler.compile([a, b])
       end)
     end
 
     test "gets correct line number for UndefinedFunctionError" do
       File.mkdir_p!(tmp_path())
 
-      file = tmp_path("undef_error.ex")
-
-      File.write!(file, """
-      defmodule UndefErrorLine do
-        Bogus.fun()
-      end
-      """)
+      [fixture] =
+        write_tmp("undef",
+          undef: """
+          defmodule UndefErrorLine do
+            Bogus.fun()
+          end
+          """
+        )
 
       capture_io(fn ->
-        assert {:error, [{^file, 2, _}], _} = Kernel.ParallelCompiler.compile([file])
+        assert {:error, [{^fixture, 2, _}], _} = Kernel.ParallelCompiler.compile([fixture])
       end)
+    end
+
+    test "gets proper beam destinations from dynamic modules" do
+      fixtures =
+        write_tmp(
+          "dynamic",
+          dynamic: """
+          Module.create(Dynamic, quote(do: :ok), file: "dynamic.ex")
+          [_ | _] = :code.which(Dynamic)
+          """
+        )
+
+      assert {:ok, [Dynamic], []} = Kernel.ParallelCompiler.compile(fixtures, dest: "sample")
+    after
+      purge([Dynamic])
     end
   end
 
   describe "require" do
     test "returns struct undefined error when local struct is undefined" do
-      fixture = fixture_path("parallel_struct/undef.ex")
+      [fixture] =
+        write_tmp(
+          "require_struct",
+          undef: """
+          defmodule Undef do
+            def undef() do
+              %__MODULE__{}
+            end
+          end
+          """
+        )
+
       expected_msg = "Undef.__struct__/1 is undefined, cannot expand struct Undef"
 
       assert capture_io(fn ->
@@ -169,7 +506,20 @@ defmodule Kernel.ParallelCompilerTest do
     end
 
     test "does not hang on missing dependencies" do
-      fixture = fixture_path("parallel_compiler/bat.ex")
+      [fixture] =
+        write_tmp(
+          "require_does_not_hang",
+          with_behaviour_and_struct: """
+          # We need to ensure it won't block even after multiple calls.
+          # So we use both behaviour and struct expansion below.
+          defmodule WithBehaviourAndStruct do
+            # @behaviour will call ensure_compiled().
+            @behaviour :unknown
+            # Struct expansion calls it as well.
+            %ThisModuleWillNeverBeAvailable{}
+          end
+          """
+        )
 
       expected_msg =
         "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
@@ -183,8 +533,18 @@ defmodule Kernel.ParallelCompilerTest do
     end
 
     test "supports warnings as errors" do
-      warnings_as_errors = Code.compiler_options()[:warnings_as_errors]
-      fixture = fixture_path("warnings_sample.ex")
+      warnings_as_errors = Code.get_compiler_option(:warnings_as_errors)
+
+      [fixture] =
+        write_tmp(
+          "warnings_as_errors",
+          warnings_as_errors: """
+          defmodule WarningsSample do
+            def hello(a), do: a
+            def hello(b), do: b
+          end
+          """
+        )
 
       try do
         Code.compiler_options(warnings_as_errors: true)
@@ -193,18 +553,14 @@ defmodule Kernel.ParallelCompilerTest do
           capture_io(:stderr, fn ->
             assert {:error, [error], []} = Kernel.ParallelCompiler.require([fixture])
 
-            message =
-              "this clause cannot match because a previous clause at line 2 always matches"
-
-            assert error == {fixture, 3, message}
+            assert {^fixture, 3, "this clause " <> _} = error
           end)
 
         assert msg =~
                  "Compilation failed due to warnings while using the --warnings-as-errors option\n"
       after
         Code.compiler_options(warnings_as_errors: warnings_as_errors)
-        :code.purge(WarningsSample)
-        :code.delete(WarningsSample)
+        purge([WarningsSample])
       end
     end
   end

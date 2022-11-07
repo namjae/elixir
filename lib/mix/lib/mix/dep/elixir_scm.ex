@@ -1,7 +1,7 @@
 # Manifest file where we treat Elixir and SCMs as a dependency.
 defmodule Mix.Dep.ElixirSCM do
   @moduledoc false
-  @manifest ".compile.elixir_scm"
+  @manifest "compile.elixir_scm"
   @manifest_vsn 1
 
   def manifest(manifest_path \\ Mix.Project.manifest_path()) do
@@ -26,7 +26,7 @@ defmodule Mix.Dep.ElixirSCM do
           {@manifest_vsn, vsn, scm} = :erlang.binary_to_term(contents)
           {:ok, vsn, scm}
         rescue
-          _ -> {:ok, {"1.0.0", '17'}, nil}
+          _ -> {:ok, {"1.0.0", ~c"17"}, nil}
         end
 
       _ ->

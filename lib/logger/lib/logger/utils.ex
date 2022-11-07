@@ -6,7 +6,7 @@ defmodule Logger.Utils do
 
   There is a chance we truncate in the middle of a grapheme
   cluster but we never truncate in the middle of a binary
-  codepoint. For this reason, truncation is not exact.
+  code point. For this reason, truncation is not exact.
   """
   @spec truncate(IO.chardata(), non_neg_integer) :: IO.chardata()
   def truncate(chardata, :infinity) when is_binary(chardata) or is_list(chardata) do
@@ -43,6 +43,12 @@ defmodule Logger.Utils do
     truncate_n_list(list, n, [])
   end
 
+  defp truncate_n(other, _n) do
+    raise ArgumentError,
+          "cannot truncate chardata because it contains something that is not " <>
+            "valid chardata: #{inspect(other)}"
+  end
+
   defp truncate_n_list(_, n, acc) when n < 0 do
     {:lists.reverse(acc), n}
   end
@@ -63,7 +69,7 @@ defmodule Logger.Utils do
 
   defp fix_binary(binary) do
     # Use a thirteen-bytes offset to look back in the binary.
-    # This should allow at least two codepoints of 6 bytes.
+    # This should allow at least two code points of 6 bytes.
     suffix_size = min(byte_size(binary), 13)
     prefix_size = byte_size(binary) - suffix_size
     <<prefix::binary-size(prefix_size), suffix::binary-size(suffix_size)>> = binary
@@ -75,7 +81,7 @@ defmodule Logger.Utils do
   end
 
   defp fix_binary(<<h, t::binary>>, acc) do
-    fix_binary(t, <<h, acc::binary>>)
+    fix_binary(t, <<acc::binary, h>>)
   end
 
   defp fix_binary(<<>>, _acc) do
@@ -108,7 +114,7 @@ defmodule Logger.Utils do
     # arguments according to the truncate limit.
     {args, _} =
       Enum.map_reduce(args, truncate, fn arg, acc ->
-        if is_binary(arg) do
+        if is_binary(arg) and acc != :infinity do
           truncate_n(arg, acc)
         else
           {arg, acc}
@@ -131,7 +137,7 @@ defmodule Logger.Utils do
     width: :none
   }
 
-  defp handle_format_spec(%{control_char: char} = spec, opts) when char in 'wWpP' do
+  defp handle_format_spec(%{control_char: char} = spec, opts) when char in ~c"wWpP" do
     %{args: args, width: width, strings: strings?} = spec
 
     opts = %{
@@ -149,28 +155,30 @@ defmodule Logger.Utils do
   defp inspect_charlists(false, _), do: :as_lists
   defp inspect_charlists(_, opts), do: opts.charlists
 
-  defp inspect_limit(char, [_, limit], _) when char in 'WP', do: limit
+  defp inspect_limit(char, [_, limit], _) when char in ~c"WP", do: limit
   defp inspect_limit(_, _, opts), do: opts.limit
 
-  defp inspect_width(char, _) when char in 'wW', do: :infinity
+  defp inspect_width(char, _) when char in ~c"wW", do: :infinity
   defp inspect_width(_, width), do: width
 
   defp inspect_data([data | _], opts) do
+    width = if opts.width == :none, do: 80, else: opts.width
+
     data
     |> Inspect.Algebra.to_doc(opts)
-    |> Inspect.Algebra.format(opts.width)
+    |> Inspect.Algebra.format(width)
   end
 
   @doc """
   Returns a timestamp that includes milliseconds.
   """
-  def timestamp(utc_log?) do
-    {_, _, micro} = now = :os.timestamp()
+  def timestamp(timestamp \\ :os.system_time(:microsecond), utc_log?) do
+    micro = rem(timestamp, 1_000_000)
 
     {date, {hours, minutes, seconds}} =
       case utc_log? do
-        true -> :calendar.now_to_universal_time(now)
-        false -> :calendar.now_to_local_time(now)
+        true -> :calendar.system_time_to_universal_time(timestamp, :microsecond)
+        false -> :calendar.system_time_to_local_time(timestamp, :microsecond)
       end
 
     {date, {hours, minutes, seconds, div(micro, 1000)}}

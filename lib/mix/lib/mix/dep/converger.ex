@@ -30,11 +30,34 @@ defmodule Mix.Dep.Converger do
           Enum.find(deps, fn %Mix.Dep{app: other_app} -> app == other_app end)
         end)
       else
-        Mix.raise("Could not sort dependencies. There are cycles in the dependency graph")
+        find_cycle(graph)
       end
     after
       :digraph.delete(graph)
     end
+  end
+
+  @doc """
+  A Depth-First Search to find where is the dependency graph cycle
+  and then display the cyclic dependencies back to the developer.
+  """
+  def find_cycle(graph), do: find_cycle(graph, :digraph.vertices(graph), MapSet.new())
+
+  defp find_cycle(_, [], _visited), do: nil
+
+  defp find_cycle(graph, [v | vs], visited) do
+    if v in visited, do: cycle_found(visited)
+
+    find_cycle(graph, :digraph.out_neighbours(graph, v), MapSet.put(visited, v))
+    find_cycle(graph, vs, visited)
+  end
+
+  defp cycle_found(visited) do
+    Mix.raise(
+      "Could not sort dependencies. " <>
+        "The following dependencies form a cycle: " <>
+        Enum.join(visited, ", ")
+    )
   end
 
   @doc """
@@ -54,12 +77,12 @@ defmodule Mix.Dep.Converger do
   end
 
   defp all(acc, lock, opts, callback) do
-    main = Mix.Dep.Loader.children()
+    lock_given? = !!lock
+
+    main = Mix.Dep.Loader.children(lock_given?)
     main = Enum.map(main, &%{&1 | top_level: true})
     apps = Enum.map(main, & &1.app)
-
-    lock_given? = !!lock
-    env = opts[:env]
+    env_target = {opts[:env], opts[:target]}
 
     # If no lock was given, let's read one to fill in the deps
     lock = lock || Mix.Dep.Lock.read()
@@ -68,8 +91,8 @@ defmodule Mix.Dep.Converger do
     # dependencies. Since the remote converger may be
     # lazily loaded, we need to check for it on every
     # iteration.
-    {deps, rest, lock} =
-      all(main, apps, callback, acc, lock, env, fn dep ->
+    {deps, acc, lock} =
+      all(main, apps, callback, acc, lock_given?, lock, env_target, fn dep ->
         if (remote = Mix.RemoteConverger.get()) && remote.remote?(dep) do
           {:loaded, dep}
         else
@@ -94,35 +117,37 @@ defmodule Mix.Dep.Converger do
       # on, there is no lock, so we won't hit this branch.
       lock = if lock_given?, do: remote.converge(deps, lock), else: lock
 
-      deps =
+      # Build a cache using both dep_name and dep_scm to ensure we only
+      # return :loaded for deps which have been loaded from the same source.
+      cache =
         deps
         |> Enum.reject(&remote.remote?(&1))
-        |> Enum.into(%{}, &{&1.app, &1})
+        |> Enum.into(%{}, &{{&1.app, &1.scm}, &1})
 
       # In case no lock was given, we will use the local lock
       # which is potentially stale. So remote.deps/2 needs to always
       # check if the data it finds in the lock is actually valid.
-      {deps, rest, lock} =
-        all(main, apps, callback, rest, lock, env, fn dep ->
-          if cached = deps[dep.app] do
+      {deps, acc, lock} =
+        all(main, apps, callback, acc, lock_given?, lock, env_target, fn dep ->
+          if cached = cache[{dep.app, dep.scm}] do
             {:loaded, cached}
           else
             {:unloaded, dep, remote.deps(dep, lock)}
           end
         end)
 
-      {reject_non_fulfilled_optional(deps), rest, lock}
+      {reject_non_fulfilled_optional(deps), acc, lock}
     else
-      {reject_non_fulfilled_optional(deps), rest, lock}
+      {reject_non_fulfilled_optional(deps), acc, lock}
     end
   end
 
-  defp all(main, apps, callback, rest, lock, env, cache) do
-    {deps, rest, lock} = all(main, [], [], apps, callback, rest, lock, env, cache)
+  defp all(main, apps, callback, rest, locked?, lock, env_target, cache) do
+    {deps, rest, lock} = all(main, [], [], apps, callback, rest, locked?, lock, env_target, cache)
     deps = Enum.reverse(deps)
     # When traversing dependencies, we keep skipped ones to
     # find conflicts. We remove them now after traversal.
-    {deps, _} = Mix.Dep.Loader.partition_by_env(deps, env)
+    {deps, _} = Mix.Dep.Loader.split_by_env_and_target(deps, env_target)
     {deps, rest, lock}
   end
 
@@ -130,7 +155,7 @@ defmodule Mix.Dep.Converger do
   # fashion. The reason for this is that we converge
   # dependencies, but allow the parent to override any
   # dependency in the child. Consider this tree with
-  # dependencies "a", "b", etc and the order they are
+  # dependencies "a", "b", "c", and so forth, and the order they are
   # converged:
   #
   #     * project
@@ -142,7 +167,7 @@ defmodule Mix.Dep.Converger do
   #         6) f
   #           7) d
   #
-  # Notice that the "d" dependency exists as a child of "b"
+  # Note that the "d" dependency exists as a child of "b"
   # and child of "f". In case the dependency is the same,
   # we proceed. However, if there is a conflict, for instance
   # different Git repositories are used as source in each, we
@@ -165,17 +190,20 @@ defmodule Mix.Dep.Converger do
   # Now, since "d" was specified in a parent project, no
   # exception is going to be raised since d is considered
   # to be the authoritative source.
-  defp all([dep | t], acc, upper_breadths, current_breadths, callback, rest, lock, env, cache) do
-    cond do
-      new_acc = diverged_deps(acc, upper_breadths, dep) ->
-        all(t, new_acc, upper_breadths, current_breadths, callback, rest, lock, env, cache)
+  defp all([dep | t], acc, upper, breadths, callback, rest, locked?, lock, env_target, cache) do
+    case match_deps(acc, upper, dep, env_target) do
+      {:replace, dep, acc} ->
+        all([dep | t], acc, upper, breadths, callback, rest, locked?, lock, env_target, cache)
 
-      Mix.Dep.Loader.skip?(dep, env) ->
+      {:match, acc} ->
+        all(t, acc, upper, breadths, callback, rest, locked?, lock, env_target, cache)
+
+      :skip ->
         # We still keep skipped dependencies around to detect conflicts.
         # They must be rejected after every all iteration.
-        all(t, [dep | acc], upper_breadths, current_breadths, callback, rest, lock, env, cache)
+        all(t, [dep | acc], upper, breadths, callback, rest, locked?, lock, env_target, cache)
 
-      true ->
+      :nomatch ->
         {dep, rest, lock} =
           case cache.(dep) do
             {:loaded, cached_dep} ->
@@ -188,21 +216,21 @@ defmodule Mix.Dep.Converger do
                 # After we invoke the callback (which may actually check out the
                 # dependency), we load the dependency including its latest info
                 # and children information.
-                {Mix.Dep.Loader.load(dep, children), rest, lock}
+                {Mix.Dep.Loader.load(dep, children, locked?), rest, lock}
               end)
           end
 
         {acc, rest, lock} =
-          all(t, [dep | acc], upper_breadths, current_breadths, callback, rest, lock, env, cache)
+          all(t, [dep | acc], upper, breadths, callback, rest, locked?, lock, env_target, cache)
 
         umbrella? = dep.opts[:from_umbrella]
         deps = reject_non_fulfilled_optional(dep.deps, Enum.map(acc, & &1.app), umbrella?)
-        new_breadths = Enum.map(deps, & &1.app) ++ current_breadths
-        all(deps, acc, current_breadths, new_breadths, callback, rest, lock, env, cache)
+        new_breadths = Enum.map(deps, & &1.app) ++ breadths
+        all(deps, acc, breadths, new_breadths, callback, rest, locked?, lock, env_target, cache)
     end
   end
 
-  defp all([], acc, _upper, _current, _callback, rest, lock, _env, _cache) do
+  defp all([], acc, _upper, _current, _callback, rest, _locked?, lock, _env_target, _cache) do
     {acc, rest, lock}
   end
 
@@ -210,7 +238,7 @@ defmodule Mix.Dep.Converger do
     put_in(dep.opts[:lock], lock[app])
   end
 
-  # Look for divergence in dependencies.
+  # Look for matching and divergence in dependencies.
   #
   # If the same dependency is specified more than once,
   # we need to guarantee they converge. If they don't
@@ -220,14 +248,19 @@ defmodule Mix.Dep.Converger do
   # diverges is in the upper breadth, in those cases we
   # also check for the override option and mark the dependency
   # as overridden instead of diverged.
-  defp diverged_deps(list, upper_breadths, %Mix.Dep{app: app} = dep) do
-    in_upper? = app in upper_breadths
+  defp match_deps(list, upper_breadths, %Mix.Dep{app: app} = dep, env_target) do
+    case Enum.split_while(list, &(&1.app != app)) do
+      {_, []} ->
+        if Mix.Dep.Loader.skip?(dep, env_target) do
+          :skip
+        else
+          :nomatch
+        end
 
-    {acc, match} =
-      Enum.map_reduce(list, false, fn other, match ->
-        %Mix.Dep{app: other_app, opts: other_opts} = other
+      {pre, [%Mix.Dep{opts: other_opts} = other | pos]} ->
+        in_upper? = app in upper_breadths
 
-        if other_app == app and other.top_level and dep.top_level do
+        if other.top_level and dep.top_level do
           Mix.shell().error(
             "warning: the dependency #{inspect(dep.app)} is " <>
               "duplicated at the top level, please remove one of them"
@@ -235,62 +268,73 @@ defmodule Mix.Dep.Converger do
         end
 
         cond do
-          app != other_app ->
-            {other, match}
-
           in_upper? && other_opts[:override] ->
-            {other |> with_matching_only(dep, in_upper?), true}
+            {:match, list}
 
-          converge?(other, dep) ->
-            other =
-              other
-              |> with_matching_only(dep, in_upper?)
-              |> with_matching_req(dep)
-              |> merge_manager(dep, in_upper?)
+          not converge?(other, dep) ->
+            tag = if in_upper?, do: :overridden, else: :diverged
+            other = %{other | status: {tag, dep}}
+            {:match, pre ++ [other | pos]}
 
-            {other, true}
+          vsn = req_mismatch(other, dep) ->
+            other = %{other | status: {:divergedreq, vsn, dep}}
+            {:match, pre ++ [other | pos]}
+
+          not in_upper? and Mix.Dep.Loader.skip?(other, env_target) and
+              not Mix.Dep.Loader.skip?(dep, env_target) ->
+            dep =
+              dep
+              |> with_matching_only_and_targets(other, in_upper?)
+              |> merge_manager(other, in_upper?)
+
+            {:replace, dep, pre ++ pos}
 
           true ->
-            tag = if in_upper?, do: :overridden, else: :diverged
-            {%{other | status: {tag, dep}}, true}
-        end
-      end)
+            other =
+              other
+              |> with_matching_only_and_targets(dep, in_upper?)
+              |> merge_manager(dep, in_upper?)
 
-    if match, do: acc
+            {:match, pre ++ [other | pos]}
+        end
+    end
   end
 
-  defp with_matching_only(%{opts: other_opts} = other, %{opts: opts} = dep, in_upper?) do
+  defp with_matching_only_and_targets(other, dep, in_upper?) do
+    %{opts: opts} = dep
+
     if opts[:optional] do
       other
     else
-      with_matching_only(other, other_opts, dep, opts, in_upper?)
+      other
+      |> with_matching(:only, dep, opts, in_upper?)
+      |> with_matching(:targets, dep, opts, in_upper?)
     end
   end
 
   # When in_upper is true
   #
-  # When a parent dependency specifies :only that is a subset
-  # of a child dependency, we are going to abort as the parent
-  # dependency must explicitly outline a superset of child
+  # When a parent dependency specifies :only/:targets that is a
+  # subset of a child dependency, we are going to abort as the
+  # parent dependency must explicitly outline a superset of child
   # dependencies.
   #
   # We could resolve such conflicts automatically but, since
-  # the user has likely written only: :env in their mix.exs
-  # file, we decided to go with a more explicit approach of
-  # asking them to change it to avoid later surprises and
-  # headaches.
-  defp with_matching_only(other, other_opts, dep, opts, true) do
-    case Keyword.fetch(other_opts, :only) do
-      {:ok, other_only} ->
-        case Keyword.fetch(opts, :only) do
-          {:ok, only} ->
-            case List.wrap(only) -- List.wrap(other_only) do
+  # the user has likely written a :only/:targets in their mix.exs
+  # file, we decided to go with a more explicit approach of asking
+  # them to change it to avoid later surprises and headaches.
+  defp with_matching(%{opts: other_opts} = other, key, dep, opts, true) do
+    case Keyword.fetch(other_opts, key) do
+      {:ok, other_value} ->
+        case Keyword.fetch(opts, key) do
+          {:ok, value} ->
+            case List.wrap(value) -- List.wrap(other_value) do
               [] -> other
-              _ -> %{other | status: {:divergedonly, dep}}
+              _ -> %{other | status: {:"diverged#{key}", dep}}
             end
 
           :error ->
-            %{other | status: {:divergedonly, dep}}
+            %{other | status: {:"diverged#{key}", dep}}
         end
 
       :error ->
@@ -302,25 +346,29 @@ defmodule Mix.Dep.Converger do
   #
   # In this case, the two dependencies do not have a common path and
   # only solution is to merge the environments. We have decided to
-  # perform it explicitly as, opposite to in_upper above, the
+  # perform it automatically as, opposite to in_upper above, the
   # dependencies are never really laid out in the parent tree.
-  defp with_matching_only(other, other_opts, _dep, opts, false) do
-    other_only = Keyword.get(other_opts, :only)
-    only = Keyword.get(opts, :only)
+  defp with_matching(%{opts: other_opts} = other, key, _dep, opts, false) do
+    other_value = Keyword.get(other_opts, key)
+    value = Keyword.get(opts, key)
 
-    if other_only && only do
-      put_in(other.opts[:only], Enum.uniq(List.wrap(other_only) ++ List.wrap(only)))
+    if other_value && value do
+      put_in(other.opts[key], Enum.uniq(List.wrap(other_value) ++ List.wrap(value)))
     else
-      %{other | opts: Keyword.delete(other_opts, :only)}
+      %{other | opts: Keyword.delete(other_opts, key)}
     end
   end
 
-  defp converge?(%Mix.Dep{scm: scm1, opts: opts1}, %Mix.Dep{scm: scm2, opts: opts2}) do
-    scm1 == scm2 and opts_equal?(opts1, opts2) and scm1.equal?(opts1, opts2)
+  defp converge?(
+         %Mix.Dep{scm: scm1, opts: opts1, system_env: system_env1},
+         %Mix.Dep{scm: scm2, opts: opts2, system_env: system_env2}
+       ) do
+    scm1 == scm2 and system_env1 == system_env2 and opts_equal?(opts1, opts2) and
+      scm1.equal?(opts1, opts2)
   end
 
   defp opts_equal?(opts1, opts2) do
-    keys = ~w(app env compile)a
+    keys = ~w(app env compile manager)a
     Enum.all?(keys, &(Keyword.fetch(opts1, &1) == Keyword.fetch(opts2, &1)))
   end
 
@@ -342,7 +390,7 @@ defmodule Mix.Dep.Converger do
     %{other | manager: sort_manager(other_manager, manager, in_upper?)}
   end
 
-  @managers [:mix, :rebar3, :rebar, :make]
+  @managers [:mix, :rebar3, :make]
 
   defp sort_manager(other_manager, manager, true) do
     other_manager || manager
@@ -353,16 +401,12 @@ defmodule Mix.Dep.Converger do
     List.first(@managers -- to_exclude) || other_manager || manager
   end
 
-  defp with_matching_req(%Mix.Dep{} = other, %Mix.Dep{} = dep) do
-    case other.status do
-      {:ok, vsn} when not is_nil(vsn) ->
-        case Mix.Dep.Loader.vsn_match(dep.requirement, vsn, dep.app) do
-          {:ok, true} -> other
-          _ -> %{other | status: {:divergedreq, vsn, dep}}
-        end
-
-      _ ->
-        other
+  defp req_mismatch(%Mix.Dep{status: status}, %Mix.Dep{app: app, requirement: requirement}) do
+    with {:ok, vsn} when not is_nil(vsn) <- status,
+         true <- Mix.Dep.Loader.vsn_match(requirement, vsn, app) != {:ok, true} do
+      vsn
+    else
+      _ -> nil
     end
   end
 end

@@ -2,8 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eval(Content) ->
-  {Value, Binding, _, _} = elixir:eval(Content, []),
-  {Value, Binding}.
+  Quoted = elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []),
+  {Value, Binding, _} = elixir:eval_forms(Quoted, [], elixir:env_for_eval([])),
+  {Value, lists:sort(Binding)}.
 
 function_arg_do_end_test() ->
   {3, _} = eval("if true do\n1 + 2\nend"),

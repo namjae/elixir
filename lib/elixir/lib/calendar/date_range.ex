@@ -2,12 +2,13 @@ defmodule Date.Range do
   @moduledoc """
   Returns an inclusive range between dates.
 
-  Ranges must be created with the `Date.range/2` function.
+  Ranges must be created with the `Date.range/2` or `Date.range/3` function.
 
   The following fields are public:
 
     * `:first` - the initial date on the range
     * `:last` - the last date on the range
+    * `:step` - (since v1.12.0) the step
 
   The remaining fields are private and should not be accessed.
   """
@@ -15,97 +16,134 @@ defmodule Date.Range do
   @type t :: %__MODULE__{
           first: Date.t(),
           last: Date.t(),
-          first_in_iso_days: Calendar.iso_days(),
-          last_in_iso_days: Calendar.iso_days()
+          first_in_iso_days: days(),
+          last_in_iso_days: days(),
+          step: pos_integer | neg_integer
         }
 
-  defstruct [:first, :last, :first_in_iso_days, :last_in_iso_days]
+  @typep days() :: integer()
+
+  @enforce_keys [:first, :last, :first_in_iso_days, :last_in_iso_days, :step]
+  defstruct [:first, :last, :first_in_iso_days, :last_in_iso_days, :step]
 
   defimpl Enumerable do
-    def member?(%{first: %{calendar: calendar}} = range, %Date{calendar: calendar} = date) do
-      %{
-        first: first,
-        last: last,
-        first_in_iso_days: first_in_iso_days,
-        last_in_iso_days: last_in_iso_days
-      } = range
+    def member?(
+          %Date.Range{
+            first: %{calendar: calendar},
+            first_in_iso_days: first_days,
+            last_in_iso_days: last_days,
+            step: step
+          } = range,
+          %Date{calendar: calendar} = date
+        ) do
+      {days, _} = Date.to_iso_days(date)
 
-      %{year: first_year, month: first_month, day: first_day} = first
-      %{year: last_year, month: last_month, day: last_day} = last
-      %{year: year, month: month, day: day} = date
-      first = {first_year, first_month, first_day}
-      last = {last_year, last_month, last_day}
-      date = {year, month, day}
+      cond do
+        empty?(range) ->
+          {:ok, false}
 
-      if first_in_iso_days <= last_in_iso_days do
-        {:ok, date >= first and date <= last}
-      else
-        {:ok, date >= last and date <= first}
+        first_days <= last_days ->
+          {:ok, first_days <= days and days <= last_days and rem(days - first_days, step) == 0}
+
+        true ->
+          {:ok, last_days <= days and days <= first_days and rem(days - first_days, step) == 0}
       end
     end
 
-    def member?(_, _) do
+    def member?(%Date.Range{step: _}, _) do
       {:ok, false}
     end
 
-    def count(%{first_in_iso_days: first, last_in_iso_days: last}) do
-      {:ok, abs(first - last) + 1}
+    # TODO: Remove me on v2.0
+    def member?(
+          %{__struct__: Date.Range, first_in_iso_days: first_days, last_in_iso_days: last_days} =
+            date_range,
+          date
+        ) do
+      step = if first_days <= last_days, do: 1, else: -1
+      member?(Map.put(date_range, :step, step), date)
     end
 
-    def slice(range) do
-      %{
-        first_in_iso_days: first,
-        last_in_iso_days: last,
-        first: %{calendar: calendar}
-      } = range
-
-      if first <= last do
-        {:ok, last - first + 1, &slice_asc(first + &1, &2, calendar)}
-      else
-        {:ok, first - last + 1, &slice_desc(first - &1, &2, calendar)}
-      end
+    def count(range) do
+      {:ok, size(range)}
     end
 
-    defp slice_asc(current, 1, calendar), do: [date_from_iso_days(current, calendar)]
-
-    defp slice_asc(current, remaining, calendar) do
-      [date_from_iso_days(current, calendar) | slice_asc(current + 1, remaining - 1, calendar)]
+    def slice(
+          %Date.Range{
+            first_in_iso_days: first,
+            first: %{calendar: calendar},
+            step: step
+          } = range
+        ) do
+      {:ok, size(range), &slice(first + &1 * step, step + &3 - 1, &2, calendar)}
     end
 
-    defp slice_desc(current, 1, calendar), do: [date_from_iso_days(current, calendar)]
-
-    defp slice_desc(current, remaining, calendar) do
-      [date_from_iso_days(current, calendar) | slice_desc(current - 1, remaining - 1, calendar)]
+    # TODO: Remove me on v2.0
+    def slice(
+          %{__struct__: Date.Range, first_in_iso_days: first_days, last_in_iso_days: last_days} =
+            date_range
+        ) do
+      step = if first_days <= last_days, do: 1, else: -1
+      slice(Map.put(date_range, :step, step))
     end
 
-    def reduce(range, acc, fun) do
-      %{
-        first_in_iso_days: first_in_iso_days,
-        last_in_iso_days: last_in_iso_days,
-        first: %{calendar: calendar}
-      } = range
-
-      up? = first_in_iso_days <= last_in_iso_days
-      reduce(first_in_iso_days, last_in_iso_days, acc, fun, calendar, up?)
+    defp slice(current, _step, 1, calendar) do
+      [date_from_iso_days(current, calendar)]
     end
 
-    defp reduce(_x, _y, {:halt, acc}, _fun, _calendar, _up?) do
+    defp slice(current, step, remaining, calendar) do
+      [
+        date_from_iso_days(current, calendar)
+        | slice(current + step, step, remaining - 1, calendar)
+      ]
+    end
+
+    def reduce(
+          %Date.Range{
+            first_in_iso_days: first_days,
+            last_in_iso_days: last_days,
+            first: %{calendar: calendar},
+            step: step
+          },
+          acc,
+          fun
+        ) do
+      reduce(first_days, last_days, acc, fun, step, calendar)
+    end
+
+    # TODO: Remove me on v2.0
+    def reduce(
+          %{__struct__: Date.Range, first_in_iso_days: first_days, last_in_iso_days: last_days} =
+            date_range,
+          acc,
+          fun
+        ) do
+      step = if first_days <= last_days, do: 1, else: -1
+      reduce(Map.put(date_range, :step, step), acc, fun)
+    end
+
+    defp reduce(_first_days, _last_days, {:halt, acc}, _fun, _step, _calendar) do
       {:halted, acc}
     end
 
-    defp reduce(x, y, {:suspend, acc}, fun, calendar, up?) do
-      {:suspended, acc, &reduce(x, y, &1, fun, calendar, up?)}
+    defp reduce(first_days, last_days, {:suspend, acc}, fun, step, calendar) do
+      {:suspended, acc, &reduce(first_days, last_days, &1, fun, step, calendar)}
     end
 
-    defp reduce(x, y, {:cont, acc}, fun, calendar, up? = true) when x <= y do
-      reduce(x + 1, y, fun.(date_from_iso_days(x, calendar), acc), fun, calendar, up?)
+    defp reduce(first_days, last_days, {:cont, acc}, fun, step, calendar)
+         when step > 0 and first_days <= last_days
+         when step < 0 and first_days >= last_days do
+      reduce(
+        first_days + step,
+        last_days,
+        fun.(date_from_iso_days(first_days, calendar), acc),
+        fun,
+        step,
+        calendar
+      )
     end
 
-    defp reduce(x, y, {:cont, acc}, fun, calendar, up? = false) when x >= y do
-      reduce(x - 1, y, fun.(date_from_iso_days(x, calendar), acc), fun, calendar, up?)
-    end
-
-    defp reduce(_, _, {:cont, acc}, _fun, _calendar, _up) do
+    defp reduce(_, _, {:cont, acc}, _fun, _step, _calendar) do
       {:done, acc}
     end
 
@@ -120,11 +158,70 @@ defmodule Date.Range do
 
       %Date{year: year, month: month, day: day, calendar: calendar}
     end
+
+    defp size(%Date.Range{first_in_iso_days: first_days, last_in_iso_days: last_days, step: step})
+         when step > 0 and first_days > last_days,
+         do: 0
+
+    defp size(%Date.Range{first_in_iso_days: first_days, last_in_iso_days: last_days, step: step})
+         when step < 0 and first_days < last_days,
+         do: 0
+
+    defp size(%Date.Range{first_in_iso_days: first_days, last_in_iso_days: last_days, step: step}),
+      do: abs(div(last_days - first_days, step)) + 1
+
+    # TODO: Remove me on v2.0
+    defp size(
+           %{__struct__: Date.Range, first_in_iso_days: first_days, last_in_iso_days: last_days} =
+             date_range
+         ) do
+      step = if first_days <= last_days, do: 1, else: -1
+      size(Map.put(date_range, :step, step))
+    end
+
+    defp empty?(%Date.Range{
+           first_in_iso_days: first_days,
+           last_in_iso_days: last_days,
+           step: step
+         })
+         when step > 0 and first_days > last_days,
+         do: true
+
+    defp empty?(%Date.Range{
+           first_in_iso_days: first_days,
+           last_in_iso_days: last_days,
+           step: step
+         })
+         when step < 0 and first_days < last_days,
+         do: true
+
+    defp empty?(%Date.Range{step: _}), do: false
+
+    # TODO: Remove me on v2.0
+    defp empty?(
+           %{__struct__: Date.Range, first_in_iso_days: first_days, last_in_iso_days: last_days} =
+             date_range
+         ) do
+      step = if first_days <= last_days, do: 1, else: -1
+      empty?(Map.put(date_range, :step, step))
+    end
   end
 
   defimpl Inspect do
-    def inspect(%Date.Range{first: first, last: last}, _) do
-      "#DateRange<" <> inspect(first) <> ", " <> inspect(last) <> ">"
+    import Kernel, except: [inspect: 2]
+
+    def inspect(%Date.Range{first: first, last: last, step: 1}, _) do
+      "Date.range(" <> inspect(first) <> ", " <> inspect(last) <> ")"
+    end
+
+    def inspect(%Date.Range{first: first, last: last, step: step}, _) do
+      "Date.range(" <> inspect(first) <> ", " <> inspect(last) <> ", #{step})"
+    end
+
+    # TODO: Remove me on v2.0
+    def inspect(%{__struct__: Date.Range, first: first, last: last} = date_range, opts) do
+      step = if first <= last, do: 1, else: -1
+      inspect(Map.put(date_range, :step, step), opts)
     end
   end
 end

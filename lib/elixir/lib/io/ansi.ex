@@ -3,6 +3,7 @@ defmodule IO.ANSI.Sequence do
 
   defmacro defsequence(name, code, terminator \\ "m") do
     quote bind_quoted: [name: name, code: code, terminator: terminator] do
+      @spec unquote(name)() :: String.t()
       def unquote(name)() do
         "\e[#{unquote(code)}#{unquote(terminator)}"
       end
@@ -21,6 +22,31 @@ defmodule IO.ANSI do
   [ANSI escape sequences](https://en.wikipedia.org/wiki/ANSI_escape_code)
   are characters embedded in text used to control formatting, color, and
   other output options on video text terminals.
+
+  ANSI escapes are typically enabled on all Unix terminals. They are also
+  available on Windows consoles from Windows 10, although it must be
+  explicitly enabled for the current user in the registry by running the
+  following command:
+
+      reg add HKCU\\Console /v VirtualTerminalLevel /t REG_DWORD /d 1
+
+  After running the command above, you must restart your current console.
+
+  ## Examples
+
+  Because the ANSI escape sequences are embedded in text, the normal usage of
+  these functions is to concatenate their output with text.
+
+      formatted_text = IO.ANSI.blue_background() <> "Example" <> IO.ANSI.reset()
+      IO.puts(formatted_text)
+
+  A higher level and more convenient API is also available via `IO.ANSI.format/1`,
+  where you use atoms to represent each ANSI escape sequence and by default
+  checks if ANSI is enabled:
+
+      IO.puts(IO.ANSI.format([:blue_background, "Example"]))
+
+  In case ANSI is disabled, the ANSI escape sequences are simply discarded.
   """
 
   import IO.ANSI.Sequence
@@ -41,6 +67,34 @@ defmodule IO.ANSI do
   @spec enabled? :: boolean
   def enabled? do
     Application.get_env(:elixir, :ansi_enabled, false)
+  end
+
+  @doc """
+  Syntax colors to be used by `Inspect`.
+
+  Those colors are used throughout Elixir's standard library,
+  such as `dbg/2` and `IEx`.
+
+  The colors can be changed by setting the `:ansi_syntax_colors`
+  in the `:elixir` application configuration. Configuration for
+  most built-in data types are supported: `:atom`, `:binary`,
+  `:boolean`, `:charlist`, `:list`, `:map`, `:nil`, `:number`,
+  `:string`, and `:tuple`. The default is:
+
+      [
+        atom: :cyan
+        boolean: :magenta,
+        charlist: :yellow,
+        nil: :magenta,
+        number: :yellow,
+        string: :green
+      ]
+
+  """
+  @doc since: "1.14.0"
+  @spec syntax_colors :: Keyword.t(ansidata)
+  def syntax_colors do
+    Application.fetch_env!(:elixir, :ansi_syntax_colors)
   end
 
   @doc "Sets foreground color."
@@ -170,6 +224,33 @@ defmodule IO.ANSI do
   @doc "Sends cursor home."
   defsequence(:home, "", "H")
 
+  @doc """
+  Sends cursor to the absolute position specified by `line` and `column`.
+
+  Line `0` and column `0` would mean the top left corner.
+  """
+  @spec cursor(non_neg_integer, non_neg_integer) :: String.t()
+  def cursor(line, column)
+      when is_integer(line) and line >= 0 and is_integer(column) and column >= 0 do
+    "\e[#{line};#{column}H"
+  end
+
+  @doc "Sends cursor `lines` up."
+  @spec cursor_up(pos_integer) :: String.t()
+  def cursor_up(lines \\ 1) when is_integer(lines) and lines >= 1, do: "\e[#{lines}A"
+
+  @doc "Sends cursor `lines` down."
+  @spec cursor_down(pos_integer) :: String.t()
+  def cursor_down(lines \\ 1) when is_integer(lines) and lines >= 1, do: "\e[#{lines}B"
+
+  @doc "Sends cursor `columns` to the right."
+  @spec cursor_right(pos_integer) :: String.t()
+  def cursor_right(columns \\ 1) when is_integer(columns) and columns >= 1, do: "\e[#{columns}C"
+
+  @doc "Sends cursor `columns` to the left."
+  @spec cursor_left(pos_integer) :: String.t()
+  def cursor_left(columns \\ 1) when is_integer(columns) and columns >= 1, do: "\e[#{columns}D"
+
   @doc "Clears screen."
   defsequence(:clear, "2", "J")
 
@@ -190,7 +271,7 @@ defmodule IO.ANSI do
   performed. If you don't want this behaviour, use `format_fragment/2`.
 
   An optional boolean parameter can be passed to enable or disable
-  emitting actual ANSI codes. When `false`, no ANSI codes will emitted.
+  emitting actual ANSI codes. When `false`, no ANSI codes will be emitted.
   By default checks if ANSI is enabled using the `enabled?/0` function.
 
   ## Examples
@@ -199,8 +280,9 @@ defmodule IO.ANSI do
       [[[[[[], "Hello, "] | "\e[31m"] | "\e[1m"], "world!"] | "\e[0m"]
 
   """
-  def format(chardata, emit? \\ enabled?()) when is_boolean(emit?) do
-    do_format(chardata, [], [], emit?, :maybe)
+  @spec format(ansidata, boolean) :: IO.chardata()
+  def format(ansidata, emit? \\ enabled?()) when is_boolean(emit?) do
+    do_format(ansidata, [], [], emit?, :maybe)
   end
 
   @doc ~S"""
@@ -210,7 +292,7 @@ defmodule IO.ANSI do
   The named sequences are represented by atoms.
 
   An optional boolean parameter can be passed to enable or disable
-  emitting actual ANSI codes. When `false`, no ANSI codes will emitted.
+  emitting actual ANSI codes. When `false`, no ANSI codes will be emitted.
   By default checks if ANSI is enabled using the `enabled?/0` function.
 
   ## Examples
@@ -219,8 +301,9 @@ defmodule IO.ANSI do
       [[[[[[] | "\e[1m"], 87], 111], 114], 100]
 
   """
-  def format_fragment(chardata, emit? \\ enabled?()) when is_boolean(emit?) do
-    do_format(chardata, [], [], emit?, false)
+  @spec format_fragment(ansidata, boolean) :: IO.chardata()
+  def format_fragment(ansidata, emit? \\ enabled?()) when is_boolean(emit?) do
+    do_format(ansidata, [], [], emit?, false)
   end
 
   defp do_format([term | rest], rem, acc, emit?, append_reset) do

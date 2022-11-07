@@ -10,28 +10,27 @@ defmodule Mix.Tasks.Escript.Install do
   (created with `mix escript.build`), then the escript will be installed
   locally. For example:
 
-      mix do escript.build, escript.install
+      $ mix do escript.build + escript.install
 
-  If an argument is provided, it should be a local path or a URL to a prebuilt escript,
+  If an argument is provided, it should be a local path to a prebuilt escript,
   a Git repository, a GitHub repository, or a Hex package.
 
-      mix escript.install escript
-      mix escript.install path/to/escript
-      mix escript.install https://example.com/my_escript
-      mix escript.install git https://path/to/git/repo
-      mix escript.install git https://path/to/git/repo branch git_branch
-      mix escript.install git https://path/to/git/repo tag git_tag
-      mix escript.install git https://path/to/git/repo ref git_ref
-      mix escript.install github user/project
-      mix escript.install github user/project branch git_branch
-      mix escript.install github user/project tag git_tag
-      mix escript.install github user/project ref git_ref
-      mix escript.install hex hex_package
-      mix escript.install hex hex_package 1.2.3
+      $ mix escript.install escript
+      $ mix escript.install path/to/escript
+      $ mix escript.install git https://path/to/git/repo
+      $ mix escript.install git https://path/to/git/repo branch git_branch
+      $ mix escript.install git https://path/to/git/repo tag git_tag
+      $ mix escript.install git https://path/to/git/repo ref git_ref
+      $ mix escript.install github user/project
+      $ mix escript.install github user/project branch git_branch
+      $ mix escript.install github user/project tag git_tag
+      $ mix escript.install github user/project ref git_ref
+      $ mix escript.install hex hex_package
+      $ mix escript.install hex hex_package 1.2.3
 
   After installation, the escript can be invoked as
 
-      ~/.mix/escripts/foo
+      $ ~/.mix/escripts/foo
 
   For convenience, consider adding `~/.mix/escripts` directory to your
   `PATH` environment variable. For more information, check the wikipedia
@@ -40,7 +39,7 @@ defmodule Mix.Tasks.Escript.Install do
   ## Command line options
 
     * `--sha512` - checks the escript matches the given SHA-512 checksum. Only
-      applies to installations via URL or local path
+      applies to installations via a local path
 
     * `--force` - forces installation without a shell prompt; primarily
       intended for automation in build systems like Make
@@ -51,27 +50,47 @@ defmodule Mix.Tasks.Escript.Install do
     * `--app` - specifies a custom app name to be used for building the escript
       from Git, GitHub, or Hex
 
+    * `--organization` - set this for Hex private packages belonging to an
+      organization
+
+    * `--repo` - set this for self-hosted Hex instances, defaults to `hexpm`
+
   """
 
   @behaviour Mix.Local.Installer
 
   # only read and execute permissions
   @escript_file_mode 0o555
-  @switches [force: :boolean, sha512: :string, submodules: :boolean, app: :string]
 
+  @switches [
+    force: :boolean,
+    sha512: :string,
+    submodules: :boolean,
+    app: :string,
+    organization: :string,
+    repo: :string,
+    timeout: :integer
+  ]
+
+  @impl true
   def run(argv) do
     Mix.Local.Installer.install(__MODULE__, argv, @switches)
   end
 
-  # Callbacks
+  @impl true
+  def check_install_spec({:url, _}, _opts) do
+    :ok
+  end
 
   def check_install_spec(_, _), do: :ok
 
+  @impl true
   def find_previous_versions(basename) do
     dst = destination(basename)
     if File.exists?(dst), do: [dst], else: []
   end
 
+  @impl true
   def install(basename, binary, _previous) do
     dst = destination(basename)
 
@@ -95,15 +114,17 @@ defmodule Mix.Tasks.Escript.Install do
     end
   end
 
+  @impl true
   def build(_spec, _opts) do
+    Mix.Task.run("loadconfig")
     Mix.Task.run("escript.build", [])
-    Mix.Local.name_for(:escript, Mix.Project.config())
+    Mix.Local.name_for(:escripts, Mix.Project.config())
   end
 
   # Helpers
 
   defp destination(basename) do
-    Path.join(Mix.Local.path_for(:escript), basename)
+    Path.join(Mix.path_for(:escripts), basename)
   end
 
   defp write_bat!(path, {:win32, _}) do
@@ -143,7 +164,7 @@ defmodule Mix.Tasks.Escript.Install do
       # PATH is misconfigured
       current_executable != dst ->
         Mix.shell().error(
-          "\nwarning: you must append #{inspect(Mix.Local.path_for(:escript))} " <>
+          "\nwarning: you must append #{inspect(Mix.path_for(:escripts))} " <>
             "to your PATH if you want to invoke escripts by name\n"
         )
 

@@ -10,17 +10,15 @@ defmodule ExUnit.CaptureIO do
         import ExUnit.CaptureIO
 
         test "example" do
-          assert capture_io(fn ->
-            IO.puts "a"
-          end) == "a\n"
+          assert capture_io(fn -> IO.puts("a") end) == "a\n"
         end
 
-        test "checking the return value and the IO output" do
-          fun = fn ->
-            assert Enum.each(["some", "example"], &(IO.puts &1)) == :ok
-          end
-          assert capture_io(fun) == "some\nexample\n"
-          # tip: or use only: "capture_io(fun)" to silence the IO output (so only assert the return value)
+        test "another example" do
+          assert with_io(fn ->
+            IO.puts("a")
+            IO.puts("b")
+            2 + 2
+          end) == {4, "a\nb\n"}
         end
       end
 
@@ -32,131 +30,269 @@ defmodule ExUnit.CaptureIO do
   Returns the binary which is the captured output.
 
   By default, `capture_io` replaces the `group_leader` (`:stdio`)
-  for the current process. However, the capturing of any other
-  named device, such as `:stderr`, is also possible globally by
-  giving the registered device name explicitly as an argument.
+  for the current process. Capturing the group leader is done per
+  process and therefore can be done concurrently.
 
-  Note that when capturing something other than `:stdio`,
-  the test should run with async false.
+  However, the capturing of any other named device, such as `:stderr`,
+  happens globally and persists until the function has ended. While this means
+  it is safe to run your tests with `async: true` in many cases, captured output
+  may include output from a different test and care must be taken when using
+  `capture_io` with a named process asynchronously.
 
-  When capturing `:stdio`, if the `:capture_prompt` option is `false`,
-  prompts (specified as arguments to `IO.get*` functions) are not
-  captured.
+  A developer can set a string as an input. The default input is an empty
+  string. If capturing a named device asynchronously, an input can only be given
+  to the first capture. Any further capture that is given to a capture on that
+  device will raise an exception and would indicate that the test should be run
+  synchronously.
 
-  A developer can set a string as an input. The default input is `:eof`.
+  Similarly, once a capture on a named device has begun, the encoding on that
+  device cannot be changed in a subsequent concurrent capture. An error will
+  be raised in this case.
+
+  ## IO devices
+
+  You may capture the IO from any registered IO device. The device name given
+  must be an atom representing the name of a registered process. In addition,
+  Elixir provides two shortcuts:
+
+    * `:stdio` - a shortcut for `:standard_io`, which maps to
+      the current `Process.group_leader/0` in Erlang
+
+    * `:stderr` - a shortcut for the named process `:standard_error`
+      provided in Erlang
+
+  ## Options
+
+    * `:input` - An input to the IO device, defaults to `""`.
+
+    * `:capture_prompt` - Define if prompts (specified as arguments to
+      `IO.get*` functions) should be captured. Defaults to `true`. For
+      IO devices other than `:stdio`, the option is ignored.
+
+    * `:encoding` (since v1.10.0) - encoding of the IO device. Allowed
+      values are `:unicode` (default) and `:latin1`.
 
   ## Examples
 
-      iex> capture_io(fn -> IO.write "john" end) == "john"
-      true
+  To capture the standard io:
 
-      iex> capture_io(:stderr, fn -> IO.write(:stderr, "john") end) == "john"
+      iex> capture_io(fn -> IO.write("john") end) == "john"
       true
 
       iex> capture_io("this is input", fn ->
-      ...>   input = IO.gets ">"
-      ...>   IO.write input
-      ...> end) == ">this is input"
+      ...>   input = IO.gets("> ")
+      ...>   IO.write(input)
+      ...> end) == "> this is input"
       true
 
       iex> capture_io([input: "this is input", capture_prompt: false], fn ->
-      ...>   input = IO.gets ">"
-      ...>   IO.write input
+      ...>   input = IO.gets("> ")
+      ...>   IO.write(input)
       ...> end) == "this is input"
       true
+
+  Note it is fine to use `==` with standard IO, because the content is captured
+  per test process. However, `:stderr` is shared across all tests, so you will
+  want to use `=~` instead of `==` for assertions on `:stderr` if your tests
+  are async:
+
+      iex> capture_io(:stderr, fn -> IO.write(:stderr, "john") end) =~ "john"
+      true
+
+      iex> capture_io(:standard_error, fn -> IO.write(:stderr, "john") end) =~ "john"
+      true
+
+  In particular, avoid empty captures on `:stderr` with async tests:
+
+      iex> capture_io(:stderr, fn -> :nothing end) == ""
+      true
+
+  Otherwise, if the standard error of any other test is captured, the test will
+  fail.
 
   ## Returning values
 
   As seen in the examples above, `capture_io` returns the captured output.
-  If you want to also capture the result of the function executed inside
-  the `capture_io`, you can use `Kernel.send/2` to send yourself a message
-  and use `ExUnit.Assertions.assert_received/2` to match on the results:
-
-      capture_io([input: "this is input", capture_prompt: false], fn ->
-        send self(), {:block_result, 42}
-        # ...
-      end)
-
-      assert_received {:block_result, 42}
-
+  If you want to also capture the result of the function executed,
+  use `with_io/2`.
   """
-  def capture_io(fun) do
-    do_capture_io(:standard_io, [], fun)
+  @spec capture_io((-> any())) :: String.t()
+  def capture_io(fun) when is_function(fun, 0) do
+    {_result, capture} = with_io(fun)
+    capture
   end
 
-  def capture_io(device, fun) when is_atom(device) do
-    capture_io(device, [], fun)
+  @doc """
+  Captures IO generated when evaluating `fun`.
+
+  See `capture_io/1` for more information.
+  """
+  @spec capture_io(atom() | String.t() | keyword(), (-> any())) :: String.t()
+  def capture_io(device_input_or_options, fun)
+
+  def capture_io(device, fun) when is_atom(device) and is_function(fun, 0) do
+    {_result, capture} = with_io(device, fun)
+    capture
   end
 
-  def capture_io(input, fun) when is_binary(input) do
-    capture_io(:standard_io, [input: input], fun)
+  def capture_io(input, fun) when is_binary(input) and is_function(fun, 0) do
+    {_result, capture} = with_io(input, fun)
+    capture
   end
 
-  def capture_io(options, fun) when is_list(options) do
-    capture_io(:standard_io, options, fun)
+  def capture_io(options, fun) when is_list(options) and is_function(fun, 0) do
+    {_result, capture} = with_io(options, fun)
+    capture
   end
 
-  def capture_io(device, input, fun) when is_binary(input) do
-    capture_io(device, [input: input], fun)
+  @doc """
+  Captures IO generated when evaluating `fun`.
+
+  See `capture_io/1` for more information.
+  """
+  @spec capture_io(atom(), String.t() | keyword(), (-> any())) :: String.t()
+  def capture_io(device, input_or_options, fun)
+
+  def capture_io(device, input, fun)
+      when is_atom(device) and is_binary(input) and is_function(fun, 0) do
+    {_result, capture} = with_io(device, input, fun)
+    capture
   end
 
-  def capture_io(device, options, fun) when is_list(options) do
-    do_capture_io(map_dev(device), options, fun)
+  def capture_io(device, options, fun)
+      when is_atom(device) and is_list(options) and is_function(fun, 0) do
+    {_result, capture} = with_io(device, options, fun)
+    capture
+  end
+
+  @doc ~S"""
+  Invokes the given `fun` and returns the result and captured output.
+
+  It accepts the same arguments and options as `capture_io/1`.
+
+  ## Examples
+
+      {result, output} =
+        with_io(fn ->
+          IO.puts("a")
+          IO.puts("b")
+          2 + 2
+        end)
+
+      assert result == 4
+      assert output == "a\nb\n"
+  """
+  @doc since: "1.13.0"
+  @spec with_io((-> any())) :: {any(), String.t()}
+  def with_io(fun) when is_function(fun, 0) do
+    with_io(:stdio, [], fun)
+  end
+
+  @doc """
+  Invokes the given `fun` and returns the result and captured output.
+
+  See `with_io/1` for more information.
+  """
+  @doc since: "1.13.0"
+  @spec with_io(atom() | String.t() | keyword(), (-> any())) :: {any(), String.t()}
+  def with_io(device_input_or_options, fun)
+
+  def with_io(device, fun) when is_atom(device) and is_function(fun, 0) do
+    with_io(device, [], fun)
+  end
+
+  def with_io(input, fun) when is_binary(input) and is_function(fun, 0) do
+    with_io(:stdio, [input: input], fun)
+  end
+
+  def with_io(options, fun) when is_list(options) and is_function(fun, 0) do
+    with_io(:stdio, options, fun)
+  end
+
+  @doc """
+  Invokes the given `fun` and returns the result and captured output.
+
+  See `with_io/1` for more information.
+  """
+  @doc since: "1.13.0"
+  @spec with_io(atom(), String.t() | keyword(), (-> any())) :: {any(), String.t()}
+  def with_io(device, input_or_options, fun)
+
+  def with_io(device, input, fun)
+      when is_atom(device) and is_binary(input) and is_function(fun, 0) do
+    with_io(device, [input: input], fun)
+  end
+
+  def with_io(device, options, fun)
+      when is_atom(device) and is_list(options) and is_function(fun, 0) do
+    do_with_io(map_dev(device), options, fun)
   end
 
   defp map_dev(:stdio), do: :standard_io
   defp map_dev(:stderr), do: :standard_error
   defp map_dev(other), do: other
 
-  defp do_capture_io(:standard_io, options, fun) do
+  defp do_with_io(:standard_io, options, fun) do
     prompt_config = Keyword.get(options, :capture_prompt, true)
+    encoding = Keyword.get(options, :encoding, :unicode)
     input = Keyword.get(options, :input, "")
 
     original_gl = Process.group_leader()
-    {:ok, capture_gl} = StringIO.open(input, capture_prompt: prompt_config)
+    {:ok, capture_gl} = StringIO.open(input, capture_prompt: prompt_config, encoding: encoding)
 
     try do
       Process.group_leader(self(), capture_gl)
-      do_capture_io(capture_gl, fun)
+      do_capture_gl(capture_gl, fun)
     after
       Process.group_leader(self(), original_gl)
     end
   end
 
-  defp do_capture_io(device, options, fun) do
+  defp do_with_io(device, options, fun) do
     input = Keyword.get(options, :input, "")
-    {:ok, string_io} = StringIO.open(input)
+    encoding = Keyword.get(options, :encoding, :unicode)
 
-    case ExUnit.CaptureServer.device_capture_on(device, string_io) do
+    case ExUnit.CaptureServer.device_capture_on(device, encoding, input) do
       {:ok, ref} ->
         try do
-          do_capture_io(string_io, fun)
+          result = fun.()
+          {result, ExUnit.CaptureServer.device_output(device, ref)}
         after
           ExUnit.CaptureServer.device_capture_off(ref)
         end
 
       {:error, :no_device} ->
-        _ = StringIO.close(string_io)
         raise "could not find IO device registered at #{inspect(device)}"
 
-      {:error, :already_captured} ->
-        _ = StringIO.close(string_io)
-        raise "IO device registered at #{inspect(device)} is already captured"
+      {:error, {:changed_encoding, current_encoding}} ->
+        raise ArgumentError, """
+        attempted to change the encoding for a currently captured device #{inspect(device)}.
+
+        Currently set as: #{inspect(current_encoding)}
+        Given: #{inspect(encoding)}
+
+        If you need to use multiple encodings on a captured device, you cannot \
+        run your test asynchronously
+        """
+
+      {:error, :input_on_already_captured_device} ->
+        raise ArgumentError,
+              "attempted multiple captures on device #{inspect(device)} with input. " <>
+                "If you need to give an input to a captured device, you cannot run your test asynchronously"
     end
   end
 
-  defp do_capture_io(string_io, fun) do
+  defp do_capture_gl(string_io, fun) do
     try do
       fun.()
     catch
       kind, reason ->
-        stack = System.stacktrace()
         _ = StringIO.close(string_io)
-        :erlang.raise(kind, reason, stack)
+        :erlang.raise(kind, reason, __STACKTRACE__)
     else
-      _ ->
-        {:ok, output} = StringIO.close(string_io)
-        elem(output, 1)
+      result ->
+        {:ok, {_input, output}} = StringIO.close(string_io)
+        {result, output}
     end
   end
 end

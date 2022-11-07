@@ -11,7 +11,7 @@ defmodule ExUnit.MixProject do
 
   def application do
     [
-      registered: [ExUnit.Server],
+      registered: [ExUnit.CaptureServer, ExUnit.OnExitHandler, ExUnit.Server, ExUnit.Supervisor],
       mod: {ExUnit, []},
       env: [
         # Calculated on demand
@@ -21,16 +21,18 @@ defmodule ExUnit.MixProject do
         assert_receive_timeout: 100,
         autorun: true,
         capture_log: false,
-        module_load_timeout: 60000,
         colors: [],
         exclude: [],
+        exit_status: 2,
         formatters: [ExUnit.CLIFormatter],
         include: [],
+        max_failures: :infinity,
         refute_receive_timeout: 100,
         slowest: 0,
         stacktrace_depth: 20,
         timeout: 60000,
-        trace: false
+        trace: false,
+        after_suite: []
       ]
     ]
   end

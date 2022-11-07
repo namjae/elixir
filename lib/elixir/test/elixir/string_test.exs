@@ -11,7 +11,7 @@ defmodule StringTest do
     assert String.next_codepoint("") == nil
   end
 
-  # test cases described in http://mortoray.com/2013/11/27/the-string-type-is-broken/
+  # test cases described in https://mortoray.com/2013/11/27/the-string-type-is-broken/
   test "Unicode" do
     assert String.reverse("noël") == "lëon"
     assert String.slice("noël", 0..2) == "noë"
@@ -56,19 +56,36 @@ defmodule StringTest do
     assert String.split(" a b c ", " ", trim: true, parts: 1) == [" a b c "]
     assert String.split(" a b c ", " ", trim: true, parts: 2) == ["a", "b c "]
 
-    assert String.split("abé", "") == ["a", "b", "é", ""]
-    assert String.split("abé", "", parts: :infinity) == ["a", "b", "é", ""]
+    assert String.split("abé", "") == ["", "a", "b", "é", ""]
+    assert String.split("abé", "", parts: :infinity) == ["", "a", "b", "é", ""]
     assert String.split("abé", "", parts: 1) == ["abé"]
-    assert String.split("abé", "", parts: 2) == ["a", "bé"]
-    assert String.split("abé", "", parts: 10) == ["a", "b", "é", ""]
+    assert String.split("abé", "", parts: 2) == ["", "abé"]
+    assert String.split("abé", "", parts: 3) == ["", "a", "bé"]
+    assert String.split("abé", "", parts: 4) == ["", "a", "b", "é"]
+    assert String.split("abé", "", parts: 5) == ["", "a", "b", "é", ""]
+    assert String.split("abé", "", parts: 10) == ["", "a", "b", "é", ""]
     assert String.split("abé", "", trim: true) == ["a", "b", "é"]
     assert String.split("abé", "", trim: true, parts: :infinity) == ["a", "b", "é"]
     assert String.split("abé", "", trim: true, parts: 2) == ["a", "bé"]
+    assert String.split("abé", "", trim: true, parts: 3) == ["a", "b", "é"]
+    assert String.split("abé", "", trim: true, parts: 4) == ["a", "b", "é"]
 
-    assert String.split("noël", "") == ["n", "o", "ë", "l", ""]
-
+    assert String.split("noël", "") == ["", "n", "o", "ë", "l", ""]
     assert String.split("x-", "-", parts: 2, trim: true) == ["x"]
     assert String.split("x-x-", "-", parts: 3, trim: true) == ["x", "x"]
+
+    assert String.split("hello", []) == ["hello"]
+    assert String.split("hello", [], trim: true) == ["hello"]
+    assert String.split("", []) == [""]
+    assert String.split("", [], trim: true) == []
+
+    assert_raise ArgumentError, fn ->
+      String.split("a,b,c", [""])
+    end
+
+    assert_raise ArgumentError, fn ->
+      String.split("a,b,c", [""])
+    end
   end
 
   test "split/2,3 with regex" do
@@ -90,6 +107,20 @@ defmodule StringTest do
     assert String.split("x-x-", pattern, parts: 3, trim: true) == ["x", "x"]
   end
 
+  test "split/2,3 with malformed" do
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 1) ==
+             [<<225, 158, 128, 225, 158, 185, 225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 2) ==
+             ["", <<225, 158, 128, 225, 158, 185, 225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 3) ==
+             ["", "កឹ", <<225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 4) ==
+             ["", "កឹ", <<225>>, ""]
+  end
+
   test "splitter/2,3" do
     assert String.splitter("a,b,c", ",") |> Enum.to_list() == ["a", "b", "c"]
     assert String.splitter("a,b", ".") |> Enum.to_list() == ["a,b"]
@@ -100,6 +131,17 @@ defmodule StringTest do
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.to_list() == ["a", "b", "c"]
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.take(1) == ["a"]
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.take(2) == ["a", "b"]
+
+    assert String.splitter("hello", []) |> Enum.to_list() == ["hello"]
+    assert String.splitter("hello", [], trim: true) |> Enum.to_list() == ["hello"]
+    assert String.splitter("", []) |> Enum.to_list() == [""]
+    assert String.splitter("", [], trim: true) |> Enum.to_list() == []
+
+    assert String.splitter("1,2 3,4 5", "") |> Enum.take(4) == ["", "1", ",", "2"]
+
+    assert_raise ArgumentError, fn ->
+      String.splitter("a", [""])
+    end
   end
 
   test "split_at/2" do
@@ -127,6 +169,20 @@ defmodule StringTest do
     end
   end
 
+  test "split_at/2 with malformed" do
+    assert String.split_at(<<?a, 195, 10, ?a>>, 2) == {<<?a, 195>>, <<10, ?a>>}
+    assert String.split_at(<<107, 205, 135, 184>>, 1) == {<<107, 205, 135>>, <<184>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 0) ==
+             {"", <<225, 158, 128, 225, 158, 185, 225>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 1) ==
+             {"កឹ", <<225>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 2) ==
+             {<<225, 158, 128, 225, 158, 185, 225>>, ""}
+  end
+
   test "upcase/1" do
     assert String.upcase("123 abcd 456 efg hij ( %$#) kl mnop @ qrst = -_ uvwxyz") ==
              "123 ABCD 456 EFG HIJ ( %$#) KL MNOP @ QRST = -_ UVWXYZ"
@@ -145,6 +201,15 @@ defmodule StringTest do
     assert String.upcase("áüÈß") == "ÁÜÈSS"
   end
 
+  test "upcase/1 with ascii" do
+    assert String.upcase("olá", :ascii) == "OLá"
+  end
+
+  test "upcase/1 with turkic" do
+    assert String.upcase("ıi", :turkic) == "Iİ"
+    assert String.upcase("Iİ", :turkic) == "Iİ"
+  end
+
   test "downcase/1" do
     assert String.downcase("123 ABcD 456 EfG HIJ ( %$#) KL MNOP @ QRST = -_ UVWXYZ") ==
              "123 abcd 456 efg hij ( %$#) kl mnop @ qrst = -_ uvwxyz"
@@ -160,8 +225,31 @@ defmodule StringTest do
   end
 
   test "downcase/1 with greek final sigma" do
-    assert String.downcase("ΣΣ") == "σς"
-    assert String.downcase("ΣΣ ΣΣ") == "σς σς"
+    assert String.downcase("Σ") == "σ"
+    assert String.downcase("ΣΣ") == "σσ"
+    assert String.downcase("Σ ΣΣ") == "σ σσ"
+    assert String.downcase("ΜΕΣ'ΑΠΟ") == "μεσ'απο"
+    assert String.downcase("ΑΣ'ΤΟΥΣ") == "ασ'τουσ"
+
+    assert String.downcase("Σ", :greek) == "σ"
+    assert String.downcase("Σ ΣΣ", :greek) == "σ σς"
+    assert String.downcase("Σ ΣΑΣ Σ", :greek) == "σ σας σ"
+    assert String.downcase("ΜΕΣ'ΑΠΟ", :greek) == "μεσ'απο"
+    assert String.downcase("ΑΣ'ΤΟΥΣ", :greek) == "ασ'τους"
+  end
+
+  test "downcase/1 with ascii" do
+    assert String.downcase("OLÁ", :ascii) == "olÁ"
+  end
+
+  test "downcase/1 with turkic" do
+    assert String.downcase("Iİ", :turkic) == "ıi"
+    assert String.downcase("İ", :turkic) == "i"
+
+    assert String.downcase("ıi", :turkic) == "ıi"
+    assert String.downcase("i", :turkic) == "i"
+
+    assert String.downcase("İ") == "i̇"
   end
 
   test "capitalize/1" do
@@ -182,6 +270,18 @@ defmodule StringTest do
     assert String.capitalize("òóôõö") == "Òóôõö"
     assert String.capitalize("ÒÓÔÕÖ") == "Òóôõö"
     assert String.capitalize("ﬁn") == "Fin"
+  end
+
+  test "capitalize/1 with ascii" do
+    assert String.capitalize("àáâ", :ascii) == "àáâ"
+    assert String.capitalize("aáA", :ascii) == "Aáa"
+  end
+
+  test "capitalize/1 with turkic" do
+    assert String.capitalize("iii", :turkic) == "İii"
+    assert String.capitalize("ııı", :turkic) == "Iıı"
+    assert String.capitalize("İii", :turkic) == "İii"
+    assert String.capitalize("Iıı", :turkic) == "Iıı"
   end
 
   test "replace_leading/3" do
@@ -368,25 +468,76 @@ defmodule StringTest do
     assert String.reverse(String.reverse("Hello \r\n World")) == "Hello \r\n World"
   end
 
-  test "replace/3" do
-    assert String.replace("a,b,c", ",", "-") == "a-b-c"
-    assert String.replace("a,b,c", [",", "b"], "-") == "a---c"
+  describe "replace/3" do
+    test "with empty string and string replacement" do
+      assert String.replace("elixir", "", "") == "elixir"
+      assert String.replace("ELIXIR", "", ".") == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", ".", global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", ".", global: false) == ".ELIXIR"
 
-    assert String.replace("a,b,c", ",", "-", global: false) == "a-b,c"
-    assert String.replace("a,b,c", [",", "b"], "-", global: false) == "a-b,c"
-    assert String.replace("ãéã", "é", "e", global: false) == "ãeã"
+      assert_raise ArgumentError, fn ->
+        String.replace("elixir", [""], "")
+      end
+    end
 
-    assert String.replace("a,b,c", ",", "[]", insert_replaced: 2) == "a[],b[],c"
-    assert String.replace("a,b,c", ",", "[]", insert_replaced: [1, 1]) == "a[,,]b[,,]c"
-    assert String.replace("a,b,c", "b", "[]", insert_replaced: 1, global: false) == "a,[b],c"
+    test "with empty string and string replacement with malformed" do
+      assert String.replace(<<225, 158, 128, 225, 158, 185, 225>>, "", ".") == ".កឹ.\xE1."
+    end
 
-    assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1") == "a,bb,cc"
-    assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1", global: false) == "a,bb,c"
+    test "with empty pattern list" do
+      assert String.replace("elixir", [], "anything") == "elixir"
+    end
 
-    assert String.replace("elixir", "", "") == "elixir"
-    assert String.replace("ELIXIR", "", ".") == ".E.L.I.X.I.R."
-    assert String.replace("ELIXIR", "", ".", global: true) == ".E.L.I.X.I.R."
-    assert String.replace("ELIXIR", "", ".", global: false) == ".ELIXIR"
+    test "with match pattern and string replacement" do
+      assert String.replace("a,b,c", ",", "-") == "a-b-c"
+      assert String.replace("a,b,c", [",", "b"], "-") == "a---c"
+
+      assert String.replace("a,b,c", ",", "-", global: false) == "a-b,c"
+      assert String.replace("a,b,c", [",", "b"], "-", global: false) == "a-b,c"
+      assert String.replace("ãéã", "é", "e", global: false) == "ãeã"
+    end
+
+    test "with regex and string replacement" do
+      assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1") == "a,bb,cc"
+      assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1", global: false) == "a,bb,c"
+    end
+
+    test "with empty string and function replacement" do
+      assert String.replace("elixir", "", fn "" -> "" end) == "elixir"
+      assert String.replace("ELIXIR", "", fn "" -> "." end) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> "." end, global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> "." end, global: false) == ".ELIXIR"
+
+      assert String.replace("elixir", "", fn "" -> [""] end) == "elixir"
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end, global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end, global: false) == ".ELIXIR"
+    end
+
+    test "with match pattern and function replacement" do
+      assert String.replace("a,b,c", ",", fn "," -> "-" end) == "a-b-c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> "[#{x}]" end) == "a[,][b][,]c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> [?[, x, ?]] end) == "a[,][b][,]c"
+
+      assert String.replace("a,b,c", ",", fn "," -> "-" end, global: false) == "a-b,c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> "[#{x}]" end, global: false) == "a[,]b,c"
+      assert String.replace("ãéã", "é", fn "é" -> "e" end, global: false) == "ãeã"
+    end
+
+    test "with regex and function replacement" do
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> "#{x}#{x}" end) == "a,b,b,c,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> [x, x] end) == "a,b,b,c,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> "#{x}#{x}" end, global: false) == "a,b,b,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> [x, x] end, global: false) == "a,b,b,c"
+    end
+  end
+
+  describe "replace/4" do
+    test "with incorrect params" do
+      assert_raise FunctionClauseError, "no function clause matching in String.replace/4", fn ->
+        String.replace("a,b,c", "a,b,c", ",", "")
+      end
+    end
   end
 
   test "duplicate/2" do
@@ -444,46 +595,6 @@ defmodule StringTest do
     refute String.equivalent?("døge", "dóge")
   end
 
-  test "normalize/2" do
-    assert String.normalize("ŝ", :nfd) == "ŝ"
-    assert String.normalize("ḇravô", :nfd) == "ḇravô"
-    assert String.normalize("ṩierra", :nfd) == "ṩierra"
-    assert String.normalize("뢴", :nfd) == "뢴"
-    assert String.normalize("êchǭ", :nfc) == "êchǭ"
-    assert String.normalize("거̄", :nfc) == "거̄"
-    assert String.normalize("뢴", :nfc) == "뢴"
-
-    ## Cases from NormalizationTest.txt
-
-    # 05B8 05B9 05B1 0591 05C3 05B0 05AC 059F
-    # 05B1 05B8 05B9 0591 05C3 05B0 05AC 059F
-    # HEBREW POINT QAMATS, HEBREW POINT HOLAM, HEBREW POINT HATAF SEGOL,
-    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
-    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
-    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
-
-    # 095D (exclusion list)
-    # 0922 093C
-    # DEVANAGARI LETTER RHA
-    assert String.normalize("ढ़", :nfc) == "ढ़"
-
-    # 0061 0315 0300 05AE 0340 0062
-    # 00E0 05AE 0300 0315 0062
-    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
-    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
-    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
-
-    # 0344
-    # 0308 0301
-    # COMBINING GREEK DIALYTIKA TONOS
-    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
-
-    # 115B9 0334 115AF
-    # 115B9 0334 115AF
-    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
-    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
-  end
-
   test "graphemes/1" do
     # Extended
     assert String.graphemes("Ā̀stute") == ["Ā̀", "s", "t", "u", "t", "e"]
@@ -501,6 +612,60 @@ defmodule StringTest do
   test "next_grapheme/1" do
     assert String.next_grapheme("Ā̀stute") == {"Ā̀", "stute"}
     assert String.next_grapheme("") == nil
+  end
+
+  describe "randomized" do
+    test "next_grapheme" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          bin |> Stream.unfold(&String.next_grapheme/1) |> Enum.to_list()
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          list ->
+            assert Enum.all?(list, &is_binary/1), "cannot build graphemes for #{inspect(bin)}"
+        end
+      end
+    end
+
+    test "split empty" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          String.split(bin, "")
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          split ->
+            assert Enum.all?(split, &is_binary/1), "cannot split #{inspect(bin)}"
+            assert IO.iodata_to_binary(split) == bin
+        end
+      end
+    end
+
+    test "graphemes" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          String.graphemes(bin)
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          graphemes ->
+            assert Enum.all?(graphemes, &is_binary/1),
+                   "cannot build graphemes for #{inspect(bin)}"
+
+            assert IO.iodata_to_binary(graphemes) == bin
+        end
+      end
+    end
   end
 
   test "first/1" do
@@ -536,6 +701,7 @@ defmodule StringTest do
     assert String.length("סם ייםח") == 7
     assert String.length("がガちゃ") == 4
     assert String.length("Ā̀stute") == 6
+    assert String.length("👨‍👩‍👧‍👦") == 1
     assert String.length("") == 0
   end
 
@@ -559,7 +725,7 @@ defmodule StringTest do
     end
   end
 
-  test "slice/2,3" do
+  test "slice/3" do
     assert String.slice("elixir", 1, 3) == "lix"
     assert String.slice("あいうえお", 2, 2) == "うえ"
     assert String.slice("ειξήριολ", 2, 3) == "ξήρ"
@@ -569,9 +735,9 @@ defmodule StringTest do
     assert String.slice("elixir", -3, 2) == "xi"
     assert String.slice("あいうえお", -4, 3) == "いうえ"
     assert String.slice("ειξήριολ", -5, 3) == "ήρι"
-    assert String.slice("elixir", -10, 1) == ""
-    assert String.slice("あいうえお", -10, 2) == ""
-    assert String.slice("ειξήριολ", -10, 3) == ""
+    assert String.slice("elixir", -10, 1) == "e"
+    assert String.slice("あいうえお", -10, 2) == "あい"
+    assert String.slice("ειξήριολ", -10, 3) == "ειξ"
     assert String.slice("elixir", 8, 2) == ""
     assert String.slice("あいうえお", 6, 2) == ""
     assert String.slice("ειξήριολ", 8, 1) == ""
@@ -579,13 +745,17 @@ defmodule StringTest do
     assert String.slice("elixir", 0, 0) == ""
     assert String.slice("elixir", 5, 0) == ""
     assert String.slice("elixir", -5, 0) == ""
+    assert String.slice("elixir", -10, 10) == "elixir"
     assert String.slice("", 0, 1) == ""
     assert String.slice("", 1, 1) == ""
+  end
 
+  test "slice/2" do
     assert String.slice("elixir", 0..-2) == "elixi"
     assert String.slice("elixir", 1..3) == "lix"
     assert String.slice("elixir", -5..-3) == "lix"
     assert String.slice("elixir", -5..3) == "lix"
+    assert String.slice("elixir", -10..10) == "elixir"
     assert String.slice("あいうえお", 2..3) == "うえ"
     assert String.slice("ειξήριολ", 2..4) == "ξήρ"
     assert String.slice("elixir", 3..6) == "xir"
@@ -602,8 +772,36 @@ defmodule StringTest do
     assert String.slice("", 1..1) == ""
     assert String.slice("あいうえお", -2..-4) == ""
     assert String.slice("あいうえお", -10..-15) == ""
-    assert String.slice("hello あいうえお unicode", 8..-1) == "うえお unicode"
+    assert String.slice("hello あいうえお Unicode", 8..-1) == "うえお Unicode"
     assert String.slice("abc", -1..14) == "c"
+    assert String.slice("a·̀ͯ‿.⁀:", 0..-2) == "a·̀ͯ‿.⁀"
+
+    assert_raise FunctionClauseError, fn ->
+      String.slice(nil, 0..1)
+    end
+  end
+
+  test "slice/2 with steps" do
+    assert String.slice("elixir", 0..-2//2) == "eii"
+    assert String.slice("elixir", 1..3//2) == "lx"
+    assert String.slice("elixir", -5..-3//2) == "lx"
+    assert String.slice("elixir", -5..3//2) == "lx"
+    assert String.slice("あいうえお", 2..3//2) == "う"
+    assert String.slice("ειξήριολ", 2..4//2) == "ξρ"
+    assert String.slice("elixir", 3..6//2) == "xr"
+    assert String.slice("あいうえお", 3..7//2) == "え"
+    assert String.slice("ειξήριολ", 5..8//2) == "ιλ"
+    assert String.slice("elixir", -3..-2//2) == "x"
+    assert String.slice("あいうえお", -4..-2//2) == "いえ"
+    assert String.slice("ειξήριολ", -5..-3//2) == "ήι"
+    assert String.slice("elixir", 8..9//2) == ""
+    assert String.slice("", 0..0//2) == ""
+    assert String.slice("", 1..1//2) == ""
+    assert String.slice("あいうえお", -2..-4//2) == ""
+    assert String.slice("あいうえお", -10..-15//2) == ""
+    assert String.slice("hello あいうえお Unicode", 8..-1//2) == "うおUioe"
+    assert String.slice("abc", -1..14//2) == "c"
+    assert String.slice("a·̀ͯ‿.⁀:", 0..-2//2) == "a‿⁀"
   end
 
   test "valid?/1" do
@@ -636,6 +834,8 @@ defmodule StringTest do
     assert String.starts_with?("hello", "he")
     assert String.starts_with?("hello", "hello")
     refute String.starts_with?("hello", [])
+    assert String.starts_with?("hello", "")
+    assert String.starts_with?("hello", [""])
     assert String.starts_with?("hello", ["hellö", "hell"])
     assert String.starts_with?("エリクシア", "エリ")
     refute String.starts_with?("hello", "lo")
@@ -661,6 +861,8 @@ defmodule StringTest do
     assert String.contains?("elixir of life", "of")
     assert String.contains?("エリクシア", "シ")
     refute String.contains?("elixir of life", [])
+    assert String.contains?("elixir of life", "")
+    assert String.contains?("elixir of life", [""])
     assert String.contains?("elixir of life", ["mercury", "life"])
     refute String.contains?("elixir of life", "death")
     refute String.contains?("エリクシア", "仙")
@@ -722,5 +924,131 @@ defmodule StringTest do
     assert String.myers_difference("abc", "abc") == [eq: "abc"]
     assert String.myers_difference("abc", "aйbc") == [eq: "a", ins: "й", eq: "bc"]
     assert String.myers_difference("aйbc", "abc") == [eq: "a", del: "й", eq: "bc"]
+  end
+
+  test "normalize/2" do
+    assert String.normalize("ŝ", :nfd) == "ŝ"
+    assert String.normalize("ḇravô", :nfd) == "ḇravô"
+    assert String.normalize("ṩierra", :nfd) == "ṩierra"
+    assert String.normalize("뢴", :nfd) == "뢴"
+    assert String.normalize("êchǭ", :nfc) == "êchǭ"
+    assert String.normalize("거̄", :nfc) == "거̄"
+    assert String.normalize("뢴", :nfc) == "뢴"
+
+    ## Error cases
+    assert String.normalize(<<15, 216>>, :nfc) == <<15, 216>>
+    assert String.normalize(<<15, 216>>, :nfd) == <<15, 216>>
+    assert String.normalize(<<216, 15>>, :nfc) == <<216, 15>>
+    assert String.normalize(<<216, 15>>, :nfd) == <<216, 15>>
+
+    assert String.normalize(<<15, 216>>, :nfkc) == <<15, 216>>
+    assert String.normalize(<<15, 216>>, :nfkd) == <<15, 216>>
+    assert String.normalize(<<216, 15>>, :nfkc) == <<216, 15>>
+    assert String.normalize(<<216, 15>>, :nfkd) == <<216, 15>>
+
+    ## Cases from NormalizationTest.txt
+
+    # 05B8 05B9 05B1 0591 05C3 05B0 05AC 059F
+    # 05B1 05B8 05B9 0591 05C3 05B0 05AC 059F
+    # HEBREW POINT QAMATS, HEBREW POINT HOLAM, HEBREW POINT HATAF SEGOL,
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # 0922 093C
+    # DEVANAGARI LETTER RHA
+    assert String.normalize("ढ़", :nfc) == "ढ़"
+
+    # 0061 0315 0300 05AE 0340 0062
+    # 00E0 05AE 0300 0315 0062
+    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
+    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
+    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
+
+    # 0344
+    # 0308 0301
+    # COMBINING GREEK DIALYTIKA TONOS
+    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
+
+    # 115B9 0334 115AF
+    # 115B9 0334 115AF
+    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
+    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
+
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # 0922 093C
+    # DEVANAGARI LETTER RHA
+    assert String.normalize("ढ़", :nfc) == "ढ़"
+
+    # 0061 0315 0300 05AE 0340 0062
+    # 00E0 05AE 0300 0315 0062
+    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
+    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
+    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
+
+    # 0344
+    # 0308 0301
+    # COMBINING GREEK DIALYTIKA TONOS
+    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
+
+    # 115B9 0334 115AF
+    # 115B9 0334 115AF
+    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
+    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
+
+    # (ﬀ; ﬀ; ﬀ; ff; ff; ) LATIN SMALL LIGATURE FF
+    # FB00;FB00;FB00;0066 0066;0066 0066;
+    assert String.normalize("ﬀ", :nfkd) == "\u0066\u0066"
+
+    # (ﬂ; ﬂ; ﬂ; fl; fl; ) LATIN SMALL LIGATURE FL
+    # FB02;FB02;FB02;0066 006C;0066 006C;
+    assert String.normalize("ﬂ", :nfkd) == "\u0066\u006C"
+
+    # (ﬅ; ﬅ; ﬅ; st; st; ) LATIN SMALL LIGATURE LONG S T
+    # FB05;FB05;FB05;0073 0074;0073 0074;
+    assert String.normalize("ﬅ", :nfkd) == "\u0073\u0074"
+
+    # (ﬆ; ﬆ; ﬆ; st; st; ) LATIN SMALL LIGATURE ST
+    # FB06;FB06;FB06;0073 0074;0073 0074;
+    assert String.normalize("\u0073\u0074", :nfkc) == "\u0073\u0074"
+
+    # (ﬓ; ﬓ; ﬓ; մն; մն; ) ARMENIAN SMALL LIGATURE MEN NOW
+    # FB13;FB13;FB13;0574 0576;0574 0576;
+    assert String.normalize("\u0574\u0576", :nfkc) == "\u0574\u0576"
+  end
+
+  # Carriage return can be a grapheme cluster if followed by
+  # newline so we test some corner cases here.
+  test "carriage return" do
+    assert String.at("\r\t\v", 0) == "\r"
+    assert String.at("\r\t\v", 1) == "\t"
+    assert String.at("\r\t\v", 2) == "\v"
+    assert String.at("\xFF\r\t\v", 1) == "\r"
+    assert String.at("\r\xFF\t\v", 2) == "\t"
+    assert String.at("\r\t\xFF\v", 3) == "\v"
+
+    assert String.last("\r\t\v") == "\v"
+    assert String.last("\r\xFF\t\xFF\v") == "\v"
+
+    assert String.next_grapheme("\r\t\v") == {"\r", "\t\v"}
+    assert String.next_grapheme("\t\v") == {"\t", "\v"}
+    assert String.next_grapheme("\v") == {"\v", ""}
+
+    assert String.length("\r\t\v") == 3
+    assert String.length("\r\xFF\t\v") == 4
+    assert String.length("\r\t\xFF\v") == 4
+
+    assert String.bag_distance("\r\t\xFF\v", "\xFF\r\n\xFF") == 0.25
+    assert String.split("\r\t\v", "") == ["", "\r", "\t", "\v", ""]
   end
 end

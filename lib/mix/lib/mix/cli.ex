@@ -26,27 +26,31 @@ defmodule Mix.CLI do
 
   defp proceed(args) do
     load_dot_config()
-    load_mix_exs()
-    {task, args} = get_task(args)
+    load_mix_exs(args)
+    project = Mix.Project.get()
+    {task, args} = get_task(args, project)
     ensure_hex(task)
-    change_env(task)
+    maybe_change_env_and_target(task, project)
     run_task(task, args)
   end
 
-  defp load_mix_exs() do
+  defp load_mix_exs(args) do
     file = System.get_env("MIX_EXS") || "mix.exs"
 
-    _ =
-      if File.regular?(file) do
-        Code.load_file(file)
-      end
+    if File.regular?(file) do
+      Mix.ProjectStack.post_config(state_loader: {:cli, List.first(args)})
+      old_undefined = Code.get_compiler_option(:no_warn_undefined)
+      Code.put_compiler_option(:no_warn_undefined, :all)
+      Code.compile_file(file)
+      Code.put_compiler_option(:no_warn_undefined, old_undefined)
+    end
   end
 
-  defp get_task(["-" <> _ | _]) do
-    task = "mix #{Mix.Project.config()[:default_task]}"
+  defp get_task(["-" <> _ | _], project) do
+    task = "mix #{default_task(project)}"
 
     Mix.shell().error(
-      "** (Mix) Mix only recognizes the flags --help and --version.\n" <>
+      "** (Mix) Mix only recognizes the options --help and --version.\n" <>
         "You may have wanted to invoke a task instead, such as #{inspect(task)}"
     )
 
@@ -54,44 +58,60 @@ defmodule Mix.CLI do
     exit({:shutdown, 1})
   end
 
-  defp get_task([h | t]) do
+  defp get_task([h | t], _project) do
     {h, t}
   end
 
-  defp get_task([]) do
-    case Mix.Project.get() do
-      nil ->
-        Mix.shell().error(
-          "** (Mix) \"mix\" with no arguments must be executed in a directory with a mix.exs file"
-        )
+  defp get_task([], nil) do
+    Mix.shell().error(
+      "** (Mix) \"mix\" with no arguments must be executed in a directory with a mix.exs file"
+    )
 
-        display_usage()
-        exit({:shutdown, 1})
+    display_usage()
+    exit({:shutdown, 1})
+  end
 
-      _ ->
-        {Mix.Project.config()[:default_task], []}
+  defp get_task([], project) do
+    {default_task(project), []}
+  end
+
+  defp default_task(project) do
+    if function_exported?(project, :cli, 0) do
+      project.cli()[:default_task] || "run"
+    else
+      # TODO: Deprecate default_task in v1.19
+      Mix.Project.config()[:default_task] || "run"
     end
   end
 
   defp run_task(name, args) do
     try do
       ensure_no_slashes(name)
+      # We must go through the task instead of invoking the
+      # module directly because projects like Nerves alias it.
       Mix.Task.run("loadconfig")
       Mix.Task.run(name, args)
     rescue
-      # We only rescue exceptions in the Mix namespace, all
-      # others pass through and will explode on the users face
+      # We only rescue exceptions in the Mix namespace,
+      # all others pass through and raise as usual.
       exception ->
-        stacktrace = System.stacktrace()
+        case {Mix.debug?(), Map.get(exception, :mix, false)} do
+          {false, true} ->
+            simplified_exception(exception, 1)
 
-        if Map.get(exception, :mix) && not Mix.debug?() do
-          mod = exception.__struct__ |> Module.split() |> Enum.at(0, "Mix")
-          Mix.shell().error("** (#{mod}) #{Exception.message(exception)}")
-          exit({:shutdown, 1})
-        else
-          reraise exception, stacktrace
+          {false, code} when code in 0..255 ->
+            simplified_exception(exception, code)
+
+          _ ->
+            reraise exception, __STACKTRACE__
         end
     end
+  end
+
+  defp simplified_exception(%name{} = exception, code) do
+    mod = name |> Module.split() |> hd()
+    Mix.shell().error("** (#{mod}) #{Exception.message(exception)}")
+    exit({:shutdown, code})
   end
 
   defp env_variable_activated?(name) do
@@ -107,31 +127,83 @@ defmodule Mix.CLI do
     end
   end
 
-  defp change_env(task) do
-    if env = preferred_cli_env(task) do
-      Mix.env(env)
+  defp maybe_change_env_and_target(task, project) do
+    task = String.to_atom(task)
+    config = Mix.Project.config()
 
-      if project = Mix.Project.pop() do
-        %{name: name, file: file} = project
-        Mix.Project.push(name, file)
-      end
+    env = preferred_cli_env(project, task, config)
+    target = preferred_cli_target(project, task, config)
+    env && Mix.env(env)
+    target && Mix.target(target)
+
+    if env || target do
+      reload_project()
     end
   end
 
-  defp preferred_cli_env(task) do
-    if System.get_env("MIX_ENV") do
+  # TODO: Deprecate preferred_cli_env in v1.19
+  defp preferred_cli_env(project, task, config) do
+    if function_exported?(project, :cli, 0) || System.get_env("MIX_ENV") do
       nil
     else
-      task = String.to_atom(task)
-      Mix.Project.config()[:preferred_cli_env][task] || Mix.Task.preferred_cli_env(task)
+      config[:preferred_cli_env][task] || preferred_cli_env(task)
+    end
+  end
+
+  # TODO: Deprecate preferred_cli_target in v1.19
+  defp preferred_cli_target(project, task, config) do
+    if function_exported?(project, :cli, 0) || System.get_env("MIX_TARGET") do
+      nil
+    else
+      config[:preferred_cli_target][task]
+    end
+  end
+
+  @doc """
+  Available for backwards compatibility.
+  """
+  def preferred_cli_env(task) when is_atom(task) or is_binary(task) do
+    case Mix.Task.get(task) do
+      nil ->
+        nil
+
+      module ->
+        case List.keyfind(module.__info__(:attributes), :preferred_cli_env, 0) do
+          {:preferred_cli_env, [setting]} ->
+            IO.warn(
+              """
+              setting @preferred_cli_env is deprecated inside Mix tasks.
+              Please remove it from #{inspect(module)} and set your preferred environment in mix.exs instead:
+
+                  def cli do
+                    [
+                      preferred_envs: [docs: "docs"]
+                    ]
+                  end
+              """,
+              []
+            )
+
+            setting
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  defp reload_project() do
+    if project = Mix.Project.pop() do
+      %{name: name, file: file} = project
+      Mix.Project.push(name, file)
     end
   end
 
   defp load_dot_config do
-    path = Path.join(Mix.Utils.mix_home(), "config.exs")
+    path = Path.join(Mix.Utils.mix_config(), "config.exs")
 
     if File.regular?(path) do
-      Mix.Task.run("loadconfig", [path])
+      Mix.Tasks.Loadconfig.load_compile(path)
     end
   end
 
@@ -152,7 +224,7 @@ defmodule Mix.CLI do
         mix help        - Lists all available tasks
         mix help TASK   - Prints documentation for a given task
 
-    The --help and --version flags can be given instead of a task for usage and versioning information.
+    The --help and --version options can be given instead of a task for usage and versioning information.
     """)
   end
 

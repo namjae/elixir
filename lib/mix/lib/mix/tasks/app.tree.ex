@@ -7,7 +7,7 @@ defmodule Mix.Tasks.App.Tree do
   @moduledoc """
   Prints the application tree.
 
-      mix app.tree --exclude logger --exclude elixir
+      $ mix app.tree --exclude logger --exclude elixir
 
   If no application is given, it uses the current application defined
   in the `mix.exs` file.
@@ -19,21 +19,23 @@ defmodule Mix.Tasks.App.Tree do
 
     * `--format` - Can be set to one of either:
 
-      * `pretty` - uses Unicode codepoints for formatting the tree.
+      * `pretty` - uses Unicode code points for formatting the tree.
         This is the default except on Windows.
 
-      * `plain` - does not use Unicode codepoints for formatting the tree.
+      * `plain` - does not use Unicode code points for formatting the tree.
         This is the default on Windows.
 
       * `dot` - produces a DOT graph description of the application tree
         in `app_tree.dot` in the current directory.
         Warning: this will overwrite any previously generated file.
+
   """
 
   @default_excluded [:kernel, :stdlib, :compiler]
 
+  @impl true
   def run(args) do
-    Mix.Task.run("compile")
+    Mix.Task.run("compile", args)
 
     {app, opts} =
       case OptionParser.parse!(args, strict: [exclude: :keep, format: :string]) do
@@ -51,13 +53,16 @@ defmodule Mix.Tasks.App.Tree do
     excluded = Keyword.get_values(opts, :exclude) |> Enum.map(&String.to_atom/1)
     excluded = @default_excluded ++ excluded
 
-    callback = fn {type, app} ->
-      load(app)
-      {{app, type(type)}, children_for(app, excluded)}
+    callback = fn {app, type} ->
+      if load(app, type) do
+        {{app, type(type)}, children_for(app, excluded)}
+      else
+        {{app, "(optional - missing)"}, []}
+      end
     end
 
     if opts[:format] == "dot" do
-      root = [{:normal, app}]
+      root = [{app, :normal}]
       Mix.Utils.write_dot_graph!("app_tree.dot", "application tree", root, callback, opts)
 
       """
@@ -70,14 +75,14 @@ defmodule Mix.Tasks.App.Tree do
       |> String.trim_trailing()
       |> Mix.shell().info()
     else
-      Mix.Utils.print_tree([{:normal, app}], callback, opts)
+      Mix.Utils.print_tree([{app, :normal}], callback, opts)
     end
   end
 
-  defp load(app) do
-    case Application.load(app) do
-      :ok -> :ok
-      {:error, {:already_loaded, ^app}} -> :ok
+  defp load(app, type) do
+    case Application.ensure_loaded(app) do
+      :ok -> true
+      _ when type == :optional -> false
       _ -> Mix.raise("could not find application #{app}")
     end
   end
@@ -85,9 +90,15 @@ defmodule Mix.Tasks.App.Tree do
   defp children_for(app, excluded) do
     apps = Application.spec(app, :applications) -- excluded
     included_apps = Application.spec(app, :included_applications) -- excluded
-    Enum.map(apps, &{:normal, &1}) ++ Enum.map(included_apps, &{:included, &1})
+    optional_apps = Application.spec(app, :optional_applications) || []
+
+    Enum.sort(
+      Enum.map(apps, &{&1, if(&1 in optional_apps, do: :optional, else: :normal)}) ++
+        Enum.map(included_apps, &{&1, :included})
+    )
   end
 
   defp type(:normal), do: nil
   defp type(:included), do: "(included)"
+  defp type(:optional), do: "(optional)"
 end

@@ -27,7 +27,7 @@ defmodule Mix.Dep.Fetcher do
     {apps, deps} = do_finalize(result, old_lock, opts)
 
     # Check if all given dependencies are loaded or fail
-    _ = Mix.Dep.loaded_by_name(names, deps, opts)
+    _ = Mix.Dep.filter_by_name(names, deps, opts)
     apps
   end
 
@@ -36,8 +36,8 @@ defmodule Mix.Dep.Fetcher do
 
     fn %Mix.Dep{app: app} = dep, acc, new_lock ->
       # Only fetch if dependency is in given names or if lock has
-      # been changed for dependency by remote converger
-      if app in names or lock[app] != new_lock[app] do
+      # been changed for dependency by remote converger or it is new
+      if app in names or lock[app] != new_lock[app] or is_nil(lock[app]) do
         do_fetch(dep, acc, new_lock)
       else
         {dep, acc, new_lock}
@@ -65,6 +65,18 @@ defmodule Mix.Dep.Fetcher do
           end
 
         if new do
+          # There is a race condition where if you compile deps
+          # and then immediately update them, we would not detect
+          # a mismatch with .mix/compile.fetch, so we go ahead and
+          # delete all of them.
+          Mix.Project.build_path()
+          |> Path.dirname()
+          |> Path.join("*/lib/#{dep.app}/.mix/compile.fetch")
+          |> Path.wildcard(match_dot: true)
+          |> Enum.each(&File.rm/1)
+
+          File.touch!(Path.join(opts[:dest], ".fetch"))
+          dep = put_in(dep.opts[:lock], new)
           {dep, [app | acc], Map.put(lock, app, new)}
         else
           {dep, acc, lock}
@@ -84,29 +96,25 @@ defmodule Mix.Dep.Fetcher do
 
   defp do_finalize({all_deps, apps, new_lock}, old_lock, opts) do
     # Let's get the loaded versions of deps
-    deps = Mix.Dep.loaded_by_name(apps, all_deps, opts)
+    deps = Mix.Dep.filter_by_name(apps, all_deps, opts)
 
     # Note we only retrieve the parent dependencies of the updated
     # deps if all dependencies are available. This is because if a
     # dependency is missing, it could directly affect one of the
     # dependencies we are trying to compile, causing the whole thing
     # to fail.
-    #
-    # If there is any other dependency that is not ok, we include
-    # it for compilation too, this is our best to try to solve the
-    # maximum we can at each deps.get and deps.update.
-    deps =
+    parent_deps =
       if Enum.all?(all_deps, &available?/1) do
         Enum.uniq_by(with_depending(deps, all_deps), & &1.app)
       else
-        deps
+        []
       end
 
     # Merge the new lock on top of the old to guarantee we don't
     # leave out things that could not be fetched and save it.
     lock = Map.merge(old_lock, new_lock)
-    Mix.Dep.Lock.write(lock)
-    mark_as_fetched(deps)
+    Mix.Dep.Lock.write(lock, opts)
+    mark_as_fetched(parent_deps)
 
     # See if any of the deps diverged and abort.
     show_diverged!(Enum.filter(all_deps, &Mix.Dep.diverged?/1))

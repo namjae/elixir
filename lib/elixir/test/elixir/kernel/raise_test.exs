@@ -9,7 +9,22 @@ defmodule Kernel.RaiseTest do
   defp opts, do: [message: "message"]
   defp struct, do: %RuntimeError{message: "message"}
 
+  @compile {:no_warn_undefined, DoNotExist}
   @trace [{:foo, :bar, 0, []}]
+
+  test "raise preserves the stacktrace" do
+    stacktrace =
+      try do
+        raise "a"
+      rescue
+        _ -> hd(__STACKTRACE__)
+      end
+
+    file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
+
+    assert {__MODULE__, :"test raise preserves the stacktrace", _, [file: ^file, line: 18] ++ _} =
+             stacktrace
+  end
 
   test "raise message" do
     assert_raise RuntimeError, "message", fn ->
@@ -56,13 +71,28 @@ defmodule Kernel.RaiseTest do
     end
   end
 
+  test "raise with error_info" do
+    {exception, stacktrace} =
+      try do
+        raise "a"
+      rescue
+        e -> {e, __STACKTRACE__}
+      end
+
+    assert [{__MODULE__, _, _, meta} | _] = stacktrace
+    assert meta[:error_info] == %{module: Exception}
+
+    assert Exception.format_error(exception, stacktrace) ==
+             %{general: "a", reason: "#Elixir.RuntimeError"}
+  end
+
   test "reraise message" do
     try do
       reraise "message", @trace
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
 
     try do
@@ -71,7 +101,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
   end
 
@@ -81,7 +111,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
 
     try do
@@ -90,7 +120,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
   end
 
@@ -100,7 +130,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
 
     try do
@@ -110,7 +140,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
   end
 
@@ -120,7 +150,7 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
     end
 
     try do
@@ -129,7 +159,17 @@ defmodule Kernel.RaiseTest do
       flunk("should not reach")
     rescue
       RuntimeError ->
-        assert @trace == :erlang.get_stacktrace()
+        assert @trace == __STACKTRACE__
+    end
+  end
+
+  test "reraise with invalid stacktrace" do
+    try do
+      reraise %RuntimeError{message: "message"}, {:oops, @trace}
+    rescue
+      ArgumentError ->
+        {name, arity} = __ENV__.function
+        assert [{__MODULE__, ^name, ^arity, _} | _] = __STACKTRACE__
     end
   end
 
@@ -171,6 +211,19 @@ defmodule Kernel.RaiseTest do
       assert result == "an exception"
     end
 
+    test "named runtime or argument error" do
+      result =
+        try do
+          raise "an exception"
+        rescue
+          x in [ArgumentError, RuntimeError] -> Exception.message(x)
+        catch
+          :error, _ -> false
+        end
+
+      assert result == "an exception"
+    end
+
     test "with higher precedence than catch" do
       result =
         try do
@@ -184,7 +237,7 @@ defmodule Kernel.RaiseTest do
       assert result
     end
 
-    test "argument error from erlang" do
+    test "argument error from Erlang" do
       result =
         try do
           :erlang.error(:badarg)
@@ -195,7 +248,7 @@ defmodule Kernel.RaiseTest do
       assert result
     end
 
-    test "argument error from elixir" do
+    test "argument error from Elixir" do
       result =
         try do
           raise ArgumentError, ""
@@ -249,6 +302,21 @@ defmodule Kernel.RaiseTest do
         end
 
       assert result == "an exception"
+    end
+
+    defmacrop argerr(e) do
+      quote(do: unquote(e) in ArgumentError)
+    end
+
+    test "with rescue macro" do
+      result =
+        try do
+          raise ArgumentError, "oops, badarg"
+        rescue
+          argerr(e) -> Exception.message(e)
+        end
+
+      assert result == "oops, badarg"
     end
   end
 
@@ -335,7 +403,7 @@ defmodule Kernel.RaiseTest do
     end
 
     test "badfun error" do
-      # Avoid "invalid function call" warning in >= OTP 19
+      # Avoid "invalid function call" warning
       x = fn -> :example end
 
       result =
@@ -346,6 +414,32 @@ defmodule Kernel.RaiseTest do
         end
 
       assert result == "expected a function, got: :example"
+    end
+
+    test "badfun error when the function is gone" do
+      defmodule BadFunction.Missing do
+        def fun, do: fn -> :ok end
+      end
+
+      fun = BadFunction.Missing.fun()
+
+      :code.delete(BadFunction.Missing)
+
+      defmodule BadFunction.Missing do
+        def fun, do: fn -> :another end
+      end
+
+      :code.purge(BadFunction.Missing)
+
+      result =
+        try do
+          fun.()
+        rescue
+          x in [BadFunctionError] -> Exception.message(x)
+        end
+
+      assert result =~
+               ~r/function #Function<[0-9]\.[0-9]*\/0[^>]*> is invalid, likely because it points to an old version of the code/
     end
 
     test "badmatch error" do
@@ -361,10 +455,12 @@ defmodule Kernel.RaiseTest do
       assert result == "no match of right hand side value: 0"
     end
 
+    defp empty_map(), do: %{}
+
     test "bad key error" do
       result =
         try do
-          %{%{} | foo: :bar}
+          %{empty_map() | foo: :bar}
         rescue
           x in [KeyError] -> Exception.message(x)
         end
@@ -373,7 +469,7 @@ defmodule Kernel.RaiseTest do
 
       result =
         try do
-          %{}.foo
+          empty_map().foo
         rescue
           x in [KeyError] -> Exception.message(x)
         end
@@ -428,7 +524,7 @@ defmodule Kernel.RaiseTest do
           x in [CondClauseError] -> Exception.message(x)
         end
 
-      assert result == "no cond clause evaluated to a true value"
+      assert result == "no cond clause evaluated to a truthy value"
     end
 
     test "try clause error" do
@@ -438,6 +534,9 @@ defmodule Kernel.RaiseTest do
         try do
           try do
             f.()
+          rescue
+            _exception ->
+              :ok
           else
             :other ->
               :ok

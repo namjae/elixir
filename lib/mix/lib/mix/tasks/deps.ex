@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Deps do
   use Mix.Task
 
-  import Mix.Dep, only: [loaded: 1, format_dep: 1, format_status: 1, check_lock: 1]
+  import Mix.Dep, only: [load_on_environment: 1, format_dep: 1, format_status: 1, check_lock: 1]
 
   @shortdoc "Lists dependencies and their status"
 
@@ -33,7 +33,8 @@ defmodule Mix.Tasks.Deps do
 
   By specifying such dependencies, Mix will automatically install
   Hex (if it wasn't previously installed) and download a package
-  suitable to your project.
+  suitable to your project. Note Hex expects the dependency
+  requirement to always be given and it will warn otherwise.
 
   Mix also supports Git and path dependencies:
 
@@ -71,7 +72,8 @@ defmodule Mix.Tasks.Deps do
       other project that depends on the current project won't be forced to
       use the optional dependency. However, if the other project includes
       the optional dependency on its own, the requirements and options
-      specified here will also be applied.
+      specified here will also be applied. Optional dependencies will _not_
+      be started by the application.
 
     * `:only` - the dependency is made available only in the given environments,
       useful when declaring dev- or test-only dependencies; by default the
@@ -79,33 +81,54 @@ defmodule Mix.Tasks.Deps do
       can either be a single environment (like `:dev`) or a list of environments
       (like `[:dev, :test]`)
 
+    * `:targets` - the dependency is made available only for the given targets.
+      By default the dependency will be available in all environments. The value
+      of this option can either be a single target (like `:host`) or a list of
+      environments (like `[:host, :rpi3]`)
+
     * `:override` - if set to `true` the dependency will override any other
       definitions of itself by other dependencies
 
-    * `:manager` - Mix can also compile Rebar, Rebar3 and makefile projects
-      and can fetch sub dependencies of Rebar and Rebar3 projects. Mix will
+    * `:manager` - Mix can also compile Rebar3 and makefile projects
+      and can fetch sub dependencies of Rebar3 projects. Mix will
       try to infer the type of project but it can be overridden with this
-      option by setting it to `:mix`, `:rebar3`, `:rebar` or `:make`. In case
+      option by setting it to `:mix`, `:rebar3`, or `:make`. In case
       there are conflicting definitions, the first manager in the list above
       will be picked up. For example, if a dependency is found with `:rebar3`
-      and `:rebar` managers in different part of the trees, `:rebar3` will
-      be automatically picked. You can find the manager by running `mix deps`
-      and override it by setting the `:override` option in a top-level project.
+      as a manager in different part of the trees, `:rebar3` will be automatically
+      picked. You can find the manager by running `mix deps` and override it by
+      setting the `:override` option in a top-level project.
 
     * `:runtime` - whether the dependency is part of runtime applications.
-      Defaults to `true` which automatically adds the application to the list
-      of apps that are started automatically and included in releases
+      If the `:applications` key is not provided in `def application` in your
+      `mix.exs` file, Mix will automatically include all dependencies as a runtime
+      application, except if `runtime: false` is given. Defaults to true.
+
+    * `:system_env` - an enumerable of key-value tuples of binaries to be set
+      as environment variables when loading or compiling the dependency
 
   ### Git options (`:git`)
 
-    * `:git`        - the Git repository URI
-    * `:github`     - a shortcut for specifying Git repos from GitHub, uses `git:`
-    * `:ref`        - the reference to checkout (may be a branch, a commit SHA or a tag)
-    * `:branch`     - the Git branch to checkout
-    * `:tag`        - the Git tag to checkout
+    * `:git` - the Git repository URI
+    * `:github` - a shortcut for specifying Git repos from GitHub, uses `:git`
+    * `:ref` - the reference to checkout (may be a branch, a commit SHA or a tag)
+    * `:branch` - the Git branch to checkout
+    * `:tag` - the Git tag to checkout
     * `:submodules` - when `true`, initialize submodules for the repo
-    * `:sparse`     - checkout a single directory inside the Git repository and use it
-      as your Mix dependency. Search "sparse git checkouts" for more information.
+    * `:sparse` - checkout a single directory inside the Git repository and use it
+      as your Mix dependency. Search "sparse Git checkouts" for more information.
+    * `:subdir` - (since v1.13.0) search for the project in the given directory
+      relative to the git checkout. This is similar to `:sparse` option but instead
+      of a doing a sparse checkout it does a full checkout.
+
+  If your Git repository requires authentication, such as basic username:password
+  HTTP authentication via URLs, it can be achieved via Git configuration, keeping
+  the access rules outside of source control.
+
+      $ git config --global url."https://YOUR_USER:YOUR_PASS@example.com/".insteadOf "https://example.com/"
+
+  For more information, see the `git config` documentation:
+  https://git-scm.com/docs/git-config#git-config-urlltbasegtinsteadOf
 
   ### Path options (`:path`)
 
@@ -125,20 +148,28 @@ defmodule Mix.Tasks.Deps do
       [locked at REF]
       STATUS
 
+  For dependencies satisfied by Hex, `REF` is the package checksum.
+
+  For dependencies satisfied by git, `REF` is the commit object name,
+  and may include branch or tag information.
+
   It supports the following options:
 
-    * `--all` - checks all dependencies, regardless of specified environment
+    * `--all` - lists all dependencies, regardless of specified environment
 
   """
-  @spec run(OptionParser.argv()) :: :ok
+
+  @impl true
   def run(args) do
     Mix.Project.get!()
-    {opts, _, _} = OptionParser.parse(args)
-    loaded_opts = if opts[:all], do: [], else: [env: Mix.env()]
+    {opts, _, _} = OptionParser.parse(args, switches: [all: :boolean])
+    loaded_opts = if opts[:all], do: [], else: [env: Mix.env(), target: Mix.target()]
 
     shell = Mix.shell()
 
-    Enum.each(loaded(loaded_opts), fn dep ->
+    load_on_environment(loaded_opts)
+    |> Enum.sort_by(& &1.app)
+    |> Enum.each(fn dep ->
       %Mix.Dep{scm: scm, manager: manager} = dep
       dep = check_lock(dep)
       extra = if manager, do: " (#{manager})", else: ""

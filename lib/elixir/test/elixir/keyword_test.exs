@@ -13,7 +13,7 @@ defmodule KeywordTest do
   end
 
   test "is a :: operator on ambiguity" do
-    assert [{:::, _, [{:a, _, _}, {:b, _, _}]}] = quote(do: [a :: b])
+    assert [{:"::", _, [{:a, _, _}, {:b, _, _}]}] = quote(do: [a :: b])
   end
 
   test "supports optional comma" do
@@ -43,6 +43,35 @@ defmodule KeywordTest do
 
     assert_raise RuntimeError, message, fn ->
       Keyword.get_and_update!([a: 1], :a, fn value -> value end)
+    end
+  end
+
+  test "update!" do
+    assert Keyword.update!([a: 1, b: 2, a: 3], :a, &(&1 * 2)) == [a: 2, b: 2]
+    assert Keyword.update!([a: 1, b: 2, c: 3], :b, &(&1 * 2)) == [a: 1, b: 4, c: 3]
+  end
+
+  test "replace" do
+    assert Keyword.replace([a: 1, b: 2, a: 3], :a, :new) == [a: :new, b: 2]
+    assert Keyword.replace([a: 1, b: 2, a: 3], :a, 1) == [a: 1, b: 2]
+    assert Keyword.replace([a: 1, b: 2, a: 3, b: 4], :a, 1) == [a: 1, b: 2, b: 4]
+    assert Keyword.replace([a: 1, b: 2, c: 3, b: 4], :b, :new) == [a: 1, b: :new, c: 3]
+    assert Keyword.replace([], :b, :new) == []
+    assert Keyword.replace([a: 1, b: 2, a: 3], :c, :new) == [a: 1, b: 2, a: 3]
+  end
+
+  test "replace!" do
+    assert Keyword.replace!([a: 1, b: 2, a: 3], :a, :new) == [a: :new, b: 2]
+    assert Keyword.replace!([a: 1, b: 2, a: 3], :a, 1) == [a: 1, b: 2]
+    assert Keyword.replace!([a: 1, b: 2, a: 3, b: 4], :a, 1) == [a: 1, b: 2, b: 4]
+    assert Keyword.replace!([a: 1, b: 2, c: 3, b: 4], :b, :new) == [a: 1, b: :new, c: 3]
+
+    assert_raise KeyError, "key :b not found in: []", fn ->
+      Keyword.replace!([], :b, :new)
+    end
+
+    assert_raise KeyError, "key :c not found in: [a: 1, b: 2, a: 3]", fn ->
+      Keyword.replace!([a: 1, b: 2, a: 3], :c, :new)
     end
   end
 
@@ -175,5 +204,28 @@ defmodule KeywordTest do
       error = assert_raise ArgumentError, fn -> Keyword.merge(arg1, arg2) end
       assert_raise ArgumentError, error.message, fn -> Keyword.merge(arg1, arg2, fun) end
     end
+  end
+
+  test "validate/2 raises on invalid arguments" do
+    assert_raise ArgumentError,
+                 "expected a keyword list as first argument, got invalid entry: :three",
+                 fn -> Keyword.validate([:three], one: 1, two: 2) end
+
+    assert_raise ArgumentError,
+                 "expected the second argument to be a list of atoms or tuples, got: 3",
+                 fn -> Keyword.validate([three: 3], [:three, 3, :two]) end
+  end
+
+  test "split_with/2" do
+    assert Keyword.split_with([], fn {_k, v} -> rem(v, 2) == 0 end) == {[], []}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {k, _v} -> k in [:a, :b] end) ==
+             {[a: "1", a: 1, b: 2], []}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {_k, v} -> v == 5 end) ==
+             {[], [a: "1", a: 1, b: 2]}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {k, v} -> k in [:a] and is_integer(v) end) ==
+             {[a: 1], [a: "1", b: 2]}
   end
 end

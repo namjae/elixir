@@ -4,12 +4,17 @@ defmodule Mix.SCM do
   behaviour required by any source code manager (SCM) used by Mix.
   """
 
+  @typedoc """
+  A module implementing the `Mix.SCM` behaviour.
+  """
+  @type t :: module
+
   @type opts :: keyword
 
   @doc """
   Returns a boolean if the dependency can be fetched
   or it is meant to be previously available in the
-  filesystem.
+  file system.
 
   Local dependencies (i.e. non-fetchable ones) are automatically
   recompiled every time the parent project is compiled.
@@ -96,13 +101,13 @@ defmodule Mix.SCM do
 
   The lock is sent via `opts[:lock]` but it may not always be
   available. In such cases, if the SCM requires a lock, it must
-  return `:lockmismatch`, otherwise simply `:ok`.
+  return `:mismatch`, otherwise simply `:ok`.
 
   Note the lock may also belong to another SCM and as such, an
   structural check is required. A structural mismatch should always
   return `:outdated`.
   """
-  @callback lock_status(opts) :: :mismatch | :outdated | :nolock | :ok
+  @callback lock_status(opts) :: :mismatch | :outdated | :ok
 
   @doc """
   Receives two options and must return `true` if they refer to the
@@ -123,21 +128,20 @@ defmodule Mix.SCM do
   until a matching one is found.
   """
   def available do
-    {:ok, scm} = Mix.State.fetch(:scm)
-    scm
+    Mix.State.get(:scm)
   end
 
   @doc """
   Prepends the given SCM module to the list of available SCMs.
   """
   def prepend(mod) when is_atom(mod) do
-    Mix.State.prepend(:scm, mod)
+    Mix.State.update(:scm, &[mod | List.delete(&1, mod)])
   end
 
   @doc """
   Appends the given SCM module to the list of available SCMs.
   """
   def append(mod) when is_atom(mod) do
-    Mix.State.append(:scm, mod)
+    Mix.State.update(:scm, &(List.delete(&1, mod) ++ [mod]))
   end
 end

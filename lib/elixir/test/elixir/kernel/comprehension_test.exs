@@ -98,8 +98,51 @@ defmodule Kernel.ComprehensionTest do
     assert Process.get(:into_halt)
   end
 
+  test "nested for comprehensions with unique values" do
+    assert for(x <- [1, 1, 2], uniq: true, do: for(y <- [3, 3], uniq: true, do: x * y)) == [
+             [3],
+             [6]
+           ]
+
+    assert for(<<x <- "abcabc">>,
+             uniq: true,
+             into: "",
+             do: for(<<y <- "zz">>, uniq: true, into: "", do: to_bin(x) <> to_bin(y))
+           ) == "azbzcz"
+  end
+
   test "for comprehensions with nilly filters" do
     assert for(x <- 1..3, nilly(), do: x * 2) == []
+  end
+
+  test "for comprehensions with unique option where value is not used" do
+    assert capture_io(:stderr, fn ->
+             assert capture_io(fn ->
+                      Code.eval_quoted(
+                        quote do
+                          for x <- [1, 2, 1, 2], uniq: true, do: IO.puts(x)
+                          nil
+                        end
+                      )
+                    end) ==
+                      "1\n2\n1\n2\n"
+           end) =~
+             "the :uniq option has no effect since the result of the for comprehension is not used"
+  end
+
+  test "for comprehensions with unique option where value is assigned to _" do
+    assert capture_io(:stderr, fn ->
+             assert capture_io(fn ->
+                      Code.eval_quoted(
+                        quote do
+                          _ = for x <- [1, 2, 1, 2], uniq: true, do: IO.puts(x)
+                          nil
+                        end
+                      )
+                    end) ==
+                      "1\n2\n1\n2\n"
+           end) =~
+             "the :uniq option has no effect since the result of the for comprehension is not used"
   end
 
   test "for comprehensions with errors on filters" do
@@ -133,6 +176,19 @@ defmodule Kernel.ComprehensionTest do
     assert for({_, _} = x <- [foo: :bar], do: x) == [foo: :bar]
   end
 
+  test "for comprehensions with shadowing" do
+    assert for(
+             a <-
+               (
+                 b = 1
+                 _ = b
+                 [1]
+               ),
+             b <- [2],
+             do: a + b
+           ) == [3]
+  end
+
   test "for comprehensions with binary, enum generators and filters" do
     assert for(x <- [1, 2, 3], <<(y <- <<4, 5, 6>>)>>, y / 2 == x, do: x * y) == [8, 18]
   end
@@ -143,8 +199,38 @@ defmodule Kernel.ComprehensionTest do
   end
 
   test "for comprehensions into binary" do
-    enum = 1..3
-    assert for(x <- enum, into: "", do: to_bin(x * 2)) == <<2, 4, 6>>
+    enum = 0..3
+
+    assert (for x <- enum, into: "" do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for x <- enum, into: "" do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+  end
+
+  test "for comprehensions into dynamic binary" do
+    enum = 0..3
+    into = ""
+
+    assert (for x <- enum, into: into do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for x <- enum, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+
+    into = <<7::size(1)>>
+
+    assert (for x <- enum, into: into do
+              to_bin(x * 2)
+            end) == <<7::size(1), 0, 2, 4, 6>>
+
+    assert (for x <- enum, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<7::size(1), 0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
   end
 
   test "for comprehensions where value is not used" do
@@ -196,6 +282,33 @@ defmodule Kernel.ComprehensionTest do
     assert IO.iodata_to_binary(Process.get(:into_cont)) == "roohkpmmfi"
   end
 
+  test "for comprehensions of map into map" do
+    enum = %{a: 2, b: 3}
+    assert for({k, v} <- enum, into: %{}, do: {k, v * v}) == %{a: 4, b: 9}
+  end
+
+  test "for comprehensions with reduce, generators and filters" do
+    acc =
+      for x <- 1..3, Integer.is_odd(x), <<y <- "hello">>, reduce: %{} do
+        acc -> Map.update(acc, x, [y], &[y | &1])
+      end
+
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
+  end
+
+  test "for comprehensions with matched reduce" do
+    acc =
+      for entry <- [1, 2, 3], reduce: {:ok, nil} do
+        {:ok, _} ->
+          {:ok, entry}
+
+        {:error, _} = error ->
+          error
+      end
+
+    assert acc == {:ok, 3}
+  end
+
   ## List generators (inlined by the compiler)
 
   test "list for comprehensions" do
@@ -238,14 +351,39 @@ defmodule Kernel.ComprehensionTest do
     assert for(x <- enum, into: [], do: x * 2) == [2, 4, 6]
   end
 
-  test "list for comprehensions into binaries" do
-    enum = [1, 2, 3]
-    assert for(x <- enum, into: "", do: to_bin(x * 2)) == <<2, 4, 6>>
+  test "list for comprehensions into binary" do
+    enum = [0, 1, 2, 3]
+
+    assert (for x <- enum, into: "" do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for x <- enum, into: "" do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
   end
 
-  test "map for comprehensions into map" do
-    enum = %{a: 2, b: 3}
-    assert for({k, v} <- enum, into: %{}, do: {k, v * v}) == %{a: 4, b: 9}
+  test "list for comprehensions into dynamic binary" do
+    enum = [0, 1, 2, 3]
+    into = ""
+
+    assert (for x <- enum, into: into do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for x <- enum, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+
+    into = <<7::size(1)>>
+
+    assert (for x <- enum, into: into do
+              to_bin(x * 2)
+            end) == <<7::size(1), 0, 2, 4, 6>>
+
+    assert (for x <- enum, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<7::size(1), 0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
   end
 
   test "list for comprehensions where value is not used" do
@@ -255,6 +393,15 @@ defmodule Kernel.ComprehensionTest do
              for x <- enum, do: IO.puts(x)
              nil
            end) == "1\n2\n3\n"
+  end
+
+  test "list for comprehensions with reduce, generators and filters" do
+    acc =
+      for x <- [1, 2, 3], Integer.is_odd(x), <<y <- "hello">>, reduce: %{} do
+        acc -> Map.update(acc, x, [y], &[y | &1])
+      end
+
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
   end
 
   ## Binary generators (inlined by the compiler)
@@ -278,15 +425,88 @@ defmodule Kernel.ComprehensionTest do
     assert for(<<x <- bin>>, into: [], do: x * 2) == [2, 4, 6]
   end
 
-  test "binary for comprehensions into binaries" do
-    bin = <<1, 2, 3>>
-    assert for(<<x <- bin>>, into: "", do: to_bin(x * 2)) == <<2, 4, 6>>
+  test "binary for comprehensions into binary" do
+    bin = <<0, 1, 2, 3>>
+
+    assert (for <<x <- bin>>, into: "" do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for <<x <- bin>>, into: "" do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+  end
+
+  test "binary for comprehensions into dynamic binary" do
+    bin = <<0, 1, 2, 3>>
+    into = ""
+
+    assert (for <<x <- bin>>, into: into do
+              to_bin(x * 2)
+            end) == <<0, 2, 4, 6>>
+
+    assert (for <<x <- bin>>, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+
+    into = <<7::size(1)>>
+
+    assert (for <<x <- bin>>, into: into do
+              to_bin(x * 2)
+            end) == <<7::size(1), 0, 2, 4, 6>>
+
+    assert (for <<x <- bin>>, into: into do
+              if Integer.is_even(x), do: <<x::size(2)>>, else: <<x::size(1)>>
+            end) == <<7::size(1), 0::size(2), 1::size(1), 2::size(2), 3::size(1)>>
+  end
+
+  test "binary for comprehensions with literal matches" do
+    # Integers
+    bin = <<1, 2, 1, 3, 1, 4>>
+    assert for(<<1, x <- bin>>, into: "", do: to_bin(x)) == <<2, 3, 4>>
+    assert for(<<1, x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2, 3 => 3, 4 => 4}
+
+    bin = <<1, 2, 3, 1, 4>>
+    assert for(<<1, x <- bin>>, into: "", do: to_bin(x)) == <<2>>
+    assert for(<<1, x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2}
+
+    # Floats
+    bin = <<1.0, 2, 1.0, 3, 1.0, 4>>
+    assert for(<<1.0, x <- bin>>, into: "", do: to_bin(x)) == <<2, 3, 4>>
+    assert for(<<1.0, x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2, 3 => 3, 4 => 4}
+
+    bin = <<1.0, 2, 3, 1.0, 4>>
+    assert for(<<1.0, x <- bin>>, into: "", do: to_bin(x)) == <<2>>
+    assert for(<<1.0, x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2}
+
+    # Binaries
+    bin = <<"foo", 2, "foo", 3, "foo", 4>>
+    assert for(<<"foo", x <- bin>>, into: "", do: to_bin(x)) == <<2, 3, 4>>
+    assert for(<<"foo", x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2, 3 => 3, 4 => 4}
+
+    bin = <<"foo", 2, 3, "foo", 4>>
+    assert for(<<"foo", x <- bin>>, into: "", do: to_bin(x)) == <<2>>
+    assert for(<<"foo", x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2}
+
+    bin = <<"foo", 2, 3, 4, "foo", 5>>
+    assert for(<<"foo", x <- bin>>, into: "", do: to_bin(x)) == <<2>>
+    assert for(<<"foo", x <- bin>>, into: %{}, do: {x, x}) == %{2 => 2}
   end
 
   test "binary for comprehensions with variable size" do
     s = 16
     bin = <<1, 2, 3, 4, 5, 6>>
     assert for(<<x::size(s) <- bin>>, into: "", do: to_bin(div(x, 2))) == <<129, 130, 131>>
+
+    # Aligned
+    bin = <<8, 1, 16, 2, 3>>
+    assert for(<<s, x::size(s) <- bin>>, into: "", do: <<x::size(s)>>) == <<1, 2, 3>>
+    assert for(<<s, x::size(s) <- bin>>, into: %{}, do: {s, x}) == %{8 => 1, 16 => 515}
+
+    # Unaligned
+    bin = <<8, 1, 32, 2, 3>>
+    assert for(<<s, x::size(s) <- bin>>, into: "", do: <<x::size(s)>>) == <<1>>
+    assert for(<<s, x::size(s) <- bin>>, into: %{}, do: {s, x}) == %{8 => 1}
   end
 
   test "binary for comprehensions where value is not used" do
@@ -296,5 +516,16 @@ defmodule Kernel.ComprehensionTest do
              for <<x <- bin>>, do: IO.puts(x)
              nil
            end) == "1\n2\n3\n"
+  end
+
+  test "binary for comprehensions with reduce, generators and filters" do
+    bin = <<1, 2, 3>>
+
+    acc =
+      for <<x <- bin>>, Integer.is_odd(x), <<y <- "hello">>, reduce: %{} do
+        acc -> Map.update(acc, x, [y], &[y | &1])
+      end
+
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
   end
 end

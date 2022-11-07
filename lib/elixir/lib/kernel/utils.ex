@@ -22,16 +22,52 @@ defmodule Kernel.Utils do
   defp destructure_nil(count), do: [nil | destructure_nil(count - 1)]
 
   @doc """
-  Callback for defdelegate.
+  Callback for defdelegate entry point.
   """
-  def defdelegate(fun, opts) when is_list(opts) do
-    # TODO: Remove by 2.0
+  def defdelegate_all(funs, opts, env) do
+    to = Keyword.get(opts, :to) || raise ArgumentError, "expected to: to be given as argument"
+    as = Keyword.get(opts, :as)
+
+    if to == env.module and is_nil(as) do
+      raise ArgumentError,
+            "defdelegate function is calling itself, which will lead to an infinite loop. You should either change the value of the :to option or specify the :as option"
+    end
+
+    if is_list(funs) do
+      IO.warn(
+        "passing a list to Kernel.defdelegate/2 is deprecated, please define each delegate separately",
+        Macro.Env.stacktrace(env)
+      )
+    end
+
+    if Keyword.has_key?(opts, :append_first) do
+      IO.warn(
+        "Kernel.defdelegate/2 :append_first option is deprecated",
+        Macro.Env.stacktrace(env)
+      )
+    end
+
+    to
+  end
+
+  @doc """
+  Callback for each function in defdelegate.
+  """
+  def defdelegate_each(fun, opts) when is_list(opts) do
+    # TODO: Remove on v2.0
     append_first? = Keyword.get(opts, :append_first, false)
 
     {name, args} =
-      case Macro.decompose_call(fun) do
-        {_, _} = pair -> pair
-        _ -> raise ArgumentError, "invalid syntax in defdelegate #{Macro.to_string(fun)}"
+      case fun do
+        {:when, _, [_left, right]} ->
+          raise ArgumentError,
+                "guards are not allowed in defdelegate/2, got: when #{Macro.to_string(right)}"
+
+        _ ->
+          case Macro.decompose_call(fun) do
+            {_, _} = pair -> pair
+            _ -> raise ArgumentError, "invalid syntax in defdelegate #{Macro.to_string(fun)}"
+          end
       end
 
     as = Keyword.get(opts, :as, name)
@@ -64,7 +100,15 @@ defmodule Kernel.Utils do
   @doc """
   Callback for defstruct.
   """
-  def defstruct(module, fields) do
+  def defstruct(module, fields, bootstrapped?) do
+    {set, bag} = :elixir_module.data_tables(module)
+
+    if :ets.member(set, :__struct__) do
+      raise ArgumentError,
+            "defstruct has already been called for " <>
+              "#{Kernel.inspect(module)}, defstruct can only be called once per module"
+    end
+
     case fields do
       fs when is_list(fs) ->
         :ok
@@ -76,7 +120,7 @@ defmodule Kernel.Utils do
     mapper = fn
       {key, val} when is_atom(key) ->
         try do
-          Macro.escape(val)
+          :elixir_quote.escape(val, false, :none)
         rescue
           e in [ArgumentError] ->
             raise ArgumentError, "invalid value for struct field #{key}, " <> Exception.message(e)
@@ -92,7 +136,23 @@ defmodule Kernel.Utils do
     end
 
     fields = :lists.map(mapper, fields)
-    enforce_keys = List.wrap(Module.get_attribute(module, :enforce_keys))
+
+    enforce_keys =
+      case :ets.lookup(set, :enforce_keys) do
+        [{_, enforce_keys, _, _}] when is_list(enforce_keys) ->
+          :ets.update_element(set, :enforce_keys, {3, :used})
+          enforce_keys
+
+        [{_, enforce_key, _, _}] ->
+          :ets.update_element(set, :enforce_keys, {3, :used})
+          [enforce_key]
+
+        [] ->
+          []
+      end
+
+    # TODO: Make it raise on v2.0
+    warn_on_duplicate_struct_key(:lists.keysort(1, fields))
 
     foreach = fn
       key when is_atom(key) ->
@@ -103,18 +163,90 @@ defmodule Kernel.Utils do
     end
 
     :lists.foreach(foreach, enforce_keys)
-
     struct = :maps.put(:__struct__, module, :maps.from_list(fields))
-    {struct, enforce_keys, Module.get_attribute(module, :derive)}
+
+    body =
+      case bootstrapped? do
+        true ->
+          case enforce_keys do
+            [] ->
+              quote do
+                Enum.reduce(kv, @__struct__, fn {key, val}, map ->
+                  %{map | key => val}
+                end)
+              end
+
+            _ ->
+              quote do
+                {map, keys} =
+                  Enum.reduce(kv, {@__struct__, unquote(enforce_keys)}, fn
+                    {key, val}, {map, keys} ->
+                      {%{map | key => val}, List.delete(keys, key)}
+                  end)
+
+                case keys do
+                  [] ->
+                    map
+
+                  _ ->
+                    raise ArgumentError,
+                          "the following keys must also be given when building " <>
+                            "struct #{inspect(__MODULE__)}: #{inspect(keys)}"
+                end
+              end
+          end
+
+        false ->
+          quote do
+            :lists.foldl(
+              fn {key, val}, acc -> %{acc | key => val} end,
+              @__struct__,
+              kv
+            )
+          end
+      end
+
+    case enforce_keys -- :maps.keys(struct) do
+      [] ->
+        # The __struct__ field is used for expansion and for loading remote structs
+        :ets.insert(set, {:__struct__, struct, nil, []})
+
+        # Store all field metadata to go into __info__(:struct)
+        mapper = fn {key, val} ->
+          %{field: key, default: val, required: :lists.member(key, enforce_keys)}
+        end
+
+        :ets.insert(set, {{:elixir, :struct}, :lists.map(mapper, fields)})
+        derive = :lists.map(fn {_, value} -> value end, :ets.take(bag, {:accumulate, :derive}))
+        {struct, :lists.reverse(derive), quote(do: kv), body}
+
+      error_keys ->
+        raise ArgumentError,
+              "@enforce_keys required keys (#{inspect(error_keys)}) that are not defined in defstruct: " <>
+                "#{inspect(fields)}"
+    end
+  end
+
+  defp warn_on_duplicate_struct_key([]) do
+    :ok
+  end
+
+  defp warn_on_duplicate_struct_key([{key, _} | [{key, _} | _] = rest]) do
+    IO.warn("duplicate key #{inspect(key)} found in struct")
+    warn_on_duplicate_struct_key(rest)
+  end
+
+  defp warn_on_duplicate_struct_key([_ | rest]) do
+    warn_on_duplicate_struct_key(rest)
   end
 
   @doc """
   Announcing callback for defstruct.
   """
   def announce_struct(module) do
-    case :erlang.get(:elixir_compiler_pid) do
+    case :erlang.get(:elixir_compiler_info) do
       :undefined -> :ok
-      pid -> send(pid, {:struct_available, module})
+      {pid, _} -> send(pid, {:available, :struct, module})
     end
   end
 
@@ -125,8 +257,8 @@ defmodule Kernel.Utils do
     RuntimeError.exception(msg)
   end
 
-  def raise(atom) when is_atom(atom) do
-    atom.exception([])
+  def raise(module) when is_atom(module) do
+    module.exception([])
   end
 
   def raise(%_{__exception__: true} = exception) do
@@ -135,8 +267,8 @@ defmodule Kernel.Utils do
 
   def raise(other) do
     ArgumentError.exception(
-      "raise/1 expects a module name, string or exception as " <>
-        "the first argument, got: #{inspect(other)}"
+      "raise/1 and reraise/2 expect a module name, string or exception " <>
+        "as the first argument, got: #{inspect(other)}"
     )
   end
 
@@ -157,28 +289,34 @@ defmodule Kernel.Utils do
   macro.
 
   Secondly, if the expression is being used outside of a guard, we want to unquote
-  `value`––but only once, and then re-use the unquoted form throughout the expression.
+  `value`, but only once, and then re-use the unquoted form throughout the expression.
 
   This helper does exactly that: takes the AST for an expression and a list of
   variable references it should be aware of, and rewrites it into a new expression
   that checks for its presence in a guard, then unquotes the variable references as
   appropriate.
 
-  The resulting transformation looks something like this:
+  The following code
 
-      > expression = quote do: is_integer(value) and rem(value, 2) == 0
-      > variable_references = [value: Elixir]
-      > Kernel.Utils.defguard(expression, variable_references) |> Macro.to_string |> IO.puts
+      expression = quote do: is_integer(value) and rem(value, 2) == 0
+      variable_references = [value: Elixir]
+      Kernel.Utils.defguard(expression, variable_references) |> Macro.to_string() |> IO.puts()
 
-      case Macro.Env.in_guard? __CALLER__ do
-        true -> quote do
-          is_integer(unquote(value)) and rem(unquote(value), 2) == 0
-        end
-        false -> quote do
-          value = unquote(value)
-          is_integer(value) and rem(value, 2) == 0
-        end
+  would print a code similar to:
+
+      case Macro.Env.in_guard?(__CALLER__) do
+        true ->
+          quote do
+            is_integer(unquote(value)) and rem(unquote(value), 2) == 0
+          end
+
+        false ->
+          quote do
+            value = unquote(value)
+            is_integer(value) and rem(value, 2) == 0
+          end
       end
+
   """
   defmacro defguard(args, expr) do
     defguard(args, expr, __CALLER__)
@@ -187,7 +325,8 @@ defmodule Kernel.Utils do
   @spec defguard([Macro.t()], Macro.t(), Macro.Env.t()) :: Macro.t()
   def defguard(args, expr, env) do
     {^args, vars} = extract_refs_from_args(args)
-    _valid? = :elixir_expand.expand(expr, %{env | context: :guard, vars: vars})
+    env = :elixir_env.with_vars(%{env | context: :guard}, vars)
+    {expr, _, _} = :elixir_expand.expand(expr, :elixir_env.env_to_ex(env), env)
 
     quote do
       case Macro.Env.in_guard?(__CALLER__) do
@@ -199,19 +338,19 @@ defmodule Kernel.Utils do
 
   defp extract_refs_from_args(args) do
     Macro.postwalk(args, [], fn
-      {ref, _meta, context} = var, acc when is_atom(ref) and is_atom(context) ->
-        {var, [{ref, context} | acc]}
+      {ref, meta, context} = var, acc when is_atom(ref) and is_atom(context) ->
+        {var, [{ref, var_context(meta, context)} | acc]}
 
       node, acc ->
         {node, acc}
     end)
   end
 
-  # Finds every reference to `refs` in `expr` and wraps them in an unquote.
-  defp unquote_every_ref(expr, refs) do
-    Macro.postwalk(expr, fn
-      {ref, _meta, context} = var when is_atom(ref) and is_atom(context) ->
-        case {ref, context} in refs do
+  # Finds every reference to `refs` in `guard` and wraps them in an unquote.
+  defp unquote_every_ref(guard, refs) do
+    Macro.postwalk(guard, fn
+      {ref, meta, context} = var when is_atom(ref) and is_atom(context) ->
+        case {ref, var_context(meta, context)} in refs do
           true -> literal_unquote(var)
           false -> var
         end
@@ -221,31 +360,54 @@ defmodule Kernel.Utils do
     end)
   end
 
-  # Prefaces `expr` with unquoted versions of `refs`.
-  defp unquote_refs_once(expr, refs) do
-    {^expr, used_refs} =
-      Macro.postwalk(expr, [], fn
-        {ref, _meta, context} = var, acc when is_atom(ref) and is_atom(context) ->
-          case {ref, context} in refs and {ref, context} not in acc do
-            true -> {var, [{ref, context} | acc]}
-            false -> {var, acc}
+  # Prefaces `guard` with unquoted versions of `refs`.
+  defp unquote_refs_once(guard, refs) do
+    {guard, used_refs} =
+      Macro.postwalk(guard, %{}, fn
+        {ref, meta, context} = var, acc when is_atom(ref) and is_atom(context) ->
+          pair = {ref, var_context(meta, context)}
+
+          case pair in refs do
+            true ->
+              case acc do
+                %{^pair => {new_var, _}} ->
+                  {new_var, acc}
+
+                %{} ->
+                  generated = String.to_atom("arg" <> Integer.to_string(map_size(acc) + 1))
+                  new_var = Macro.var(generated, Elixir)
+                  {new_var, Map.put(acc, pair, {new_var, var})}
+              end
+
+            false ->
+              {var, acc}
           end
 
         node, acc ->
           {node, acc}
       end)
 
-    for {ref, context} <- :lists.reverse(used_refs) do
-      var = {ref, [], context}
-      quote do: unquote(var) = unquote(literal_unquote(var))
-    end ++ List.wrap(expr)
+    all_used = for ref <- :lists.reverse(refs), used = :maps.get(ref, used_refs, nil), do: used
+    {vars, exprs} = :lists.unzip(all_used)
+
+    quote do
+      {unquote_splicing(vars)} = {unquote_splicing(Enum.map(exprs, &literal_unquote/1))}
+      unquote(guard)
+    end
   end
 
   defp literal_quote(ast) do
-    {:quote, [], [[do: {:__block__, [], List.wrap(ast)}]]}
+    {:quote, [], [[do: ast]]}
   end
 
   defp literal_unquote(ast) do
     {:unquote, [], List.wrap(ast)}
+  end
+
+  defp var_context(meta, kind) do
+    case :lists.keyfind(:counter, 1, meta) do
+      {:counter, counter} -> counter
+      false -> kind
+    end
   end
 end

@@ -1,11 +1,29 @@
 {application, elixir,
 [{description, "elixir"},
- {vsn, "1.5.2"},
- {modules, [
-	elixir
-  ]},
- {registered, [elixir_config, elixir_code_server]},
+ {vsn, '$will-be-replaced'},
+ {modules, '$will-be-replaced'},
+ {registered, [elixir_sup, elixir_config, elixir_code_server]},
  {applications, [kernel,stdlib,compiler]},
  {mod, {elixir,[]}},
- {env, [{ansi_enabled, false}]}
+ {env, [
+  {ansi_enabled, false},
+  {ansi_syntax_colors, [
+    {atom, cyan},
+    {binary, default_color},
+    {boolean, magenta},
+    {charlist, yellow},
+    {list, default_color},
+    {map, default_color},
+    {nil, magenta},
+    {number, yellow},
+    {string, green},
+    {tuple, default_color},
+    {variable, light_cyan},
+    {call, light_white},
+    {operator, light_white}
+  ]},
+  {check_endianness, true},
+  {dbg_callback, {'Elixir.Macro', dbg, []}},
+  {time_zone_database, 'Elixir.Calendar.UTCOnlyTimeZoneDatabase'}
+ ]}
 ]}.

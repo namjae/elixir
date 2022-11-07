@@ -1,18 +1,23 @@
 defmodule Behaviour do
   @moduledoc """
-  WARNING: this module is deprecated.
+  Mechanism for handling behaviours.
 
-  Instead of `defcallback/1` and `defmacrocallback/1`, the `@callback` and
-  `@macrocallback` module attributes can be used (respectively). See the
-  documentation for `Module` for more information on these attributes.
+  This module is deprecated. Instead of `defcallback/1` and
+  `defmacrocallback/1`, the `@callback` and `@macrocallback`
+  module attributes can be used respectively. See the
+  documentation for `Module` for more information on these
+  attributes.
 
   Instead of `MyModule.__behaviour__(:callbacks)`,
   `MyModule.behaviour_info(:callbacks)` can be used.
   """
 
+  @moduledoc deprecated: "Use @callback and @macrocallback attributes instead"
+
   @doc """
   Defines a function callback according to the given type specification.
   """
+  @deprecated "Use the @callback module attribute instead"
   defmacro defcallback(spec) do
     do_defcallback(:def, split_spec(spec, quote(do: term)))
   end
@@ -20,11 +25,12 @@ defmodule Behaviour do
   @doc """
   Defines a macro callback according to the given type specification.
   """
+  @deprecated "Use the @macrocallback module attribute instead"
   defmacro defmacrocallback(spec) do
     do_defcallback(:defmacro, split_spec(spec, quote(do: Macro.t())))
   end
 
-  defp split_spec({:when, _, [{:::, _, [spec, return]}, guard]}, _default) do
+  defp split_spec({:when, _, [{:"::", _, [spec, return]}, guard]}, _default) do
     {spec, return, guard}
   end
 
@@ -32,7 +38,7 @@ defmodule Behaviour do
     {spec, default, guard}
   end
 
-  defp split_spec({:::, _, [spec, return]}, _default) do
+  defp split_spec({:"::", _, [spec, return]}, _default) do
     {spec, return, []}
   end
 
@@ -52,7 +58,7 @@ defmodule Behaviour do
 
   defp do_callback(kind, name, args, return, guards) do
     fun = fn
-      {:::, _, [left, right]} ->
+      {:"::", _, [left, right]} ->
         ensure_not_default(left)
         ensure_not_default(right)
         left
@@ -97,13 +103,19 @@ defmodule Behaviour do
       end
 
       def __behaviour__(:docs) do
-        for {tuple, line, kind, docs} <- Code.get_docs(__MODULE__, :callback_docs) do
+        {:docs_v1, _, :elixir, _, _, _, docs} = Code.fetch_docs(__MODULE__)
+
+        for {{kind, name, arity}, line, _, doc, _} <- docs, kind in [:callback, :macrocallback] do
           case kind do
-            :callback -> {tuple, line, :def, docs}
-            :macrocallback -> {tuple, line, :defmacro, docs}
+            :callback -> {{name, arity}, line, :def, __behaviour__doc_value(doc)}
+            :macrocallback -> {{name, arity}, line, :defmacro, __behaviour__doc_value(doc)}
           end
         end
       end
+
+      defp __behaviour__doc_value(%{"en" => doc}), do: doc
+      defp __behaviour__doc_value(:hidden), do: false
+      defp __behaviour__doc_value(_), do: nil
 
       import unquote(__MODULE__)
     end

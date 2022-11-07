@@ -9,94 +9,92 @@ defmodule IEx.AutocompleteTest do
     :ok
   end
 
-  defmodule MyServer do
-    def evaluator do
-      {Process.get(:evaluator), self()}
-    end
-  end
-
   defp eval(line) do
     ExUnit.CaptureIO.capture_io(fn ->
-      {evaluator, _} = MyServer.evaluator()
+      evaluator = Process.get(:evaluator)
       Process.group_leader(evaluator, Process.group_leader())
-      send(evaluator, {:eval, self(), line <> "\n", %IEx.State{}})
-      assert_receive {:evaled, _, _}
+      send(evaluator, {:eval, self(), line <> "\n", 1, ""})
+      assert_receive {:evaled, _, _, _}
     end)
   end
 
   defp expand(expr) do
-    IEx.Autocomplete.expand(Enum.reverse(expr), MyServer)
+    IEx.Autocomplete.expand(Enum.reverse(expr), self())
   end
 
   test "Erlang module completion" do
-    assert expand(':zl') == {:yes, 'ib', []}
+    assert expand(~c":zl") == {:yes, ~c"ib", []}
   end
 
   test "Erlang module no completion" do
-    assert expand(':unknown') == {:no, '', []}
-    assert expand('Enum:') == {:no, '', []}
+    assert expand(~c":unknown") == {:no, ~c"", []}
   end
 
   test "Erlang module multiple values completion" do
-    {:yes, '', list} = expand(':user')
-    assert 'user' in list
-    assert 'user_drv' in list
+    {:yes, ~c"", list} = expand(~c":user")
+    assert ~c"user" in list
+    assert ~c"user_drv" in list
   end
 
   test "Erlang root completion" do
-    {:yes, '', list} = expand(':')
+    {:yes, ~c"", list} = expand(~c":")
     assert is_list(list)
-    assert 'lists' in list
+    assert ~c"lists" in list
+    assert ~c"Elixir.List" not in list
   end
 
   test "Elixir proxy" do
-    {:yes, '', list} = expand('E')
-    assert 'Elixir' in list
+    {:yes, ~c"", list} = expand(~c"E")
+    assert ~c"Elixir" in list
   end
 
   test "Elixir completion" do
-    assert expand('En') == {:yes, 'um', []}
-    assert expand('Enumera') == {:yes, 'ble', []}
+    assert expand(~c"En") == {:yes, ~c"um", []}
+    assert expand(~c"Enumera") == {:yes, ~c"ble", []}
   end
 
   test "Elixir type completion" do
-    assert expand('t :gen_ser') == {:yes, 'ver', []}
-    assert expand('t String') == {:yes, '', ['String', 'StringIO']}
-    assert expand('t String.') == {:yes, '', ['codepoint/0', 'grapheme/0', 'pattern/0', 't/0']}
-    assert expand('t String.grap') == {:yes, 'heme', []}
-    assert expand('t  String.grap') == {:yes, 'heme', []}
+    assert expand(~c"t :gen_ser") == {:yes, ~c"ver", []}
+    assert expand(~c"t String") == {:yes, ~c"", [~c"String", ~c"StringIO"]}
+
+    assert expand(~c"t String.") ==
+             {:yes, ~c"", [~c"codepoint/0", ~c"grapheme/0", ~c"pattern/0", ~c"t/0"]}
+
+    assert expand(~c"t String.grap") == {:yes, ~c"heme", []}
+    assert expand(~c"t  String.grap") == {:yes, ~c"heme", []}
+    assert {:yes, ~c"", [~c"date_time/0" | _]} = expand(~c"t :file.")
+    assert expand(~c"t :file.n") == {:yes, ~c"ame", []}
   end
 
   test "Elixir callback completion" do
-    assert expand('b :strin') == {:yes, 'g', []}
-    assert expand('b String') == {:yes, '', ['String', 'StringIO']}
-    assert expand('b String.') == {:no, '', []}
-    assert expand('b Access.') == {:yes, '', ['fetch/2', 'get/3', 'get_and_update/3', 'pop/2']}
-    assert expand('b GenServer.term') == {:yes, 'inate', []}
-    assert expand('b   GenServer.term') == {:yes, 'inate', []}
+    assert expand(~c"b :strin") == {:yes, ~c"g", []}
+    assert expand(~c"b String") == {:yes, ~c"", [~c"String", ~c"StringIO"]}
+    assert expand(~c"b String.") == {:no, ~c"", []}
+    assert expand(~c"b Access.") == {:yes, ~c"", [~c"fetch/2", ~c"get_and_update/3", ~c"pop/2"]}
+    assert expand(~c"b GenServer.term") == {:yes, ~c"inate", []}
+    assert expand(~c"b   GenServer.term") == {:yes, ~c"inate", []}
+    assert expand(~c"b :gen_server.handle_in") == {:yes, ~c"fo", []}
   end
 
   test "Elixir helper completion with parentheses" do
-    assert expand('t(:gen_ser') == {:yes, 'ver', []}
-    assert expand('t(String') == {:yes, '', ['String', 'StringIO']}
-    assert expand('t(String.') == {:yes, '', ['codepoint/0', 'grapheme/0', 'pattern/0', 't/0']}
-    assert expand('t(String.grap') == {:yes, 'heme', []}
-  end
+    assert expand(~c"t(:gen_ser") == {:yes, ~c"ver", []}
+    assert expand(~c"t(String") == {:yes, ~c"", [~c"String", ~c"StringIO"]}
 
-  test "do not activate Elixir helper completion no operators" do
-    assert expand('t = String.co') == {:yes, '', ['codepoints/1', 'contains?/2']}
-    assert expand('t > String.grap') == {:yes, 'hemes', []}
+    assert expand(~c"t(String.") ==
+             {:yes, ~c"", [~c"codepoint/0", ~c"grapheme/0", ~c"pattern/0", ~c"t/0"]}
+
+    assert expand(~c"t(String.grap") == {:yes, ~c"heme", []}
   end
 
   test "Elixir completion with self" do
-    assert expand('Enumerable') == {:yes, '.', []}
+    assert expand(~c"Enumerable") == {:yes, ~c".", []}
   end
 
   test "Elixir completion on modules from load path" do
-    assert expand('Str') == {:yes, [], ['Stream', 'String', 'StringIO']}
-    assert expand('Ma') == {:yes, '', ['Macro', 'Map', 'MapSet', 'MatchError']}
-    assert expand('Dic') == {:yes, 't', []}
-    assert expand('Ex') == {:yes, [], ['ExUnit', 'Exception']}
+    assert expand(~c"Str") == {:yes, [], [~c"Stream", ~c"String", ~c"StringIO"]}
+    assert expand(~c"Ma") == {:yes, ~c"", [~c"Macro", ~c"Map", ~c"MapSet", ~c"MatchError"]}
+    assert expand(~c"Dic") == {:yes, ~c"t", []}
+    assert expand(~c"Ex") == {:yes, [], [~c"ExUnit", ~c"Exception"]}
   end
 
   test "Elixir no completion for underscored functions with no doc" do
@@ -108,8 +106,8 @@ defmodule IEx.AutocompleteTest do
       end
 
     File.write!("Elixir.Sample.beam", bytecode)
-    assert Code.get_docs(Sample, :docs)
-    assert expand('Sample._') == {:yes, '_bar__', []}
+    assert {:docs_v1, _, _, _, _, _, _} = Code.fetch_docs(Sample)
+    assert expand(~c"Sample._") == {:yes, ~c"_bar__", []}
   after
     File.rm("Elixir.Sample.beam")
     :code.purge(Sample)
@@ -117,11 +115,11 @@ defmodule IEx.AutocompleteTest do
   end
 
   test "Elixir no completion for default argument functions with doc set to false" do
-    {:yes, '', available} = expand('String.')
-    refute Enum.member?(available, 'rjust/2')
-    assert Enum.member?(available, 'replace/3')
+    {:yes, ~c"", available} = expand(~c"String.")
+    refute Enum.member?(available, ~c"rjust/2")
+    assert Enum.member?(available, ~c"replace/3")
 
-    assert expand('String.r') == {:yes, 'e', []}
+    assert expand(~c"String.r") == {:yes, ~c"e", []}
 
     {:module, _, bytecode, _} =
       defmodule Elixir.DefaultArgumentFunctions do
@@ -147,13 +145,15 @@ defmodule IEx.AutocompleteTest do
       end
 
     File.write!("Elixir.DefaultArgumentFunctions.beam", bytecode)
-    assert Code.get_docs(DefaultArgumentFunctions, :docs)
+    assert {:docs_v1, _, _, _, _, _, _} = Code.fetch_docs(DefaultArgumentFunctions)
 
-    functions_list = ['bar/0', 'biz/2', 'biz/3', 'foo/1', 'foo/2', 'foo/3']
-    assert expand('DefaultArgumentFunctions.') == {:yes, '', functions_list}
+    functions_list = [~c"bar/0", ~c"biz/2", ~c"biz/3", ~c"foo/1", ~c"foo/2", ~c"foo/3"]
+    assert expand(~c"DefaultArgumentFunctions.") == {:yes, ~c"", functions_list}
 
-    assert expand('DefaultArgumentFunctions.bi') == {:yes, 'z', []}
-    assert expand('DefaultArgumentFunctions.foo') == {:yes, '', ['foo/1', 'foo/2', 'foo/3']}
+    assert expand(~c"DefaultArgumentFunctions.bi") == {:yes, ~c"z", []}
+
+    assert expand(~c"DefaultArgumentFunctions.foo") ==
+             {:yes, ~c"", [~c"foo/1", ~c"foo/2", ~c"foo/3"]}
   after
     File.rm("Elixir.DefaultArgumentFunctions.beam")
     :code.purge(DefaultArgumentFunctions)
@@ -161,123 +161,159 @@ defmodule IEx.AutocompleteTest do
   end
 
   test "Elixir no completion" do
-    assert expand('.') == {:no, '', []}
-    assert expand('Xyz') == {:no, '', []}
-    assert expand('x.Foo') == {:no, '', []}
-    assert expand('x.Foo.get_by') == {:no, '', []}
+    assert expand(~c".") == {:no, ~c"", []}
+    assert expand(~c"Xyz") == {:no, ~c"", []}
+    assert expand(~c"x.Foo") == {:no, ~c"", []}
+    assert expand(~c"x.Foo.get_by") == {:no, ~c"", []}
+    assert expand(~c"@foo.bar") == {:no, ~c"", []}
   end
 
   test "Elixir root submodule completion" do
-    assert expand('Elixir.Acce') == {:yes, 'ss', []}
+    assert expand(~c"Elixir.Acce") == {:yes, ~c"ss", []}
   end
 
   test "Elixir submodule completion" do
-    assert expand('String.Cha') == {:yes, 'rs', []}
+    assert expand(~c"String.Cha") == {:yes, ~c"rs", []}
   end
 
   test "Elixir submodule no completion" do
-    assert expand('IEx.Xyz') == {:no, '', []}
+    assert expand(~c"IEx.Xyz") == {:no, ~c"", []}
   end
 
   test "function completion" do
-    assert expand('System.ve') == {:yes, 'rsion', []}
-    assert expand(':ets.fun2') == {:yes, 'ms', []}
+    assert expand(~c"System.ve") == {:yes, ~c"rsion", []}
+    assert expand(~c":ets.fun2") == {:yes, ~c"ms", []}
   end
 
   test "function completion with arity" do
-    assert expand('String.printable?') == {:yes, '', ['printable?/1', 'printable?/2']}
-    assert expand('String.printable?/') == {:yes, '', ['printable?/1', 'printable?/2']}
+    assert expand(~c"String.printable?") == {:yes, ~c"", [~c"printable?/1", ~c"printable?/2"]}
+    assert expand(~c"String.printable?/") == {:yes, ~c"", [~c"printable?/1", ~c"printable?/2"]}
+
+    assert expand(~c"Enum.count") ==
+             {:yes, ~c"", [~c"count/1", ~c"count/2", ~c"count_until/2", ~c"count_until/3"]}
+
+    assert expand(~c"Enum.count/") == {:yes, ~c"", [~c"count/1", ~c"count/2"]}
+  end
+
+  test "operator completion" do
+    assert expand(~c"+") == {:yes, ~c"", [~c"+/1", ~c"+/2", ~c"++/2"]}
+    assert expand(~c"+/") == {:yes, ~c"", [~c"+/1", ~c"+/2"]}
+    assert expand(~c"++/") == {:yes, ~c"", [~c"++/2"]}
+  end
+
+  test "sigil completion" do
+    {:yes, ~c"", sigils} = expand(~c"~")
+    assert ~c"~C (sigil_C)" in sigils
+    {:yes, ~c"", sigils} = expand(~c"~r")
+    assert ~c"\"" in sigils
+    assert ~c"(" in sigils
   end
 
   test "function completion using a variable bound to a module" do
     eval("mod = String")
-    assert expand('mod.print') == {:yes, 'able?', []}
+    assert expand(~c"mod.print") == {:yes, ~c"able?", []}
   end
 
   test "map atom key completion is supported" do
     eval("map = %{foo: 1, bar_1: 23, bar_2: 14}")
-    assert expand('map.f') == {:yes, 'oo', []}
-    assert expand('map.b') == {:yes, 'ar_', []}
-    assert expand('map.bar_') == {:yes, '', ['bar_1', 'bar_2']}
-    assert expand('map.c') == {:no, '', []}
-    assert expand('map.') == {:yes, '', ['bar_1', 'bar_2', 'foo']}
-    assert expand('map.foo') == {:no, '', []}
+    assert expand(~c"map.f") == {:yes, ~c"oo", []}
+    assert expand(~c"map.b") == {:yes, ~c"ar_", []}
+    assert expand(~c"map.bar_") == {:yes, ~c"", [~c"bar_1", ~c"bar_2"]}
+    assert expand(~c"map.c") == {:no, ~c"", []}
+    assert expand(~c"map.") == {:yes, ~c"", [~c"bar_1", ~c"bar_2", ~c"foo"]}
+    assert expand(~c"map.foo") == {:no, ~c"", []}
   end
 
   test "nested map atom key completion is supported" do
     eval("map = %{nested: %{deeply: %{foo: 1, bar_1: 23, bar_2: 14, mod: String, num: 1}}}")
-    assert expand('map.nested.deeply.f') == {:yes, 'oo', []}
-    assert expand('map.nested.deeply.b') == {:yes, 'ar_', []}
-    assert expand('map.nested.deeply.bar_') == {:yes, '', ['bar_1', 'bar_2']}
-    assert expand('map.nested.deeply.') == {:yes, '', ['bar_1', 'bar_2', 'foo', 'mod', 'num']}
-    assert expand('map.nested.deeply.mod.print') == {:yes, 'able?', []}
+    assert expand(~c"map.nested.deeply.f") == {:yes, ~c"oo", []}
+    assert expand(~c"map.nested.deeply.b") == {:yes, ~c"ar_", []}
+    assert expand(~c"map.nested.deeply.bar_") == {:yes, ~c"", [~c"bar_1", ~c"bar_2"]}
 
-    assert expand('map.nested') == {:yes, '.', []}
-    assert expand('map.nested.deeply') == {:yes, '.', []}
-    assert expand('map.nested.deeply.foo') == {:no, '', []}
+    assert expand(~c"map.nested.deeply.") ==
+             {:yes, ~c"", [~c"bar_1", ~c"bar_2", ~c"foo", ~c"mod", ~c"num"]}
 
-    assert expand('map.nested.deeply.c') == {:no, '', []}
-    assert expand('map.a.b.c.f') == {:no, '', []}
+    assert expand(~c"map.nested.deeply.mod.print") == {:yes, ~c"able?", []}
+
+    assert expand(~c"map.nested") == {:yes, ~c".", []}
+    assert expand(~c"map.nested.deeply") == {:yes, ~c".", []}
+    assert expand(~c"map.nested.deeply.foo") == {:no, ~c"", []}
+
+    assert expand(~c"map.nested.deeply.c") == {:no, ~c"", []}
+    assert expand(~c"map.a.b.c.f") == {:no, ~c"", []}
   end
 
   test "map string key completion is not supported" do
     eval(~S(map = %{"foo" => 1}))
-    assert expand('map.f') == {:no, '', []}
+    assert expand(~c"map.f") == {:no, ~c"", []}
   end
 
-  test "autocompletion off a bound variable only works for modules and maps" do
+  test "bound variables for modules and maps" do
     eval("num = 5; map = %{nested: %{num: 23}}")
-    assert expand('num.print') == {:no, '', []}
-    assert expand('map.nested.num.f') == {:no, '', []}
-    assert expand('map.nested.num.key.f') == {:no, '', []}
+    assert expand(~c"num.print") == {:no, ~c"", []}
+    assert expand(~c"map.nested.num.f") == {:no, ~c"", []}
+    assert expand(~c"map.nested.num.key.f") == {:no, ~c"", []}
   end
 
-  test "autocompletion using access syntax does is not supported" do
+  test "access syntax is not supported" do
     eval("map = %{nested: %{deeply: %{num: 23}}}")
-    assert expand('map[:nested][:deeply].n') == {:no, '', []}
-    assert expand('map[:nested].deeply.n') == {:no, '', []}
-    assert expand('map.nested.[:deeply].n') == {:no, '', []}
+    assert expand(~c"map[:nested][:deeply].n") == {:no, ~c"", []}
+    assert expand(~c"map[:nested].deeply.n") == {:no, ~c"", []}
+    assert expand(~c"map.nested.[:deeply].n") == {:no, ~c"", []}
   end
 
-  test "autocompletion off of unbound variables is not supported" do
+  test "unbound variables is not supported" do
     eval("num = 5")
-    assert expand('other_var.f') == {:no, '', []}
-    assert expand('a.b.c.d') == {:no, '', []}
+    assert expand(~c"other_var.f") == {:no, ~c"", []}
+    assert expand(~c"a.b.c.d") == {:no, ~c"", []}
   end
 
   test "macro completion" do
-    {:yes, '', list} = expand('Kernel.is_')
+    {:yes, ~c"", list} = expand(~c"Kernel.is_")
     assert is_list(list)
   end
 
   test "imports completion" do
-    {:yes, '', list} = expand('')
+    {:yes, ~c"", list} = expand(~c"")
     assert is_list(list)
-    assert 'h/1' in list
-    assert 'unquote/1' in list
-    assert 'pwd/0' in list
+    assert ~c"h/1" in list
+    assert ~c"unquote/1" in list
+    assert ~c"pwd/0" in list
   end
 
   test "kernel import completion" do
-    assert expand('defstru') == {:yes, 'ct', []}
-    assert expand('put_') == {:yes, '', ['put_elem/3', 'put_in/2', 'put_in/3']}
+    assert expand(~c"defstru") == {:yes, ~c"ct", []}
+    assert expand(~c"put_") == {:yes, ~c"", [~c"put_elem/3", ~c"put_in/2", ~c"put_in/3"]}
   end
 
   test "variable name completion" do
     eval("numeral = 3; number = 3; nothing = nil")
-    assert expand('numb') == {:yes, 'er', []}
-    assert expand('num') == {:yes, '', ['number', 'numeral']}
-    assert expand('no') == {:yes, '', ['nothing', 'node/0', 'node/1', 'not/1']}
+    assert expand(~c"numb") == {:yes, ~c"er", []}
+    assert expand(~c"num") == {:yes, ~c"", [~c"number", ~c"numeral"]}
+    assert expand(~c"no") == {:yes, ~c"", [~c"nothing", ~c"node/0", ~c"node/1", ~c"not/1"]}
   end
 
   test "completion of manually imported functions and macros" do
     eval("import Enum; import Supervisor, only: [count_children: 1]; import Protocol")
 
-    functions_list = ['take/2', 'take_every/2', 'take_random/2', 'take_while/2']
-    assert expand('take') == {:yes, '', functions_list}
+    assert expand(~c"der") == {:yes, ~c"ive", []}
 
-    assert expand('count') == {:yes, '', ['count/1', 'count/2', 'count_children/1']}
-    assert expand('der') == {:yes, 'ive', []}
+    assert expand(~c"take") ==
+             {:yes, ~c"", [~c"take/2", ~c"take_every/2", ~c"take_random/2", ~c"take_while/2"]}
+
+    assert expand(~c"take/") == {:yes, ~c"", [~c"take/2"]}
+
+    assert expand(~c"count") ==
+             {:yes, ~c"",
+              [
+                ~c"count/1",
+                ~c"count/2",
+                ~c"count_children/1",
+                ~c"count_until/2",
+                ~c"count_until/3"
+              ]}
+
+    assert expand(~c"count/") == {:yes, ~c"", [~c"count/1", ~c"count/2"]}
   end
 
   defmacro define_var do
@@ -286,48 +322,40 @@ defmodule IEx.AutocompleteTest do
 
   test "ignores quoted variables when performing variable completion" do
     eval("require #{__MODULE__}; #{__MODULE__}.define_var(); my_var_2 = 2")
-    assert expand('my_var') == {:yes, '_2', []}
+    assert expand(~c"my_var") == {:yes, ~c"_2", []}
   end
 
   test "kernel special form completion" do
-    assert expand('unquote_spl') == {:yes, 'icing', []}
+    assert expand(~c"unquote_spl") == {:yes, ~c"icing", []}
   end
 
   test "completion inside expression" do
-    assert expand('1 En') == {:yes, 'um', []}
-    assert expand('Test(En') == {:yes, 'um', []}
-    assert expand('Test :zl') == {:yes, 'ib', []}
-    assert expand('[:zl') == {:yes, 'ib', []}
-    assert expand('{:zl') == {:yes, 'ib', []}
-  end
-
-  test "ampersand completion" do
-    assert expand('&Enu') == {:yes, 'm', []}
-
-    functions_list = ['all?/1', 'all?/2', 'any?/1', 'any?/2', 'at/2', 'at/3']
-    assert expand('&Enum.a') == {:yes, [], functions_list}
-    assert expand('f = &Enum.a') == {:yes, [], functions_list}
+    assert expand(~c"1 En") == {:yes, ~c"um", []}
+    assert expand(~c"Test(En") == {:yes, ~c"um", []}
+    assert expand(~c"Test :zl") == {:yes, ~c"ib", []}
+    assert expand(~c"[:zl") == {:yes, ~c"ib", []}
+    assert expand(~c"{:zl") == {:yes, ~c"ib", []}
   end
 
   defmodule SublevelTest.LevelA.LevelB do
   end
 
   test "Elixir completion sublevel" do
-    assert expand('IEx.AutocompleteTest.SublevelTest.') == {:yes, 'LevelA', []}
+    assert expand(~c"IEx.AutocompleteTest.SublevelTest.") == {:yes, ~c"LevelA", []}
   end
 
   test "complete aliases of Elixir modules" do
     eval("alias List, as: MyList")
-    assert expand('MyL') == {:yes, 'ist', []}
-    assert expand('MyList') == {:yes, '.', []}
-    assert expand('MyList.to_integer') == {:yes, [], ['to_integer/1', 'to_integer/2']}
+    assert expand(~c"MyL") == {:yes, ~c"ist", []}
+    assert expand(~c"MyList") == {:yes, ~c".", []}
+    assert expand(~c"MyList.to_integer") == {:yes, [], [~c"to_integer/1", ~c"to_integer/2"]}
   end
 
   test "complete aliases of Erlang modules" do
     eval("alias :lists, as: EList")
-    assert expand('EL') == {:yes, 'ist', []}
-    assert expand('EList') == {:yes, '.', []}
-    assert expand('EList.map') == {:yes, [], ['map/2', 'mapfoldl/3', 'mapfoldr/3']}
+    assert expand(~c"EL") == {:yes, ~c"ist", []}
+    assert expand(~c"EList") == {:yes, ~c".", []}
+    assert expand(~c"EList.map") == {:yes, [], [~c"map/2", ~c"mapfoldl/3", ~c"mapfoldr/3"]}
   end
 
   test "completion for functions added when compiled module is reloaded" do
@@ -337,8 +365,8 @@ defmodule IEx.AutocompleteTest do
       end
 
     File.write!("Elixir.IEx.AutocompleteTest.Sample.beam", bytecode)
-    assert Code.get_docs(Sample, :docs)
-    assert expand('IEx.AutocompleteTest.Sample.foo') == {:yes, '', ['foo/0']}
+    assert {:docs_v1, _, _, _, _, _, _} = Code.fetch_docs(Sample)
+    assert expand(~c"IEx.AutocompleteTest.Sample.foo") == {:yes, ~c"", [~c"foo/0"]}
 
     Code.compiler_options(ignore_module_conflict: true)
 
@@ -347,7 +375,7 @@ defmodule IEx.AutocompleteTest do
       def foobar(), do: 0
     end
 
-    assert expand('IEx.AutocompleteTest.Sample.foo') == {:yes, '', ['foo/0', 'foobar/0']}
+    assert expand(~c"IEx.AutocompleteTest.Sample.foo") == {:yes, ~c"", [~c"foo/0", ~c"foobar/0"]}
   after
     File.rm("Elixir.IEx.AutocompleteTest.Sample.beam")
     Code.compiler_options(ignore_module_conflict: false)
@@ -360,19 +388,117 @@ defmodule IEx.AutocompleteTest do
   end
 
   test "completion for struct names" do
-    assert expand('%IEx.AutocompleteTest.MyStr') == {:yes, 'uct', []}
+    assert {:yes, ~c"", entries} = expand(~c"%")
+    assert ~c"URI" in entries
+    assert ~c"IEx.History" in entries
+    assert ~c"IEx.Server" in entries
+
+    assert {:yes, ~c"", entries} = expand(~c"%IEx.")
+    assert ~c"IEx.History" in entries
+    assert ~c"IEx.Server" in entries
+
+    assert expand(~c"%IEx.AutocompleteTe") == {:yes, ~c"st.MyStruct{", []}
+    assert expand(~c"%IEx.AutocompleteTest.MyStr") == {:yes, ~c"uct{", []}
+
+    eval("alias IEx.AutocompleteTest.MyStruct")
+    assert expand(~c"%MyStr") == {:yes, ~c"uct{", []}
   end
 
   test "completion for struct keys" do
+    assert {:yes, ~c"", entries} = expand(~c"%URI{")
+    assert ~c"path:" in entries
+    assert ~c"query:" in entries
+
+    assert {:yes, ~c"", entries} = expand(~c"%URI{path: \"foo\",")
+    assert ~c"path:" not in entries
+    assert ~c"query:" in entries
+
+    assert {:yes, ~c"ry: ", []} = expand(~c"%URI{path: \"foo\", que")
+    assert {:no, [], []} = expand(~c"%URI{path: \"foo\", unkno")
+    assert {:no, [], []} = expand(~c"%Unkown{path: \"foo\", unkno")
+  end
+
+  test "completion for struct var keys" do
     eval("struct = %IEx.AutocompleteTest.MyStruct{}")
-    assert expand('struct.my') == {:yes, '_val', []}
+    assert expand(~c"struct.my") == {:yes, ~c"_val", []}
+  end
+
+  test "completion for bitstring modifiers" do
+    assert {:yes, ~c"", entries} = expand(~c"<<foo::")
+    assert ~c"integer" in entries
+    assert ~c"size/1" in entries
+
+    assert {:yes, ~c"eger", []} = expand(~c"<<foo::int")
+
+    assert {:yes, ~c"", entries} = expand(~c"<<foo::integer-")
+    refute ~c"integer" in entries
+    assert ~c"size/1" in entries
   end
 
   test "ignore invalid Elixir module literals" do
     defmodule(:"Elixir.IEx.AutocompleteTest.Unicodé", do: nil)
-    assert expand('IEx.AutocompleteTest.Unicod') == {:no, '', []}
+    assert expand(~c"IEx.AutocompleteTest.Unicod") == {:no, ~c"", []}
   after
     :code.purge(:"Elixir.IEx.AutocompleteTest.Unicodé")
     :code.delete(:"Elixir.IEx.AutocompleteTest.Unicodé")
+  end
+
+  test "signature help for functions and macros" do
+    assert expand(~c"String.graphemes(") == {:yes, ~c"", [~c"graphemes(string)"]}
+    assert expand(~c"def ") == {:yes, ~c"", [~c"def(call, expr \\\\ nil)"]}
+
+    eval("import Enum; import Protocol")
+
+    assert ExUnit.CaptureIO.capture_io(fn ->
+             send(self(), expand(~c"reduce("))
+           end) == "\nreduce(enumerable, acc, fun)"
+
+    assert_received {:yes, ~c"", [~c"reduce(enumerable, fun)"]}
+
+    assert expand(~c"take(") == {:yes, ~c"", [~c"take(enumerable, amount)"]}
+    assert expand(~c"derive(") == {:yes, ~c"", [~c"derive(protocol, module, options \\\\ [])"]}
+
+    defmodule NoDocs do
+      def sample(a), do: a
+    end
+
+    assert {:yes, [], [_ | _]} = expand(~c"NoDocs.sample(")
+  end
+
+  @tag :tmp_dir
+  test "path completion inside strings", %{tmp_dir: dir} do
+    dir |> Path.join("single1") |> File.touch()
+    dir |> Path.join("file1") |> File.touch()
+    dir |> Path.join("file2") |> File.touch()
+    dir |> Path.join("dir") |> File.mkdir()
+    dir |> Path.join("dir/file3") |> File.touch()
+    dir |> Path.join("dir/file4") |> File.touch()
+
+    assert expand(~c"\"./") == path_autocompletion(".")
+    assert expand(~c"\"/") == path_autocompletion("/")
+    assert expand(~c"\"./#\{") == expand(~c"{")
+    assert expand(~c"\"./#\{Str") == expand(~c"{Str")
+    assert expand(~c"Path.join(\"./\", is_") == expand(~c"is_")
+
+    assert expand(~c"\"#{dir}/") == path_autocompletion(dir)
+    assert expand(~c"\"#{dir}/sin") == {:yes, ~c"gle1", []}
+    assert expand(~c"\"#{dir}/single1") == {:yes, ~c"\"", []}
+    assert expand(~c"\"#{dir}/fi") == {:yes, ~c"le", []}
+    assert expand(~c"\"#{dir}/file") == path_autocompletion(dir, "file")
+    assert expand(~c"\"#{dir}/d") == {:yes, ~c"ir/", []}
+    assert expand(~c"\"#{dir}/dir") == {:yes, ~c"/", []}
+    assert expand(~c"\"#{dir}/dir/") == {:yes, ~c"file", []}
+    assert expand(~c"\"#{dir}/dir/file") == dir |> Path.join("dir") |> path_autocompletion("file")
+  end
+
+  defp path_autocompletion(dir, hint \\ "") do
+    dir
+    |> File.ls!()
+    |> Stream.filter(&String.starts_with?(&1, hint))
+    |> Enum.map(&String.to_charlist/1)
+    |> case do
+      [] -> {:no, ~c"", []}
+      list -> {:yes, ~c"", list}
+    end
   end
 end

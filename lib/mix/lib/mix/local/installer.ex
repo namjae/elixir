@@ -107,7 +107,7 @@ defmodule Mix.Local.Installer do
           module.install(basename, binary, previous_files)
 
         :badpath ->
-          Mix.raise("Expected #{inspect(src)} to be a URL or a local file path")
+          Mix.raise("Expected #{inspect(src)} to be a local file path")
 
         {:local, message} ->
           Mix.raise(message)
@@ -120,9 +120,27 @@ defmodule Mix.Local.Installer do
 
               #{src}
 
-          Please download the contents above manually to your current directory and run:
+          Please download the file above to your current directory and run:
 
               mix #{task(module)} ./#{basename}
+
+          You can download it either with your browser or via the command line.
+
+          On Unix-like operating systems (Linux, macOS):
+
+              wget #{src}
+
+          or
+
+              curl -o #{basename} #{src}
+
+          On Windows / PowerShell (Windows 7 or later):
+
+              powershell -Command "Invoke-WebRequest #{src} -OutFile #{basename}"
+
+          or
+
+              powershell -Command "(New-Object Net.WebClient).DownloadFile('#{src}', '#{basename}')"
           """)
       end
 
@@ -153,7 +171,7 @@ defmodule Mix.Local.Installer do
   @doc """
   Receives `argv` and `opts` from options parsing and returns an `install_spec`.
   """
-  @spec parse_args([String.t()], keyword) :: install_spec
+  @spec parse_args([String.t()], keyword) :: install_spec | {:error, String.t()}
   def parse_args(argv, opts)
 
   def parse_args([], _opts) do
@@ -164,7 +182,7 @@ defmodule Mix.Local.Installer do
     cond do
       local_path?(url_or_path) -> {:local, url_or_path}
       file_url?(url_or_path) -> {:url, url_or_path}
-      true -> {:error, "Expected #{inspect(url_or_path)} to be a URL or a local file path"}
+      true -> {:error, "Expected #{inspect(url_or_path)} to be a local file path"}
     end
   end
 
@@ -175,7 +193,7 @@ defmodule Mix.Local.Installer do
   end
 
   def parse_args(["git", url], opts) do
-    parse_args(["git", url, "branch", "master"], opts)
+    git_fetcher(url, [], opts)
   end
 
   def parse_args(["git", url, ref_type, ref], opts) do
@@ -184,16 +202,7 @@ defmodule Mix.Local.Installer do
         {:error, error}
 
       git_config ->
-        git_opts = git_config ++ [git: url, submodules: opts[:submodules]]
-
-        app_name =
-          if opts[:app] do
-            opts[:app]
-          else
-            "new package"
-          end
-
-        {:fetcher, {String.to_atom(app_name), git_opts}}
+        git_fetcher(url, git_config, opts)
     end
   end
 
@@ -213,11 +222,39 @@ defmodule Mix.Local.Installer do
         package_name
       end
 
-    {:fetcher, {String.to_atom(app_name), version, hex: String.to_atom(package_name)}}
+    dep_opts = [
+      hex: String.to_atom(package_name),
+      repo: hex_repo(opts)
+    ]
+
+    {:fetcher, {String.to_atom(app_name), version, dep_opts}}
   end
 
   def parse_args(["hex" | [_package_name | rest]], _opts) do
     {:error, "received invalid Hex package spec: #{Enum.join(rest, " ")}"}
+  end
+
+  defp hex_repo(opts) do
+    repo = Keyword.get(opts, :repo, "hexpm")
+
+    if organization = opts[:organization] do
+      repo <> ":" <> organization
+    else
+      repo
+    end
+  end
+
+  defp git_fetcher(url, git_config, opts) do
+    git_opts = git_config ++ [git: url, submodules: opts[:submodules]]
+
+    app_name =
+      if opts[:app] do
+        opts[:app]
+      else
+        "new package"
+      end
+
+    {:fetcher, {String.to_atom(app_name), git_opts}}
   end
 
   defp ref_to_config("branch", branch), do: [branch: branch]
@@ -231,24 +268,29 @@ defmodule Mix.Local.Installer do
   @doc """
   A common implementation for uninstalling archives and scripts.
   """
-  @spec uninstall(Path.t(), String.t(), OptionParser.argv()) :: Path.t() | nil
-  def uninstall(root, listing, argv) do
-    {_, argv, _} = OptionParser.parse(argv)
+  @spec uninstall(Path.t(), String.t(), OptionParser.argv(), keyword) :: Path.t() | nil
+  def uninstall(root, listing, argv, switches) do
+    {opts, argv} = OptionParser.parse!(argv, switches: switches)
 
     if name = List.first(argv) do
-      path = Path.join(root, name)
+      found =
+        if File.exists?(Path.join(root, name)) do
+          Path.join(root, name)
+        else
+          matching_package(root, name)
+        end
 
       cond do
-        not File.exists?(path) ->
-          Mix.shell().error("Could not find a local artifact named #{inspect(name)}. We found:")
-          Mix.Task.rerun(listing)
+        found && should_uninstall?(found, opts) ->
+          File.rm_rf!(found)
+          found
+
+        found ->
           nil
 
-        should_uninstall?(path) ->
-          File.rm_rf!(path)
-          path
-
         true ->
+          Mix.shell().error("Could not find a local artifact named #{inspect(name)}. We found:")
+          Mix.Task.rerun(listing)
           nil
       end
     else
@@ -256,14 +298,18 @@ defmodule Mix.Local.Installer do
     end
   end
 
-  defp should_uninstall?(path) do
-    Mix.shell().yes?("Are you sure you want to uninstall #{path}?")
+  defp matching_package(root, name) do
+    root |> Path.join(name <> "-*") |> Path.wildcard() |> List.first()
+  end
+
+  defp should_uninstall?(path, opts) do
+    opts[:force] || Mix.shell().yes?("Are you sure you want to uninstall #{path}?")
   end
 
   @doc """
   Fetches `dep_spec` with `in_fetcher` and then runs `in_package`.
 
-  Generates a new mix project in a temporary directory with the given `dep_spec`
+  Generates a new Mix project in a temporary directory with the given `dep_spec`
   added to a mix.exs. Then, `in_fetcher` is executed in the fetcher project. By
   default, this fetches the dependency, but you can provide an `in_fetcher`
   during test or for other purposes. After the `in_fetcher` is executed,
@@ -277,30 +323,44 @@ defmodule Mix.Local.Installer do
       File.mkdir_p!(tmp_path)
 
       File.write!(Path.join(tmp_path, "mix.exs"), """
-      defmodule Mix.Local.Installer.Fetcher.MixProject do
+      defmodule Mix.Local.Installer.MixProject do
         use Mix.Project
 
         def project do
-          [app: Mix.Local.Installer.Fetcher,
-           version: "1.0.0",
-           deps: [#{inspect(dep_spec)}]]
+          [
+            app: :mix_local_installer,
+            version: "1.0.0",
+            deps: [#{inspect(dep_spec)}]
+          ]
         end
       end
       """)
 
-      with_mix_env_prod(fn ->
-        Mix.Project.in_project(Mix.Local.Installer.Fetcher, tmp_path, in_fetcher)
+      with_reset_prod_env(fn ->
+        Mix.ProjectStack.on_clean_slate(fn ->
+          tmp_path =
+            Mix.Project.in_project(:mix_local_installer, tmp_path, [], fn mix_exs ->
+              in_fetcher.(mix_exs)
 
-        package_name = elem(dep_spec, 0)
-        package_name_string = Atom.to_string(package_name)
-        package_path = Path.join([tmp_path, "deps", package_name_string])
+              # The tmp_dir may have symlinks in it, so we properly resolve
+              # the directory before customizing deps_path and lockfile.
+              File.cwd!()
+            end)
 
-        post_config = [
-          deps_path: Path.join(tmp_path, "deps"),
-          lockfile: Path.join(tmp_path, "mix.lock")
-        ]
+          package_name = elem(dep_spec, 0)
+          package_name_string = Atom.to_string(package_name)
+          package_path = Path.join([tmp_path, "deps", package_name_string])
 
-        Mix.Project.in_project(package_name, package_path, post_config, in_package)
+          post_config = [
+            deps_path: Path.join(tmp_path, "deps"),
+            lockfile: Path.join(tmp_path, "mix.lock")
+          ]
+
+          Mix.Project.in_project(package_name, package_path, post_config, fn mix_exs ->
+            in_fetcher.(mix_exs)
+            in_package.(mix_exs)
+          end)
+        end)
       end)
     end)
   after
@@ -309,7 +369,7 @@ defmodule Mix.Local.Installer do
   end
 
   defp in_fetcher(_mix_exs) do
-    Mix.Task.run("deps.get", [])
+    Mix.Task.run("deps.get", ["--only", Atom.to_string(Mix.env())])
   end
 
   defp with_tmp_dir(fun) do
@@ -323,14 +383,17 @@ defmodule Mix.Local.Installer do
     end
   end
 
-  defp with_mix_env_prod(fun) do
+  defp with_reset_prod_env(fun) do
     previous_env = Mix.env()
+    deps_path = System.get_env("MIX_DEPS_PATH")
 
     try do
+      System.delete_env("MIX_DEPS_PATH")
       Mix.env(:prod)
       fun.()
     after
       Mix.env(previous_env)
+      deps_path && System.put_env("MIX_DEPS_PATH", deps_path)
     end
   end
 end

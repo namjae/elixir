@@ -6,9 +6,9 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   @old {{2010, 1, 1}, {0, 0, 0}}
 
   test "compiles and consolidates local protocols", context do
-    Mix.Project.push(MixTest.Case.Sample)
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
 
-    in_tmp context.test, fn ->
       File.mkdir_p!("lib")
       assert Mix.Task.run("compile")
 
@@ -45,15 +45,16 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
       File.rm!("lib/protocol.ex")
       assert compile_elixir_and_protocols() == :noop
       refute File.regular?("_build/dev/lib/sample/consolidated/Elixir.Compile.Protocol.beam")
-    end
+    end)
   end
 
   test "compiles after converting a protocol into a standard module", context do
-    Mix.Project.push(MixTest.Case.Sample)
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
 
-    in_tmp context.test, fn ->
       File.mkdir_p!("lib")
-      assert Mix.Task.run("compile")
+      Mix.Task.run("compile")
+      purge_protocol(Compile.Protocol)
 
       # Define a local protocol
       File.write!("lib/protocol.ex", """
@@ -82,16 +83,16 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
       File.rm!("lib/protocol.ex")
       assert compile_elixir_and_protocols() == :noop
       refute File.regular?("_build/dev/lib/sample/consolidated/Elixir.Compile.Protocol.beam")
-    end
+    end)
   end
 
   test "compiles and consolidates deps protocols", context do
-    Mix.Project.push(MixTest.Case.Sample)
+    in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
 
-    in_tmp context.test, fn ->
       File.mkdir_p!("lib")
-
-      assert Mix.Task.run("compile")
+      Mix.Task.run("compile")
+      purge_protocol(String.Chars)
       mark_as_old!("_build/dev/lib/sample/consolidated/Elixir.String.Chars.beam")
 
       assert compile_elixir_and_protocols() == :noop
@@ -114,7 +115,31 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
       File.rm!("lib/struct.ex")
       assert compile_elixir_and_protocols() == :ok
       assert mark_as_old!("_build/dev/lib/sample/consolidated/Elixir.String.Chars.beam") != @old
-    end
+    end)
+  end
+
+  test "consolidated protocols keep relative path to their source" do
+    in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+      compile_elixir_and_protocols()
+
+      # Load consolidated
+      :code.add_patha(~c"_build/dev/lib/sample/consolidated")
+      :code.purge(Enumerable)
+      :code.delete(Enumerable)
+
+      try do
+        Enumerable.impl_for!(:oops)
+      rescue
+        Protocol.UndefinedError ->
+          assert [{_, _, _, [file: ~c"lib/enum.ex"] ++ _} | _] = __STACKTRACE__
+      else
+        _ ->
+          flunk("Enumerable.impl_for!/1 should have failed")
+      after
+        purge_protocol(Enumerable)
+      end
+    end)
   end
 
   defp compile_elixir_and_protocols do
@@ -130,5 +155,11 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
     mtime = mtime(path)
     File.touch!(path, @old)
     mtime
+  end
+
+  defp purge_protocol(module) do
+    :code.del_path(:filename.absname(~c"_build/dev/lib/sample/consolidated"))
+    :code.purge(module)
+    :code.delete(module)
   end
 end

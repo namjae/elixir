@@ -6,7 +6,7 @@ defmodule ListTest do
   doctest List
 
   test "cons cell precedence" do
-    assert [1 | :lists.flatten([2, 3])] == [1, 2, 3]
+    assert [1 | List.flatten([2, 3])] == [1, 2, 3]
   end
 
   test "optional comma" do
@@ -22,6 +22,13 @@ defmodule ListTest do
     assert (&[&1, &2 | &3]).(1, 2, 3) == [1, 2 | 3]
   end
 
+  test "delete/2" do
+    assert List.delete([:a, :b, :c], :a) == [:b, :c]
+    assert List.delete([:a, :b, :c], :d) == [:a, :b, :c]
+    assert List.delete([:a, :b, :b, :c], :b) == [:a, :b, :c]
+    assert List.delete([], :b) == []
+  end
+
   test "wrap/1" do
     assert List.wrap([1, 2, 3]) == [1, 2, 3]
     assert List.wrap(1) == [1]
@@ -35,12 +42,14 @@ defmodule ListTest do
 
     assert List.flatten([]) == []
     assert List.flatten([[]]) == []
+    assert List.flatten([[], [[], []]]) == []
   end
 
   test "flatten/2" do
     assert List.flatten([1, 2, 3], [4, 5]) == [1, 2, 3, 4, 5]
     assert List.flatten([1, [2], 3], [4, 5]) == [1, 2, 3, 4, 5]
     assert List.flatten([[1, [2], 3]], [4, 5]) == [1, 2, 3, 4, 5]
+    assert List.flatten([1, [], 2], [3, [], 4]) == [1, 2, 3, [], 4]
   end
 
   test "foldl/3" do
@@ -56,12 +65,21 @@ defmodule ListTest do
   end
 
   test "duplicate/2" do
+    assert List.duplicate(1, 0) == []
     assert List.duplicate(1, 3) == [1, 1, 1]
     assert List.duplicate([1], 1) == [[1]]
   end
 
+  test "first/1" do
+    assert List.first([]) == nil
+    assert List.first([], 1) == 1
+    assert List.first([1]) == 1
+    assert List.first([1, 2, 3]) == 1
+  end
+
   test "last/1" do
     assert List.last([]) == nil
+    assert List.last([], 1) == 1
     assert List.last([1]) == 1
     assert List.last([1, 2, 3]) == 3
   end
@@ -89,6 +107,74 @@ defmodule ListTest do
     assert List.keysort([a: 4, c: 1, b: 2], 0) == [a: 4, b: 2, c: 1]
   end
 
+  test "keysort/3 with stable sorting" do
+    collection = [
+      {2, 4},
+      {1, 5},
+      {2, 2},
+      {3, 1},
+      {4, 3}
+    ]
+
+    # Stable sorting
+    assert List.keysort(collection, 0) == [
+             {1, 5},
+             {2, 4},
+             {2, 2},
+             {3, 1},
+             {4, 3}
+           ]
+
+    assert List.keysort(collection, 0) ==
+             List.keysort(collection, 0, :asc)
+
+    assert List.keysort(collection, 0, &</2) == [
+             {1, 5},
+             {2, 2},
+             {2, 4},
+             {3, 1},
+             {4, 3}
+           ]
+
+    assert List.keysort(collection, 0, :desc) == [
+             {4, 3},
+             {3, 1},
+             {2, 4},
+             {2, 2},
+             {1, 5}
+           ]
+  end
+
+  test "keysort/3 with module and stable sorting" do
+    collection = [
+      {~D[2010-01-02], 4},
+      {~D[2010-01-01], 5},
+      {~D[2010-01-02], 2},
+      {~D[2010-01-03], 1},
+      {~D[2010-01-04], 3}
+    ]
+
+    # Stable sorting
+    assert List.keysort(collection, 0, Date) == [
+             {~D[2010-01-01], 5},
+             {~D[2010-01-02], 4},
+             {~D[2010-01-02], 2},
+             {~D[2010-01-03], 1},
+             {~D[2010-01-04], 3}
+           ]
+
+    assert List.keysort(collection, 0, Date) ==
+             List.keysort(collection, 0, {:asc, Date})
+
+    assert List.keysort(collection, 0, {:desc, Date}) == [
+             {~D[2010-01-04], 3},
+             {~D[2010-01-03], 1},
+             {~D[2010-01-02], 4},
+             {~D[2010-01-02], 2},
+             {~D[2010-01-01], 5}
+           ]
+  end
+
   test "keystore/4" do
     assert List.keystore([a: 1, b: 2], :a, 0, {:a, 3}) == [a: 3, b: 2]
     assert List.keystore([a: 1], :b, 0, {:b, 2}) == [a: 1, b: 2]
@@ -104,6 +190,12 @@ defmodule ListTest do
     assert List.keydelete([a: 1, b: 2], :a, 0) == [{:b, 2}]
     assert List.keydelete([a: 1, b: 2], 2, 1) == [{:a, 1}]
     assert List.keydelete([a: 1, b: 2], :c, 0) == [{:a, 1}, {:b, 2}]
+  end
+
+  test "keytake/3" do
+    assert List.keytake([a: 1, b: 2], :a, 0) == {{:a, 1}, [b: 2]}
+    assert List.keytake([a: 1, b: 2], 2, 1) == {{:b, 2}, [a: 1]}
+    assert List.keytake([a: 1, b: 2], :c, 0) == nil
   end
 
   test "insert_at/3" do
@@ -185,7 +277,7 @@ defmodule ListTest do
       assert List.starts_with?([1, 2, 3], [])
     end
 
-    test "only accepts lists" do
+    test "only accepts proper lists" do
       message = "no function clause matching in List.starts_with?/2"
 
       assert_raise FunctionClauseError, message, fn ->
@@ -203,6 +295,8 @@ defmodule ListTest do
   test "to_string/1" do
     assert List.to_string([?æ, ?ß]) == "æß"
     assert List.to_string([?a, ?b, ?c]) == "abc"
+    assert List.to_string([]) == ""
+    assert List.to_string([[], []]) == ""
 
     assert_raise UnicodeConversionError, "invalid code point 57343", fn ->
       List.to_string([0xDFFF])
@@ -217,14 +311,96 @@ defmodule ListTest do
     end
   end
 
-  test "myers_difference/2" do
-    assert List.myers_difference([], []) == []
-    assert List.myers_difference([], [1, 2, 3]) == [ins: [1, 2, 3]]
-    assert List.myers_difference([1, 2, 3], []) == [del: [1, 2, 3]]
-    assert List.myers_difference([1, 2, 3], [1, 2, 3]) == [eq: [1, 2, 3]]
-    assert List.myers_difference([1, 2, 3], [1, 4, 2, 3]) == [eq: [1], ins: [4], eq: [2, 3]]
-    assert List.myers_difference([1, 4, 2, 3], [1, 2, 3]) == [eq: [1], del: [4], eq: [2, 3]]
-    assert List.myers_difference([1], [[1]]) == [del: [1], ins: [[1]]]
-    assert List.myers_difference([[1]], [1]) == [del: [[1]], ins: [1]]
+  test "to_charlist/1" do
+    assert List.to_charlist([0x00E6, 0x00DF]) == ~c"æß"
+    assert List.to_charlist([0x0061, "bc"]) == ~c"abc"
+    assert List.to_charlist([0x0064, "ee", [~c"p"]]) == ~c"deep"
+
+    assert_raise UnicodeConversionError, "invalid code point 57343", fn ->
+      List.to_charlist([0xDFFF])
+    end
+
+    assert_raise UnicodeConversionError, "invalid encoding starting at <<216, 0>>", fn ->
+      List.to_charlist(["a", "b", <<0xD800::size(16)>>])
+    end
+
+    assert_raise ArgumentError, ~r"cannot convert the given list to a charlist", fn ->
+      List.to_charlist([:a, :b])
+    end
+  end
+
+  describe "myers_difference/2" do
+    test "follows paper implementation" do
+      assert List.myers_difference([], []) == []
+      assert List.myers_difference([], [1, 2, 3]) == [ins: [1, 2, 3]]
+      assert List.myers_difference([1, 2, 3], []) == [del: [1, 2, 3]]
+      assert List.myers_difference([1, 2, 3], [1, 2, 3]) == [eq: [1, 2, 3]]
+      assert List.myers_difference([1, 2, 3], [1, 4, 2, 3]) == [eq: [1], ins: [4], eq: [2, 3]]
+      assert List.myers_difference([1, 4, 2, 3], [1, 2, 3]) == [eq: [1], del: [4], eq: [2, 3]]
+      assert List.myers_difference([1], [[1]]) == [del: [1], ins: [[1]]]
+      assert List.myers_difference([[1]], [1]) == [del: [[1]], ins: [1]]
+    end
+
+    test "rearranges inserts and equals for smaller diffs" do
+      assert List.myers_difference([3, 2, 0, 2], [2, 2, 0, 2]) ==
+               [del: [3], ins: [2], eq: [2, 0, 2]]
+
+      assert List.myers_difference([3, 2, 1, 0, 2], [2, 1, 2, 1, 0, 2]) ==
+               [del: [3], ins: [2, 1], eq: [2, 1, 0, 2]]
+
+      assert List.myers_difference([3, 2, 2, 1, 0, 2], [2, 2, 1, 2, 1, 0, 2]) ==
+               [del: [3], eq: [2, 2, 1], ins: [2, 1], eq: [0, 2]]
+
+      assert List.myers_difference([3, 2, 0, 2], [2, 2, 1, 0, 2]) ==
+               [del: [3], eq: [2], ins: [2, 1], eq: [0, 2]]
+    end
+  end
+
+  test "improper?/1" do
+    assert List.improper?([1 | 2])
+    assert List.improper?([1, 2, 3 | 4])
+    refute List.improper?([])
+    refute List.improper?([1])
+    refute List.improper?([[1]])
+    refute List.improper?([1, 2])
+    refute List.improper?([1, 2, 3])
+
+    assert_raise FunctionClauseError, fn ->
+      List.improper?(%{})
+    end
+  end
+
+  describe "ascii_printable?/2" do
+    test "proper lists without limit" do
+      assert List.ascii_printable?([])
+      assert List.ascii_printable?(~c"abc")
+      refute(List.ascii_printable?(~c"abc" ++ [0]))
+      refute List.ascii_printable?(~c"mañana")
+
+      printable_chars = ~c"\a\b\t\n\v\f\r\e" ++ Enum.to_list(32..126)
+      non_printable_chars = ~c"🌢áéíóúźç©¢🂭"
+
+      assert List.ascii_printable?(printable_chars)
+
+      for char <- printable_chars do
+        assert List.ascii_printable?([char])
+      end
+
+      refute List.ascii_printable?(non_printable_chars)
+
+      for char <- non_printable_chars do
+        refute List.ascii_printable?([char])
+      end
+    end
+
+    test "proper lists with limit" do
+      assert List.ascii_printable?([], 100)
+      assert List.ascii_printable?(~c"abc" ++ [0], 2)
+    end
+
+    test "improper lists" do
+      refute List.ascii_printable?(~c"abc" ++ ?d)
+      assert List.ascii_printable?(~c"abc" ++ ?d, 3)
+    end
   end
 end

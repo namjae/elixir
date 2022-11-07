@@ -8,13 +8,46 @@ defmodule Code.Formatter.OperatorsTest do
   @short_length [line_length: 10]
   @medium_length [line_length: 20]
 
+  describe "nullary" do
+    test "formats symbol operators" do
+      assert_same ".."
+    end
+
+    test "combines with unary and binary operators" do
+      assert_same "not .."
+      assert_same "left = .."
+      assert_same ".. = right"
+    end
+
+    test "is wrapped in parentheses on ambiguous calls" do
+      assert_same "require (..)"
+      assert_same "require foo, (..)"
+      assert_same "require (..), bar"
+      assert_same "require(..)"
+      assert_same "require(foo, ..)"
+      assert_same "require(.., bar)"
+
+      assert_same "assert [.., :ok]"
+      assert_same "assert {.., :ok}"
+      assert_same "assert (..) == 0..-1//1"
+      assert_same "assert 0..-1//1 == (..)"
+
+      assert_same """
+      defmacro (..) do
+        :ok
+      end\
+      """
+
+      assert_format "Range.range? (..)", "Range.range?(..)"
+    end
+  end
+
   describe "unary" do
     test "formats symbol operators without spaces" do
       assert_format "+ 1", "+1"
       assert_format "- 1", "-1"
       assert_format "! 1", "!1"
       assert_format "^ 1", "^1"
-      assert_format "~~~ 1", "~~~1"
     end
 
     test "formats word operators with spaces" do
@@ -71,18 +104,6 @@ defmodule Code.Formatter.OperatorsTest do
 
       assert_format bad, good, @short_length
 
-      bad = "~~~ foo(bar, baz, bat)"
-
-      good = """
-      ~~~foo(
-        bar,
-        baz,
-        bat
-      )
-      """
-
-      assert_format bad, good, @short_length
-
       operator = """
       not assert foo,
                  bar
@@ -110,6 +131,17 @@ defmodule Code.Formatter.OperatorsTest do
     end
   end
 
+  describe "ternary without space" do
+    test "formats without spaces" do
+      assert_format "1 .. 2 // 3", "1..2//3"
+      assert_same "(1..2//3).step"
+    end
+
+    test "never breaks" do
+      assert_same "123_456_789..987_654_321//147_268_369", @short_length
+    end
+  end
+
   describe "binary without newline" do
     test "formats without spaces" do
       assert_same "1 in 2"
@@ -122,13 +154,15 @@ defmodule Code.Formatter.OperatorsTest do
 
     test "not in" do
       assert_format "not(foo in bar)", "foo not in bar"
+
+      assert_same "foo not in bar"
       assert_same "(not foo) in bar"
       assert_same "(!foo) in bar"
     end
 
     test "bitwise precedence" do
-      assert_format "(crc ^^^ byte) &&& 0xFF", "crc ^^^ byte &&& 0xFF"
-      assert_same "(crc >>> 8) ^^^ byte"
+      assert_format "(crc >>> 8) ||| byte", "crc >>> 8 ||| byte"
+      assert_same "crc >>> (8 ||| byte)"
     end
   end
 
@@ -152,9 +186,9 @@ defmodule Code.Formatter.OperatorsTest do
       good = """
       123
       |> foo(
-           bar,
-           baz
-         )
+        bar,
+        baz
+      )
       """
 
       assert_format bad, good, @short_length
@@ -164,11 +198,11 @@ defmodule Code.Formatter.OperatorsTest do
       good = """
       123
       |> foo(
-           bar
-         )
+        bar
+      )
       |> bar(
-           bat
-         )
+        bat
+      )
       """
 
       assert_format bad, good, @short_length
@@ -180,8 +214,8 @@ defmodule Code.Formatter.OperatorsTest do
         bar,
         123
         |> bar(
-             baz
-           )
+          baz
+        )
       )
       """
 
@@ -217,9 +251,9 @@ defmodule Code.Formatter.OperatorsTest do
       good = """
       123
       |> foo(
-           bar,
-           baz
-         )
+        bar,
+        baz
+      )
       |> 456
       """
 
@@ -227,13 +261,13 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with multiple of the different entry and same precedence" do
-      assert_same "foo <|> bar ~> baz"
+      assert_same "foo <~> bar ~> baz"
 
-      bad = "foo <|> bar ~> baz"
+      bad = "foo <~> bar ~> baz"
 
       good = """
       foo
-      <|> bar
+      <~> bar
       ~> baz
       """
 
@@ -242,6 +276,8 @@ defmodule Code.Formatter.OperatorsTest do
 
     test "with multiple of the different entry, same precedence and right associative" do
       assert_format "foo ++ bar ++ baz -- bat", "foo ++ bar ++ (baz -- bat)"
+
+      assert_format "foo +++ bar +++ baz --- bat", "foo +++ bar +++ (baz --- bat)"
     end
 
     test "preserves user choice even when it fits" do
@@ -274,6 +310,8 @@ defmodule Code.Formatter.OperatorsTest do
   describe "binary with following new line" do
     test "formats with spaces" do
       assert_format "1++2", "1 ++ 2"
+
+      assert_format "1+++2", "1 +++ 2"
     end
 
     test "breaks into new line" do
@@ -530,6 +568,40 @@ defmodule Code.Formatter.OperatorsTest do
         | :three
       """
     end
+
+    test "preserves user choice even when it fits and left associative" do
+      assert_same """
+      foo + bar +
+        baz + bat
+      """
+
+      assert_same """
+      foo +
+        bar +
+        baz +
+        bat
+      """
+    end
+
+    test "preserves user choice even when it fits and right associative" do
+      bad = """
+      foo ++ bar ++
+        baz ++ bat
+      """
+
+      assert_format bad, """
+      foo ++
+        bar ++
+        baz ++ bat
+      """
+
+      assert_same """
+      foo ++
+        bar ++
+        baz ++
+        bat
+      """
+    end
   end
 
   # Theoretically it fits under binary operators
@@ -637,19 +709,19 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with heredoc" do
-      heredoc = ~S"""
-      var = '''
+      heredoc = ~S'''
+      var = """
       one
-      '''
       """
+      '''
 
       assert_same heredoc, @short_length
 
-      heredoc = ~S"""
-      var = '''
+      heredoc = ~S'''
+      var = """
       #{one}
-      '''
       """
+      '''
 
       assert_same heredoc, @short_length
     end
@@ -735,19 +807,19 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with next break fits" do
-      attribute = """
-      @doc '''
+      attribute = ~S'''
+      @doc """
       foo
-      '''
       """
+      '''
 
       assert_same attribute
 
-      attribute = """
-      @doc foo: '''
+      attribute = ~S'''
+      @doc foo: """
            bar
-           '''
-      """
+           """
+      '''
 
       assert_same attribute
     end
@@ -799,6 +871,7 @@ defmodule Code.Formatter.OperatorsTest do
 
     test "with operators inside" do
       assert_format "& +1", "&(+1)"
+      assert_format "& 1[:foo]", "& 1[:foo]"
       assert_format "& not &1", "&(not &1)"
       assert_format "& a ++ b", "&(a ++ b)"
       assert_format "& &1 && &2", "&(&1 && &2)"
@@ -806,9 +879,9 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with operators outside" do
-      assert_same "(& &1) == & &2"
-      assert_same "(& &1) and & &2"
-      assert_same "(&foo/1) and &bar/1"
+      assert_same "(& &1) == (& &2)"
+      assert_same "(& &1) and (& &2)"
+      assert_same "(&foo/1) and (&bar/1)"
       assert_same "[(&IO.puts/1) | &IO.puts/2]"
     end
 
@@ -855,6 +928,7 @@ defmodule Code.Formatter.OperatorsTest do
       assert_same "&and/2"
       assert_same "& &&/2"
       assert_same "& &/1"
+      assert_same "&//2"
     end
 
     test "Module.remote/arity" do

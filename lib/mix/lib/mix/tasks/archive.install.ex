@@ -10,37 +10,36 @@ defmodule Mix.Tasks.Archive.Install do
   root directory (created with `mix archive.build`), then the archive
   will be installed locally. For example:
 
-      mix do archive.build, archive.install
+      $ mix do archive.build + archive.install
 
-  If an argument is provided, it should be a local path or a URL to a
+  If an argument is provided, it should be a local path to a
   prebuilt archive, a Git repository, a GitHub repository, or a Hex
   package.
 
-      mix archive.install archive.ez
-      mix archive.install path/to/archive.ez
-      mix archive.install https://example.com/my_archive.ez
-      mix archive.install git https://path/to/git/repo
-      mix archive.install git https://path/to/git/repo branch git_branch
-      mix archive.install git https://path/to/git/repo tag git_tag
-      mix archive.install git https://path/to/git/repo ref git_ref
-      mix archive.install github user/project
-      mix archive.install github user/project branch git_branch
-      mix archive.install github user/project tag git_tag
-      mix archive.install github user/project ref git_ref
-      mix archive.install hex hex_package
-      mix archive.install hex hex_package 1.2.3
+      $ mix archive.install archive.ez
+      $ mix archive.install path/to/archive.ez
+      $ mix archive.install git https://path/to/git/repo
+      $ mix archive.install git https://path/to/git/repo branch git_branch
+      $ mix archive.install git https://path/to/git/repo tag git_tag
+      $ mix archive.install git https://path/to/git/repo ref git_ref
+      $ mix archive.install github user/project
+      $ mix archive.install github user/project branch git_branch
+      $ mix archive.install github user/project tag git_tag
+      $ mix archive.install github user/project ref git_ref
+      $ mix archive.install hex hex_package
+      $ mix archive.install hex hex_package 1.2.3
 
   After installation, the tasks in the archive are available locally:
 
-      mix some_task
+      $ mix some_task
 
-  Note that installing via Git/GitHub/Hex fetches the source of the archive
-  and builds it, while using URL/local path fetches a pre-built archive.
+  Note that installing via Git, GitHub, or Hex fetches the source
+  of the archive and builds it, while using local path uses a pre-built archive.
 
   ## Command line options
 
     * `--sha512` - checks the archive matches the given SHA-512 checksum. Only
-      applies to installations via URL or local path
+      applies to installations via a local path
 
     * `--force` - forces installation without a shell prompt; primarily
       intended for automation in build systems like Make
@@ -51,27 +50,50 @@ defmodule Mix.Tasks.Archive.Install do
     * `--app` - specifies a custom app name to be used for building the archive
       from Git, GitHub, or Hex
 
+    * `--organization` - set this for Hex private packages belonging to an
+      organization
+
+    * `--repo` - set this for self-hosted Hex instances, defaults to `hexpm`
+
   """
 
   @behaviour Mix.Local.Installer
 
-  @switches [force: :boolean, sha512: :string, submodules: :boolean, app: :string]
+  @switches [
+    force: :boolean,
+    sha512: :string,
+    submodules: :boolean,
+    app: :string,
+    organization: :string,
+    repo: :string,
+    timeout: :integer
+  ]
+
+  @impl true
   def run(argv) do
     Mix.Local.Installer.install(__MODULE__, argv, @switches)
   end
 
-  # Callbacks
-  def check_install_spec({local_or_url, path_or_url} = _install_spec, _opts)
-      when local_or_url in [:local, :url] do
-    if Path.extname(path_or_url) == ".ez" do
-      :ok
-    else
-      {:error, "Expected a local file path or a file URL ending in \".ez\"."}
-    end
+  @impl true
+  def check_install_spec({:local, path} = _install_spec, _opts) do
+    check_extname(path)
+  end
+
+  def check_install_spec({:url, url} = _install_spec, _opts) do
+    check_extname(url)
   end
 
   def check_install_spec(_, _), do: :ok
 
+  defp check_extname(path_or_url) do
+    if Path.extname(path_or_url) == ".ez" do
+      :ok
+    else
+      {:error, "Expected a local file path ending in \".ez\"."}
+    end
+  end
+
+  @impl true
   def find_previous_versions(src) do
     app =
       src
@@ -86,14 +108,15 @@ defmodule Mix.Tasks.Archive.Install do
     end
   end
 
+  @impl true
   def install(basename, contents, previous) do
-    ez_path = Path.join(Mix.Local.path_for(:archive), basename)
+    ez_path = Path.join(Mix.path_for(:archives), basename)
     dir_dest = resolve_destination(ez_path, contents)
 
     remove_previous_versions(previous)
 
     File.mkdir_p!(dir_dest)
-    {:ok, _} = :zip.extract(contents, cwd: dir_dest)
+    {:ok, _} = :zip.extract(contents, cwd: to_charlist(dir_dest))
     Mix.shell().info([:green, "* creating ", :reset, Path.relative_to_cwd(dir_dest)])
 
     ebin = Mix.Local.archive_ebin(dir_dest)
@@ -102,9 +125,18 @@ defmodule Mix.Tasks.Archive.Install do
     :ok
   end
 
+  @impl true
   def build(_install_spec, _opts) do
+    src = Mix.Local.name_for(:archives, Mix.Project.config())
+    previous = find_previous_versions(src)
+
+    Enum.each(previous, fn path ->
+      Code.delete_path(Mix.Local.archive_ebin(path))
+    end)
+
+    Mix.Task.run("loadconfig")
     Mix.Task.run("archive.build", [])
-    Mix.Local.name_for(:archive, Mix.Project.config())
+    src
   end
 
   ### Private helpers
@@ -121,9 +153,8 @@ defmodule Mix.Tasks.Archive.Install do
   end
 
   defp archives(name) do
-    # TODO: We can remove the .ez extension on Elixir 2.0 since we always unzip since 1.3
-    Mix.Local.path_for(:archive)
-    |> Path.join(name <> "{,*.ez}")
+    Mix.path_for(:archives)
+    |> Path.join(name)
     |> Path.wildcard()
   end
 

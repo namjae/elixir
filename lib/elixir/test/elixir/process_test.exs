@@ -27,11 +27,30 @@ defmodule ProcessTest do
   end
 
   # In contrast with other inlined functions,
-  # it is important to test that monitor/1 is inlined,
+  # it is important to test that monitor/1,2 are inlined,
   # this way we gain the monitor receive optimisation.
-  test "monitor/1 is inlined" do
+  test "monitor/1 and monitor/2 are inlined" do
     assert expand(quote(do: Process.monitor(pid())), __ENV__) ==
              quote(do: :erlang.monitor(:process, pid()))
+
+    assert expand(quote(do: Process.monitor(pid(), alias: :demonitor)), __ENV__) ==
+             quote(do: :erlang.monitor(:process, pid(), alias: :demonitor))
+  end
+
+  test "monitor/2 with monitor options" do
+    pid =
+      spawn(fn ->
+        receive do
+          {:ping, source_alias} -> send(source_alias, :pong)
+        end
+      end)
+
+    ref_and_alias = Process.monitor(pid, alias: :explicit_unalias)
+
+    send(pid, {:ping, ref_and_alias})
+
+    assert_receive :pong
+    assert_receive {:DOWN, ^ref_and_alias, _, _, _}
   end
 
   test "sleep/1" do
@@ -91,6 +110,8 @@ defmodule ProcessTest do
   end
 
   test "exit(pid, :normal) does not cause the target process to exit" do
+    Process.flag(:trap_exit, true)
+
     pid =
       spawn_link(fn ->
         receive do
@@ -98,7 +119,6 @@ defmodule ProcessTest do
         end
       end)
 
-    trap = Process.flag(:trap_exit, true)
     true = Process.exit(pid, :normal)
     refute_receive {:EXIT, ^pid, :normal}
     assert Process.alive?(pid)
@@ -106,26 +126,6 @@ defmodule ProcessTest do
     # now exit the process for real so it doesn't hang around
     true = Process.exit(pid, :abnormal)
     assert_receive {:EXIT, ^pid, :abnormal}
-    refute Process.alive?(pid)
-
-    Process.flag(:trap_exit, trap)
-  end
-
-  test "exit(pid, :normal) makes the process receive a message if it traps exits" do
-    parent = self()
-
-    pid =
-      spawn_link(fn ->
-        Process.flag(:trap_exit, true)
-
-        receive do
-          {:EXIT, ^parent, :normal} -> send(parent, {:ok, self()})
-        end
-      end)
-
-    refute_receive _
-    Process.exit(pid, :normal)
-    assert_receive {:ok, ^pid}
     refute Process.alive?(pid)
   end
 
@@ -136,8 +136,42 @@ defmodule ProcessTest do
     refute Process.alive?(pid)
   end
 
+  describe "alias/0, alias/1, and unalias/1" do
+    test "simple alias + unalias flow" do
+      server =
+        spawn(fn ->
+          receive do
+            {:ping, alias} -> send(alias, :pong)
+          end
+        end)
+
+      alias = Process.alias()
+      Process.unalias(alias)
+
+      send(server, {:ping, alias})
+      refute_receive :pong, 20
+    end
+
+    test "with :reply option when aliasing" do
+      server =
+        spawn(fn ->
+          receive do
+            {:ping, alias} ->
+              send(alias, :pong)
+              send(alias, :extra_pong)
+          end
+        end)
+
+      alias = Process.alias([:reply])
+
+      send(server, {:ping, alias})
+      assert_receive :pong
+      refute_receive :extra_pong, 20
+    end
+  end
+
   defp expand(expr, env) do
-    {expr, _env} = :elixir_expand.expand(expr, env)
+    {expr, _, _} = :elixir_expand.expand(expr, :elixir_env.env_to_ex(env), env)
     expr
   end
 end

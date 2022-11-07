@@ -2,10 +2,11 @@ defmodule Mix.Tasks.Archive.Build do
   use Mix.Task
 
   @shortdoc "Archives this project into a .ez file"
+  @recursive true
 
   @moduledoc """
   Builds an archive according to the specification of the
-  [Erlang Archive Format](http://www.erlang.org/doc/man/code.html).
+  [Erlang archive format](`:code`).
 
   Archives are meant to contain small projects, usually installed
   locally. Archives may be installed into a Mix environment by
@@ -15,7 +16,7 @@ defmodule Mix.Tasks.Archive.Build do
   dependencies, as those would conflict with any dependency in a
   Mix project after the archive is installed. In general, we recommend
   the usage of archives to be limited for extensions of Mix, such
-  as custom SCMs, package managers, etc. For general scripts to be
+  as custom SCMs, package managers, and the like. For general scripts to be
   distributed to developers, please see `mix escript.build`.
 
   The archive will be created in the current directory (which is
@@ -26,7 +27,7 @@ defmodule Mix.Tasks.Archive.Build do
   option can be used to archive any directory. For example,
   `mix archive.build` with no options translates to:
 
-      mix archive.build -i _build/ENV/lib/APP -o APP-VERSION.ez
+      $ mix archive.build -i _build/ENV/lib/APP -o APP-VERSION.ez
 
   ## Command line options
 
@@ -53,6 +54,7 @@ defmodule Mix.Tasks.Archive.Build do
     include_dot_files: :boolean
   ]
 
+  @impl true
   def run(args) do
     {opts, _} = OptionParser.parse!(args, aliases: [o: :output, i: :input], strict: @switches)
 
@@ -90,7 +92,7 @@ defmodule Mix.Tasks.Archive.Build do
           output
 
         project_config[:app] ->
-          Mix.Local.name_for(:archive, project_config)
+          Mix.Local.name_for(:archives, project_config)
 
         true ->
           Mix.raise("Cannot create archive without output file, please pass -o as an option")

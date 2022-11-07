@@ -1,8 +1,7 @@
 Code.require_file("../test_helper.exs", __DIR__)
 
 defmodule EEx.SmartEngineTest do
-  # TODO: Make this async: true once capture_io is removed
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   test "evaluates simple string" do
     assert_eval("foo bar", "foo bar")
@@ -29,16 +28,28 @@ defmodule EEx.SmartEngineTest do
     assert_eval("1\n2\n3\n", "<%= for x <- [1, 2, 3] do %><%= x %>\n<% end %>")
   end
 
-  test "preserves line numbers" do
-    result = EEx.compile_string("<%= @hello %>", engine: EEx.SmartEngine)
+  test "preserves line numbers in assignments" do
+    result = EEx.compile_string("foo\n<%= @hello %>", engine: EEx.SmartEngine)
 
     Macro.prewalk(result, fn
-      {_left, meta, _right} ->
-        assert Keyword.get(meta, :line, 0) in [0, 1]
+      {_left, meta, [_, :hello]} ->
+        assert Keyword.get(meta, :line) == 2
+        send(self(), :found)
 
-      _ ->
-        :ok
+      node ->
+        node
     end)
+
+    assert_received :found
+  end
+
+  test "error with unused \"do\" block without \"<%=\" modifier" do
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_eval("", "<% if true do %>I'm invisible!<% end %>", assigns: %{})
+      end)
+
+    assert stderr =~ "the contents of this expression won't be output"
   end
 
   defp assert_eval(expected, actual, binding \\ []) do

@@ -1,193 +1,119 @@
 %% Convenience functions used to manipulate scope and its variables.
 -module(elixir_erl_var).
--export([translate/4, build/2, assign/4,
-  load_binding/2, dump_binding/2,
-  mergev/2, mergec/2, merge_vars/2, merge_opt_vars/2,
-  warn_unsafe_var/4, format_error/1
+-export([
+  translate/4, assign/2, build/2,
+  load_binding/1, dump_binding/4,
+  from_env/1, from_env/2
 ]).
 -include("elixir.hrl").
 
 %% VAR HANDLING
 
-translate(Meta, Name, Kind, S) when is_atom(Kind); is_integer(Kind) ->
-  Tuple = {Name, Kind},
+translate(Meta, '_', _Kind, S) ->
+  {{var, ?ann(Meta), '_'}, S};
 
-  {Current, Safe} =
-    case maps:find(Tuple, S#elixir_erl.vars) of
-      {ok, {VarC, _, VarS}} -> {VarC, VarS};
-      error -> {nil, true}
-    end,
+translate(Meta, Name, Kind, #elixir_erl{var_names=VarNames} = S) ->
+  {version, Version} = lists:keyfind(version, 1, Meta),
 
-  case S#elixir_erl.context of
-    match ->
-      Previous =
-        case maps:find(Tuple, S#elixir_erl.backup_vars) of
-          {ok, {BackupVarC, _, _}} -> BackupVarC;
-          error -> nil
-        end,
-
-      if
-        Current /= nil, Current /= Previous ->
-          {{var, ?ann(Meta), Current}, S};
-        true ->
-          assign(Meta, Name, Kind, S)
-      end;
-    _  when Current /= nil ->
-      warn_unsafe_var(Meta, S#elixir_erl.file, Name, Safe),
-      {{var, ?ann(Meta), Current}, S}
+  case VarNames of
+    #{Version :=  ErlName} -> {{var, ?ann(Meta), ErlName}, S};
+    #{} when Kind /= nil -> assign(Meta, '_', Version, S);
+    #{} -> assign(Meta, Name, Version, S)
   end.
 
-assign(Meta, Name, Kind, S) ->
-  Tuple = {Name, Kind},
+assign(Meta, #elixir_erl{var_names=VarNames} = S) ->
+  Version = -(map_size(VarNames)+1),
+  ExVar = {var, [{version, Version} | Meta], ?var_context},
+  {ErlVar, SV} = assign(Meta, '_', Version, S),
+  {ExVar, ErlVar, SV}.
 
-  %% We attempt to give vars a nice name because we
-  %% still use the unused vars warnings from erl_lint.
-  %%
-  %% Once we move the warning to Elixir compiler, we
-  %% can name vars as _@COUNTER.
-  {NewVar, Counter, NS} =
-    if
-      Kind /= nil ->
-        build('_', S);
-      true ->
-        build(Name, S)
-    end,
-
-  FS = NS#elixir_erl{
-    vars=maps:put(Tuple, {NewVar, Counter, true}, S#elixir_erl.vars),
-    export_vars=case S#elixir_erl.export_vars of
-      nil -> nil;
-      EV  -> maps:put(Tuple, {NewVar, Counter, true}, EV)
-    end
-  },
-
-  {{var, ?ann(Meta), NewVar}, FS}.
+assign(Meta, Name, Version, #elixir_erl{var_names=VarNames} = S) ->
+  {NewVar, NS} = build(Name, S),
+  NewVarNames = VarNames#{Version => NewVar},
+  {{var, ?ann(Meta), NewVar}, NS#elixir_erl{var_names=NewVarNames}}.
 
 build(Key, #elixir_erl{counter=Counter} = S) ->
-  Cnt =
-    case maps:find(Key, Counter) of
-      {ok, Val} -> Val + 1;
-      error -> 1
+  Count =
+    case Counter of
+      #{Key := Val} -> Val + 1;
+      _ -> 1
     end,
-  {list_to_atom(var_name_to_list(Key) ++ "@" ++ integer_to_list(Cnt)),
-   Cnt,
-   S#elixir_erl{counter=maps:put(Key, Cnt, Counter)}}.
+  {build_name(Key, Count),
+   S#elixir_erl{counter=Counter#{Key => Count}}}.
 
-%% TODO: Always emit underscored names once we move
-%% variable warnings to Elixir;
-var_name_to_list(Var) ->
-  case atom_to_list(Var) of
-    "_" ++ _ = List -> List;
-    List -> [$V | List]
-  end.
-
-warn_unsafe_var(Meta, File, Name, Safe) ->
-  case (not Safe) andalso (lists:keyfind(generated, 1, Meta) /= {generated, true}) of
-    true ->
-      elixir_errors:form_warn(Meta, File, ?MODULE, {unsafe_var, Name});
-    false ->
-      ok
-  end.
-
-%% SCOPE MERGING
-
-%% Receives two scopes and return a new scope based on
-%% the second with their variables merged.
-
-mergev(S1, S2) ->
-  S2#elixir_erl{
-    vars=merge_vars(S1#elixir_erl.vars, S2#elixir_erl.vars),
-    export_vars=merge_opt_vars(S1#elixir_erl.export_vars, S2#elixir_erl.export_vars)
- }.
-
-%% Receives two scopes and return the first scope with
-%% counters and flags from the later.
-
-mergec(S1, S2) ->
-  S1#elixir_erl{
-    counter=S2#elixir_erl.counter,
-    caller=S2#elixir_erl.caller
- }.
-
-%% Mergers.
-
-merge_vars(V, V) -> V;
-merge_vars(V1, V2) ->
-  merge_maps(fun var_merger/3, V1, V2).
-
-merge_opt_vars(nil, _C2) -> nil;
-merge_opt_vars(_C1, nil) -> nil;
-merge_opt_vars(C, C)     -> C;
-merge_opt_vars(C1, C2)   ->
-  merge_maps(fun var_merger/3, C1, C2).
-
-var_merger(_Var, {_, V1, _} = K1, {_, V2, _}) when V1 > V2 -> K1;
-var_merger(_Var, _K1, K2) -> K2.
-
-merge_maps(Fun, Map1, Map2) ->
-  maps:fold(fun(K, V2, Acc) ->
-    V =
-      case maps:find(K, Acc) of
-        {ok, V1} -> Fun(K, V1, V2);
-        error -> V2
-      end,
-    maps:put(K, V, Acc)
-  end, Map1, Map2).
+build_name('_', Count) -> list_to_atom("_@" ++ integer_to_list(Count));
+build_name(Name, Count) -> list_to_atom("_" ++ atom_to_list(Name) ++ "@" ++ integer_to_list(Count)).
 
 %% BINDINGS
 
-load_binding(Binding, Scope) ->
-  {NewBinding, NewKeys, NewVars, NewCounter} = load_binding(Binding, [], [], #{}, 0),
-  {NewBinding, NewKeys, Scope#elixir_erl{
-    vars=NewVars,
-    counter=#{'_' => NewCounter}
- }}.
+from_env(#{versioned_vars := Read} = Env) ->
+  VarsList = to_erl_vars(maps:values(Read), 0),
+  {VarsList, from_env(Env, maps:from_list(VarsList))}.
 
-load_binding([{Key, Value} | T], Binding, Keys, Vars, Counter) ->
-  Actual = case Key of
-    {_Name, _Kind} -> Key;
-    Name when is_atom(Name) -> {Name, nil}
-  end,
-  InternalName = list_to_atom("_@" ++ integer_to_list(Counter)),
-  load_binding(T,
-    orddict:store(InternalName, Value, Binding),
-    ordsets:add_element(Actual, Keys),
-    maps:put(Actual, {InternalName, 0, true}, Vars), Counter + 1);
-load_binding([], Binding, Keys, Vars, Counter) ->
-  {Binding, Keys, Vars, Counter}.
+from_env(#{context := Context}, VarsMap) ->
+  #elixir_erl{
+    context=Context,
+    var_names=VarsMap,
+    counter=#{'_' => map_size(VarsMap)}
+  }.
 
-dump_binding(Binding, #elixir_erl{vars=Vars}) ->
+to_erl_vars([Version | Versions], Counter) ->
+  [{Version, to_erl_var(Counter)} | to_erl_vars(Versions, Counter + 1)];
+to_erl_vars([], _Counter) ->
+  [].
+
+to_erl_var(Counter) ->
+  list_to_atom("_@" ++ integer_to_list(Counter)).
+
+load_binding(Binding) ->
+  load_binding(Binding, #{}, [], [], 0).
+
+load_binding([Binding | NextBindings], ExVars, ErlVars, Normalized, Counter) ->
+  {Pair, Value} = load_pair(Binding),
+
+  case ExVars of
+    #{Pair := VarCounter} ->
+      ErlVar = to_erl_var(VarCounter),
+      load_binding(NextBindings, ExVars, ErlVars, [{ErlVar, Value} | Normalized], Counter);
+
+    #{} ->
+      ErlVar = to_erl_var(Counter),
+
+      load_binding(
+        NextBindings,
+        ExVars#{Pair => Counter},
+        [{Counter, ErlVar} | ErlVars],
+        [{ErlVar, Value} | Normalized],
+        Counter + 1
+      )
+  end;
+load_binding([], ExVars, ErlVars, Normalized, _Counter) ->
+  {ExVars, maps:from_list(ErlVars), maps:from_list(lists:reverse(Normalized))}.
+
+load_pair({Key, Value}) when is_atom(Key) -> {{Key, nil}, Value};
+load_pair({Pair, Value}) -> {Pair, Value}.
+
+dump_binding(Binding, ErlS, ExS, PruneBefore) ->
+  #elixir_erl{var_names=ErlVars} = ErlS,
+  #elixir_ex{vars={ExVars, _}, unused={Unused, _}} = ExS,
+
   maps:fold(fun
-    ({Var, Kind} = Key, {InternalName, _, _}, Acc) when is_atom(Kind) ->
-      Actual = case Kind of
+    %% If the variable is part of the pruning (usually the input binding)
+    %% and is unused, we removed it from vars.
+    (Pair, Version, {B, V})
+    when Version < PruneBefore, map_get({Pair, Version}, Unused) /= false ->
+      {B, maps:remove(Pair, V)};
+
+    ({Var, Kind} = Pair, Version, {B, V}) when is_atom(Kind) ->
+      Key = case Kind of
         nil -> Var;
-        _   -> Key
+        _ -> Pair
       end,
 
-      Value = case orddict:find(InternalName, Binding) of
-        {ok, V} -> V;
-        error -> nil
-      end,
+      ErlName = maps:get(Version, ErlVars),
+      Value = maps:get(ErlName, Binding, nil),
+      {[{Key, Value} | B], V};
 
-      orddict:store(Actual, Value, Acc);
     (_, _, Acc) ->
       Acc
-  end, [], Vars).
-
-%% Errors
-
-format_error({unsafe_var, Name}) ->
-  io_lib:format("the variable \"~ts\" is unsafe as it has been set inside "
-                "one of: case, cond, receive, if, and, or, &&, ||. "
-                "Please explicitly return the variable value instead. For example:\n\n"
-                "    case integer do\n"
-                "      1 -> atom = :one\n"
-                "      2 -> atom = :two\n"
-                "    end\n\n"
-                "should be written as\n\n"
-                "    atom =\n"
-                "      case integer do\n"
-                "        1 -> :one\n"
-                "        2 -> :two\n"
-                "      end\n\n"
-                "Unsafe variable found at:", [Name]).
+  end, {[], ExVars}, ExVars).

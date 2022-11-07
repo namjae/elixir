@@ -3,7 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eval(Content) ->
-  {Value, Binding, _, _} = elixir:eval(Content, []),
+  Quoted = elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []),
+  {Value, Binding, _} = elixir:eval_forms(Quoted, [], elixir:env_for_eval([])),
   {Value, Binding}.
 
 kv([{Key, nil}]) -> Key.
@@ -27,9 +28,9 @@ kv_with_interpolation_test() ->
   {'foo', _} = eval("a = \"f\"; :atom_test.kv(\"#{a}#{\"o\"}o\": nil)").
 
 quoted_atom_test() ->
-  {foo, []} = eval(":\"foo\""),
-  {foo, []} = eval(":'foo'"),
-  {'foo.Bar', []} = eval(":\"foo.Bar\"").
+  {'+', []} = eval(":\"+\""),
+  {'+', []} = eval(":'+'"),
+  {'foo bar', []} = eval(":\"foo bar\"").
 
 atom_with_interpolation_test() ->
   {foo, []} = eval(":\"f#{\"o\"}o\""),

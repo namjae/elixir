@@ -1,11 +1,10 @@
 Code.require_file("test_helper.exs", __DIR__)
 
-defmodule Bitwise.FunctionsTest do
+defmodule BitwiseTest do
   use ExUnit.Case, async: true
 
-  doctest Bitwise, import: true
-
-  use Bitwise, skip_operators: true
+  import Bitwise
+  doctest Bitwise
 
   test "bnot/1" do
     assert bnot(1) == -2
@@ -30,15 +29,6 @@ defmodule Bitwise.FunctionsTest do
   test "bsr/2" do
     assert bsr(1, 1) == 0
   end
-end
-
-defmodule Bitwise.OperatorsTest do
-  use ExUnit.Case, async: true
-  use Bitwise, only_operators: true
-
-  test "bnot (~~~)" do
-    assert ~~~1 == -2
-  end
 
   test "band (&&&)" do
     assert (1 &&& 1) == 1
@@ -46,10 +36,6 @@ defmodule Bitwise.OperatorsTest do
 
   test "bor (|||)" do
     assert (0 ||| 1) == 1
-  end
-
-  test "bxor (^^^)" do
-    assert 1 ^^^ 1 == 0
   end
 
   test "bsl (<<<)" do

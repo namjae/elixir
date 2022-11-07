@@ -41,7 +41,7 @@ defmodule Code.Formatter.IntegrationTest do
     case meta[:format] do
       :list_heredoc ->
         string = list |> List.to_string() |> escape_string(:heredoc)
-        {@single_heredoc |> line(string) |> concat(@single_heredoc) |> force_break(), state}
+        {@single_heredoc |> line(string) |> concat(@single_heredoc) |> force_unfit(), state}
 
       :charlist ->
         string = list |> List.to_string() |> escape_string(@single_quote)
@@ -57,7 +57,7 @@ defmodule Code.Formatter.IntegrationTest do
     assert_same """
     defp module_attribute_read?({:@, _, [{var, _, var_context}]})
          when is_atom(var) and is_atom(var_context) do
-      Code.Identifier.classify(var) == :callable_local
+      Macro.classify_atom(var) == :identifier
     end
     """
   end
@@ -177,7 +177,7 @@ defmodule Code.Formatter.IntegrationTest do
           str |> Model.Node.model_to_node_type()
 
         value, _ ->
-          Logger.warn("Could not extract node type from value: #{inspect(value)}")
+          Logger.warning("Could not extract node type from value: #{inspect(value)}")
           nil
       end)
     end
@@ -309,30 +309,12 @@ defmodule Code.Formatter.IntegrationTest do
     """
   end
 
-  test "case with empty clause" do
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      bad = """
-      def hello(world) do
-        case world do
-          :world -> IO.inspect world
-
-          _ ->
-        end
-      end
-      """
-
-      assert_format bad, """
-      def hello(world) do
-        case world do
-          :world ->
-            IO.inspect(world)
-
-          _ ->
-            nil
-        end
-      end
-      """
-    end)
+  test "do-end inside binary" do
+    assert_same """
+    <<if true do
+        "hello"
+      end::binary>>
+    """
   end
 
   test "anonymous function with parens around integer argument" do
@@ -345,20 +327,20 @@ defmodule Code.Formatter.IntegrationTest do
     """
   end
 
-  test "no parens keywords right on line limit" do
+  test "no parens keywords at the end of the line" do
     bad = """
     defmodule Mod do
-      defp token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char), do: token_list_downcase(rest, acc)
-      defp token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33), do: token_list_downcase(rest, acc)
+      def token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char), do: token_list_downcase(rest, acc)
+      def token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33), do: token_list_downcase(rest, acc)
     end
     """
 
     assert_format bad, """
     defmodule Mod do
-      defp token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char),
+      def token_list_downcase(<<char, rest::binary>>, acc) when is_whitespace(char) or is_comma(char),
         do: token_list_downcase(rest, acc)
 
-      defp token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33),
+      def token_list_downcase(some_really_long_arg11, some_really_long_arg22, some_really_long_arg33),
         do: token_list_downcase(rest, acc)
     end
     """
@@ -382,6 +364,64 @@ defmodule Code.Formatter.IntegrationTest do
     assert_format bad, good, line_length: 18
   end
 
+  test "keyword lists in last line" do
+    assert_same """
+    content =
+      config(VeryLongModuleNameThatWillCauseBreak, "new.html",
+        conn: conn,
+        changeset: changeset,
+        categories: categories
+      )
+    """
+
+    assert_same """
+    content =
+      config VeryLongModuleNameThatWillCauseBreak, "new.html",
+        conn: conn,
+        changeset: changeset,
+        categories: categories
+    """
+  end
+
+  test "keyword list at line limit" do
+    bad = """
+    pre()
+    config(arg, foo: bar)
+    post()
+    """
+
+    good = """
+    pre()
+
+    config(arg,
+      foo: bar
+    )
+
+    post()
+    """
+
+    assert_format bad, good, line_length: 20
+  end
+
+  test "do at the end of the line with single argument" do
+    bad = """
+    defmodule Location do
+      def new(line, column) when is_integer(line) and line >= 0 and is_integer(column) and column >= 0 do
+        %{column: column, line: line}
+      end
+    end
+    """
+
+    assert_format bad, """
+    defmodule Location do
+      def new(line, column)
+          when is_integer(line) and line >= 0 and is_integer(column) and column >= 0 do
+        %{column: column, line: line}
+      end
+    end
+    """
+  end
+
   test "tuples as trees" do
     bad = """
     @document Parser.parse(
@@ -397,22 +437,265 @@ defmodule Code.Formatter.IntegrationTest do
                   {"p", [], ["5"]}]}]}]})
     """
 
-    good = """
+    assert_format bad, """
     @document Parser.parse(
-                {"html", [], [
-                  {"head", [], []},
-                  {"body", [], [
-                    {"div", [], [
-                      {"p", [], ["1"]},
-                      {"p", [], ["2"]},
-                      {"div", [], [{"p", [], ["3"]}, {"p", [], ["4"]}]},
-                      {"p", [], ["5"]}
+                {"html", [],
+                 [
+                   {"head", [], []},
+                   {"body", [],
+                    [
+                      {"div", [],
+                       [
+                         {"p", [], ["1"]},
+                         {"p", [], ["2"]},
+                         {"div", [],
+                          [
+                            {"p", [], ["3"]},
+                            {"p", [], ["4"]}
+                          ]},
+                         {"p", [], ["5"]}
+                       ]}
                     ]}
-                  ]}
-                ]}
+                 ]}
               )
     """
+  end
+
+  test "first argument in a call without parens with comments" do
+    assert_same """
+    with bar ::
+           :ok
+           | :invalid
+           # | :unknown
+           | :other
+    """
+
+    assert_same """
+    @spec bar ::
+            :ok
+            | :invalid
+            # | :unknown
+            | :other
+    """
+  end
+
+  test "when with keywords inside call" do
+    assert_same """
+    quote((bar(foo(1)) when bat: foo(1)), [])
+    """
+
+    assert_same """
+    quote(do: (bar(foo(1)) when bat: foo(1)), line: 1)
+    """
+
+    assert_same """
+    typespec(quote(do: (bar(foo(1)) when bat: foo(1))), [foo: 1], [])
+    """
+  end
+
+  test "false positive sigil" do
+    assert_same """
+    def sigil_d(<<year::2-bytes, "-", month::2-bytes, "-", day::2-bytes>>, calendar) do
+      ymd(year, month, day, calendar)
+    end
+    """
+  end
+
+  test "newline after stab" do
+    assert_same """
+    capture_io(":erl. mof*,,l", fn ->
+      assert :io.scan_erl_form(~c">") == {:ok, [{:":", 1}, {:atom, 1, :erl}, {:dot, 1}], 1}
+
+      expected_tokens = [{:atom, 1, :mof}, {:*, 1}, {:",", 1}, {:",", 1}, {:atom, 1, :l}]
+      assert :io.scan_erl_form(~c">") == {:ok, expected_tokens, 1}
+
+      assert :io.scan_erl_form(~c">") == {:eof, 1}
+    end)
+    """
+  end
+
+  test "capture with operators" do
+    assert_same """
+    "this works" |> (&String.upcase/1) |> (&String.downcase/1)
+    """
+
+    assert_same """
+    "this works" || (&String.upcase/1) || (&String.downcase/1)
+    """
+
+    assert_same """
+    "this works" == (&String.upcase/1) == (&String.downcase/1)
+    """
+
+    bad = """
+    "this works" = (&String.upcase/1) = (&String.downcase/1)
+    """
+
+    assert_format bad, """
+    "this works" = (&String.upcase/1) = &String.downcase/1
+    """
+
+    bad = """
+    "this works" ++ (&String.upcase/1) ++ (&String.downcase/1)
+    """
+
+    assert_format bad, """
+    "this works" ++ (&String.upcase/1) ++ &String.downcase/1
+    """
+
+    bad = """
+    "this works" +++ (&String.upcase/1) +++ (&String.downcase/1)
+    """
+
+    assert_format bad, """
+    "this works" +++ (&String.upcase/1) +++ &String.downcase/1
+    """
+
+    bad = """
+    "this works" | (&String.upcase/1) | (&String.downcase/1)
+    """
+
+    assert_format bad, """
+    "this works" | (&String.upcase/1) | &String.downcase/1
+    """
+
+    bad = ~S"""
+    "this works" \\ (&String.upcase/1) \\ (&String.downcase/1)
+    """
+
+    assert_format bad, ~S"""
+    "this works" \\ &String.upcase/1 \\ &String.downcase/1
+    """
+  end
+
+  test "multiline expression inside interpolation" do
+    bad = ~S"""
+    Logger.info("Example: #{
+      inspect(%{
+        a: 1,
+        b: 2
+      })
+    }")
+    """
+
+    assert_format bad, ~S"""
+    Logger.info("Example: #{inspect(%{a: 1, b: 2})}")
+    """
+  end
+
+  test "comment inside operator with when" do
+    bad = """
+    raise function(x) ::
+            # Comment
+            any
+    """
+
+    assert_format bad, """
+    # Comment
+    raise function(x) ::
+            any
+    """
+
+    bad = """
+    raise function(x) ::
+            # Comment
+            any
+          when x: any
+    """
+
+    assert_format bad, """
+    raise function(x) ::
+            any
+          # Comment
+          when x: any
+    """
+
+    bad = """
+    @spec function(x) ::
+            # Comment
+            any
+          when x: any
+    """
+
+    assert_format bad, """
+    @spec function(x) ::
+            any
+          # Comment
+          when x: any
+    """
+
+    bad = """
+    @spec function(x) ::
+            # Comment
+            any
+          when x
+          when y
+    """
+
+    assert_format bad, """
+    @spec function(x) ::
+            any
+          # Comment
+          when x
+          when y
+    """
+  end
+
+  test "nested heredocs with multi-line string in interpolation" do
+    bad = ~S'''
+    def foo do
+      """
+      #{(feature_flag(:feature_x) && "
+      new_field
+      " || "")}
+      """
+    end
+    '''
+
+    good = ~S'''
+    def foo do
+      """
+      #{(feature_flag(:feature_x) && "
+      new_field
+      ") || ""}
+      """
+    end
+    '''
 
     assert_format bad, good
+  end
+
+  test "functions with infinity line length" do
+    assert_same ~S"""
+                x = fn ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn x ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn x ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
   end
 end

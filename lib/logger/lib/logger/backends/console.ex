@@ -1,5 +1,59 @@
 defmodule Logger.Backends.Console do
-  @moduledoc false
+  @moduledoc ~S"""
+  A logger backend that logs messages by printing them to the console.
+
+  ## Options
+
+    * `:level` - the level to be logged by this backend.
+      Note that messages are filtered by the general
+      `:level` configuration for the `:logger` application first.
+
+    * `:format` - the format message used to print logs.
+      Defaults to: `"\n$time $metadata[$level] $message\n"`.
+      It may also be a `{module, function}` tuple that is invoked
+      with the log level, the message, the current timestamp and
+      the metadata and must return `t:IO.chardata/0`. See
+      `Logger.Formatter`.
+
+    * `:metadata` - the metadata to be printed by `$metadata`.
+      Defaults to an empty list (no metadata).
+      Setting `:metadata` to `:all` prints all metadata. See
+      the "Metadata" section in the `Logger` documentation for
+      more information.
+
+    * `:colors` - a keyword list of coloring options.
+
+    * `:device` - the device to log error messages to. Defaults to
+      `:user` but can be changed to something else such as `:standard_error`.
+
+    * `:max_buffer` - maximum events to buffer while waiting
+      for a confirmation from the IO device (default: 32).
+      Once the buffer is full, the backend will block until
+      a confirmation is received.
+
+  The supported keys in the `:colors` keyword list are:
+
+    * `:enabled` - boolean value that allows for switching the
+      coloring on and off. Defaults to: `IO.ANSI.enabled?/0`
+
+    * `:debug` - color for debug messages. Defaults to: `:cyan`
+
+    * `:info` - color for info and notice messages. Defaults to: `:normal`
+
+    * `:warning` - color for warning messages. Defaults to: `:yellow`
+
+    * `:error` - color for error and higher messages. Defaults to: `:red`
+
+  See the `IO.ANSI` module for a list of colors and attributes.
+
+  Here is an example of how to configure the `:console` backend in a
+  `config/config.exs` file:
+
+      config :logger, :console,
+        format: "\n$time $metadata[$level] $message\n",
+        metadata: [:user_id]
+
+  """
 
   @behaviour :gen_event
 
@@ -14,6 +68,7 @@ defmodule Logger.Backends.Console do
             output: nil,
             ref: nil
 
+  @impl true
   def init(:console) do
     config = Application.get_env(:logger, :console)
     device = Keyword.get(config, :device, :user)
@@ -30,16 +85,16 @@ defmodule Logger.Backends.Console do
     {:ok, init(config, %__MODULE__{})}
   end
 
+  @impl true
   def handle_call({:configure, options}, state) do
     {:ok, :ok, configure(options, state)}
   end
 
-  def handle_event({_level, gl, _event}, state) when node(gl) != node() do
-    {:ok, state}
-  end
-
+  @impl true
   def handle_event({level, _gl, {Logger, msg, ts, md}}, state) do
     %{level: log_level, ref: ref, buffer_size: buffer_size, max_buffer: max_buffer} = state
+
+    {:erl_level, level} = List.keyfind(md, :erl_level, 0, {:erl_level, level})
 
     cond do
       not meet_level?(level, log_level) ->
@@ -65,6 +120,7 @@ defmodule Logger.Backends.Console do
     {:ok, state}
   end
 
+  @impl true
   def handle_info({:io_reply, ref, msg}, %{ref: ref} = state) do
     {:ok, handle_io_reply(msg, state)}
   end
@@ -77,10 +133,12 @@ defmodule Logger.Backends.Console do
     {:ok, state}
   end
 
+  @impl true
   def code_change(_old_vsn, state, _extra) do
     {:ok, state}
   end
 
+  @impl true
   def terminate(_reason, _state) do
     :ok
   end
@@ -131,11 +189,25 @@ defmodule Logger.Backends.Console do
   defp configure_colors(config) do
     colors = Keyword.get(config, :colors, [])
 
+    warning =
+      Keyword.get_lazy(colors, :warning, fn ->
+        # TODO: Deprecate :warn option on Elixir v1.19
+        if warn = Keyword.get(colors, :warn) do
+          warn
+        else
+          :yellow
+        end
+      end)
+
     %{
-      debug: Keyword.get(colors, :debug, :cyan),
-      info: Keyword.get(colors, :info, :normal),
-      warn: Keyword.get(colors, :warn, :yellow),
+      emergency: Keyword.get(colors, :error, :red),
+      alert: Keyword.get(colors, :error, :red),
+      critical: Keyword.get(colors, :error, :red),
       error: Keyword.get(colors, :error, :red),
+      warning: warning,
+      notice: Keyword.get(colors, :info, :normal),
+      info: Keyword.get(colors, :info, :normal),
+      debug: Keyword.get(colors, :debug, :cyan),
       enabled: Keyword.get(colors, :enabled, IO.ANSI.enabled?())
     }
   end
@@ -191,7 +263,9 @@ defmodule Logger.Backends.Console do
     |> color_event(level, colors, md)
   end
 
-  defp take_metadata(metadata, :all), do: metadata
+  defp take_metadata(metadata, :all) do
+    metadata
+  end
 
   defp take_metadata(metadata, keys) do
     Enum.reduce(keys, [], fn key, acc ->
@@ -229,6 +303,10 @@ defmodule Logger.Backends.Console do
     retry_log({:put_chars, :unicode, output}, state)
   end
 
+  defp handle_io_reply({:error, {:no_translation, _encoding_from, _encoding_to} = error}, state) do
+    retry_log(error, state)
+  end
+
   defp handle_io_reply({:error, error}, _) do
     raise "failure while logging console messages: " <> inspect(error)
   end
@@ -236,7 +314,13 @@ defmodule Logger.Backends.Console do
   defp retry_log(error, %{device: device, ref: ref, output: dirty} = state) do
     Process.demonitor(ref, [:flush])
 
-    case :unicode.characters_to_binary(dirty) do
+    try do
+      :unicode.characters_to_binary(dirty)
+    rescue
+      ArgumentError ->
+        clean = ["failure while trying to log malformed data: ", inspect(dirty), ?\n]
+        %{state | ref: async_io(device, clean), output: clean}
+    else
       {_, good, bad} ->
         clean = [good | Logger.Formatter.prune(bad)]
         %{state | ref: async_io(device, clean), output: clean}

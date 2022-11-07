@@ -1,55 +1,64 @@
 defmodule Mix.Tasks.Run do
   use Mix.Task
 
-  @shortdoc "Starts and runs the current application"
+  @shortdoc "Runs the current application"
 
   @moduledoc """
-  Starts and runs the current application.
+  Runs the current application.
 
-  `mix run` can be used to start the current application dependencies
-  ant the application itself. For long running systems, this is typically
-  done with the `--no-halt` option:
+  `mix run` starts the current application dependencies and the
+  application itself. The application will be compiled if it has
+  not been compiled yet or it is outdated.
 
-      mix run --no-halt
+  `mix run` may also run code in the application context through
+  additional options. For example, to run a script within the
+  current application, you may pass a filename as argument:
 
-  If there is a desire to execute a script within the current application
-  or configure the application via command line flags, it is possible to
-  do so by passing a script file or an eval expression to the command:
+      $ mix run my_app_script.exs arg1 arg2 arg3
 
-      mix run my_app_script.exs arg1 arg2 arg3
-      mix run -e "MyApp.start" -- arg1 arg2 arg3
+  Code to be executed can also be passed inline with the `-e` option:
 
-  In both cases, the command line flags are available under `System.argv/0`.
+      $ mix run -e "DbUtils.delete_old_records()" -- arg1 arg2 arg3
 
-  Before running any command, Mix will compile and start the current
-  application. If for some reason the application needs to be configured
-  before it is started, the `--no-start` flag can be used and you are then
-  responsible for starting all applications by using functions such as
-  `Application.ensure_all_started/1`. For more information about the
-  application life-cycle and dynamically configuring applications, see
-  the `Application` module.
+  In both cases, the command-line arguments for the script or expression
+  are available in `System.argv/0`. This mirror the command line interface
+  in the `elixir` executable.
+
+  For starting long running systems, one typically passes the `--no-halt`
+  option:
+
+      $ mix run --no-halt
+
+  The `--no-start` option can also be given and the current application,
+  nor its dependencies will be started. Alternatively, you may use
+  `mix eval` to evaluate a single expression without starting the current
+  application.
 
   If you need to pass options to the Elixir executable at the same time
   you use `mix run`, it can be done as follows:
 
-      elixir --sname hello -S mix run --no-halt
+      $ elixir --sname hello -S mix run --no-halt
 
-  ## Command line options
+  This task is automatically re-enabled, so it can be called multiple times
+  with different arguments.
 
-    * `--config`, `-c`  - loads the given configuration file
-    * `--eval`, `-e` - evaluate the given code
-    * `--require`, `-r` - requires pattern before running the command
+  ## Command-line options
+
+    * `--eval`, `-e` - evaluates the given code
+    * `--require`, `-r` - executes the given pattern/file
     * `--parallel`, `-p` - makes all requires parallel
+    * `--preload-modules` - preloads all modules defined in applications
+    * `--no-archives-check` - does not check archives
     * `--no-compile` - does not compile even if files require compilation
     * `--no-deps-check` - does not check dependencies
-    * `--no-archives-check` - does not check archives
+    * `--no-elixir-version-check` - does not check the Elixir version from mix.exs
     * `--no-halt` - does not halt the system after running the command
     * `--no-mix-exs` - allows the command to run even if there is no mix.exs
     * `--no-start` - does not start applications after compilation
-    * `--no-elixir-version-check` - does not check the Elixir version from mix.exs
 
   """
 
+  @impl true
   def run(args) do
     {opts, head} =
       OptionParser.parse_head!(
@@ -67,12 +76,14 @@ defmodule Mix.Tasks.Run do
           start: :boolean,
           archives_check: :boolean,
           elixir_version_check: :boolean,
-          parallel_require: :keep
+          parallel_require: :keep,
+          preload_modules: :boolean
         ]
       )
 
     run(args, opts, head, &Code.eval_string/1, &Code.require_file/1)
-    unless Keyword.get(opts, :halt, true), do: Process.sleep(:infinity)
+    unless Keyword.get(opts, :halt, true), do: System.no_halt(true)
+    Mix.Task.reenable("run")
     :ok
   end
 
@@ -85,7 +96,6 @@ defmodule Mix.Tasks.Run do
           (String.t() -> term())
         ) :: :ok
   def run(args, opts, head, expr_evaluator, file_evaluator) do
-    # TODO: Remove on v2.0
     opts =
       Enum.flat_map(opts, fn
         {:parallel_require, value} ->
@@ -123,7 +133,7 @@ defmodule Mix.Tasks.Run do
         Mix.raise(
           "Cannot execute \"mix run\" without a Mix.Project, " <>
             "please ensure you are running Mix in a directory with a mix.exs file " <>
-            "or pass the --no-mix-exs flag"
+            "or pass the --no-mix-exs option"
         )
     end
 
@@ -141,13 +151,17 @@ defmodule Mix.Tasks.Run do
   end
 
   defp process_config(opts) do
-    Enum.each(opts, fn
-      {:config, value} ->
-        Mix.Task.run("loadconfig", [value])
+    for {:config, value} <- opts do
+      # TODO: Remove on v2.0.
+      IO.warn(
+        "the --config flag is deprecated. If you need to handle multiple configurations, " <>
+          "it is preferable to dynamically import them in your config files"
+      )
 
-      _ ->
-        :ok
-    end)
+      Mix.Tasks.Loadconfig.load_compile(value)
+    end
+
+    :ok
   end
 
   defp process_load(opts, expr_evaluator) do

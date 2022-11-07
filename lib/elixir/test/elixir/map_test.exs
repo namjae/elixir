@@ -7,6 +7,8 @@ defmodule MapTest do
 
   @sample %{a: 1, b: 2}
 
+  defp sample, do: @sample
+
   test "maps in attributes" do
     assert @sample == %{a: 1, b: 2}
   end
@@ -60,6 +62,8 @@ defmodule MapTest do
     assert %{
              try do
                1
+             rescue
+               _exception -> :exception
              else
                a -> a
              end => 1
@@ -94,21 +98,34 @@ defmodule MapTest do
 
   test "take/2" do
     assert Map.take(%{a: 1, b: 2, c: 3}, [:b, :c]) == %{b: 2, c: 3}
-    assert Map.take(%{a: 1, b: 2, c: 3}, MapSet.new([:b, :c])) == %{b: 2, c: 3}
     assert Map.take(%{a: 1, b: 2, c: 3}, []) == %{}
     assert_raise BadMapError, fn -> Map.take(:foo, []) end
   end
 
   test "drop/2" do
     assert Map.drop(%{a: 1, b: 2, c: 3}, [:b, :c]) == %{a: 1}
-    assert Map.drop(%{a: 1, b: 2, c: 3}, MapSet.new([:b, :c])) == %{a: 1}
     assert_raise BadMapError, fn -> Map.drop(:foo, []) end
   end
 
   test "split/2" do
     assert Map.split(%{a: 1, b: 2, c: 3}, [:b, :c]) == {%{b: 2, c: 3}, %{a: 1}}
-    assert Map.split(%{a: 1, b: 2, c: 3}, MapSet.new([:b, :c])) == {%{b: 2, c: 3}, %{a: 1}}
     assert_raise BadMapError, fn -> Map.split(:foo, []) end
+  end
+
+  test "split_with/2" do
+    assert Map.split_with(%{}, fn {_k, v} -> rem(v, 2) == 0 end) == {%{}, %{}}
+
+    assert Map.split_with(%{a: 1, b: 2, c: 3}, fn {_k, v} -> rem(v, 2) == 0 end) ==
+             {%{b: 2}, %{a: 1, c: 3}}
+
+    assert Map.split_with(%{a: 2, b: 4, c: 6}, fn {_k, v} -> rem(v, 2) == 0 end) ==
+             {%{a: 2, b: 4, c: 6}, %{}}
+
+    assert Map.split_with(%{1 => 1, 2 => 2, 3 => 3}, fn {k, _v} -> rem(k, 2) == 0 end) ==
+             {%{2 => 2}, %{1 => 1, 3 => 3}}
+
+    assert Map.split_with(%{1 => 2, 3 => 4, 5 => 6}, fn {k, _v} -> rem(k, 2) == 0 end) ==
+             {%{}, %{1 => 2, 3 => 4, 5 => 6}}
   end
 
   test "get_and_update/3" do
@@ -134,19 +151,52 @@ defmodule MapTest do
   end
 
   test "update maps" do
-    assert %{@sample | a: 3} == %{a: 3, b: 2}
+    assert %{sample() | a: 3} == %{a: 3, b: 2}
 
     assert_raise KeyError, fn ->
-      %{@sample | c: 3}
+      %{sample() | c: 3}
     end
   end
 
-  test "map access" do
-    assert @sample.a == 1
+  test "map dot access" do
+    assert sample().a == 1
 
     assert_raise KeyError, fn ->
-      @sample.c
+      sample().c
     end
+  end
+
+  test "put/3 optimized by the compiler" do
+    map = %{a: 1, b: 2}
+
+    assert Map.put(map, :a, 2) == %{a: 2, b: 2}
+    assert Map.put(map, :c, 3) == %{a: 1, b: 2, c: 3}
+
+    assert Map.put(%{map | a: 2}, :a, 3) == %{a: 3, b: 2}
+    assert Map.put(%{map | a: 2}, :b, 3) == %{a: 2, b: 3}
+
+    assert Map.put(map, :a, 2) |> Map.put(:a, 3) == %{a: 3, b: 2}
+    assert Map.put(map, :a, 2) |> Map.put(:c, 3) == %{a: 2, b: 2, c: 3}
+    assert Map.put(map, :c, 3) |> Map.put(:a, 2) == %{a: 2, b: 2, c: 3}
+    assert Map.put(map, :c, 3) |> Map.put(:c, 4) == %{a: 1, b: 2, c: 4}
+  end
+
+  test "merge/2 with map literals optimized by the compiler" do
+    map = %{a: 1, b: 2}
+
+    assert Map.merge(map, %{a: 2}) == %{a: 2, b: 2}
+    assert Map.merge(map, %{c: 3}) == %{a: 1, b: 2, c: 3}
+    assert Map.merge(%{a: 2}, map) == %{a: 1, b: 2}
+    assert Map.merge(%{c: 3}, map) == %{a: 1, b: 2, c: 3}
+
+    assert Map.merge(%{map | a: 2}, %{a: 3}) == %{a: 3, b: 2}
+    assert Map.merge(%{map | a: 2}, %{b: 3}) == %{a: 2, b: 3}
+    assert Map.merge(%{a: 2}, %{map | a: 3}) == %{a: 3, b: 2}
+    assert Map.merge(%{a: 2}, %{map | b: 3}) == %{a: 1, b: 3}
+
+    assert Map.merge(map, %{a: 2}) |> Map.merge(%{a: 3, c: 3}) == %{a: 3, b: 2, c: 3}
+    assert Map.merge(map, %{c: 3}) |> Map.merge(%{c: 4}) == %{a: 1, b: 2, c: 4}
+    assert Map.merge(map, %{a: 3, c: 3}) |> Map.merge(%{a: 2}) == %{a: 2, b: 2, c: 3}
   end
 
   test "merge/3" do
@@ -159,9 +209,40 @@ defmodule MapTest do
              %{a: 1, b: 2, c: :x, d: 5}
   end
 
+  test "replace/3" do
+    map = %{c: 3, b: 2, a: 1}
+    assert Map.replace(map, :b, 10) == %{c: 3, b: 10, a: 1}
+    assert Map.replace(map, :a, 1) == map
+    assert Map.replace(map, :x, 1) == map
+    assert Map.replace(%{}, :x, 1) == %{}
+  end
+
+  test "replace!/3" do
+    map = %{c: 3, b: 2, a: 1}
+    assert Map.replace!(map, :b, 10) == %{c: 3, b: 10, a: 1}
+    assert Map.replace!(map, :a, 1) == map
+
+    assert_raise KeyError, "key :x not found in: %{a: 1, b: 2, c: 3}", fn ->
+      Map.replace!(map, :x, 10)
+    end
+
+    assert_raise KeyError, "key :x not found in: %{}", fn ->
+      Map.replace!(%{}, :x, 10)
+    end
+  end
+
   test "implements (almost) all functions in Keyword" do
-    assert Keyword.__info__(:functions) -- Map.__info__(:functions) ==
-             [delete: 3, delete_first: 2, get_values: 2, keyword?: 1, pop_first: 2, pop_first: 3]
+    assert Keyword.__info__(:functions) -- Map.__info__(:functions) == [
+             delete: 3,
+             delete_first: 2,
+             get_values: 2,
+             keyword?: 1,
+             pop_first: 2,
+             pop_first: 3,
+             pop_values: 2,
+             validate: 2,
+             validate!: 2
+           ]
   end
 
   test "variable keys" do
@@ -176,13 +257,15 @@ defmodule MapTest do
 
   defmodule ExternalUser do
     def __struct__ do
-      %{__struct__: ThisDoesNotLeak, name: "john", age: 27}
+      %{__struct__: __MODULE__, name: "john", age: 27}
     end
 
     def __struct__(kv) do
       Enum.reduce(kv, __struct__(), fn {k, v}, acc -> :maps.update(k, v, acc) end)
     end
   end
+
+  defp empty_map(), do: %{}
 
   test "structs" do
     assert %ExternalUser{} == %{__struct__: ExternalUser, name: "john", age: 27}
@@ -195,73 +278,86 @@ defmodule MapTest do
     %ExternalUser{name: name} = %ExternalUser{}
     assert name == "john"
 
-    map = %{}
-
     assert_raise BadStructError, "expected a struct named MapTest.ExternalUser, got: %{}", fn ->
-      %ExternalUser{map | name: "meg"}
+      %ExternalUser{empty_map() | name: "meg"}
     end
   end
 
-  test "structs with variable name" do
-    %module{name: "john"} = %ExternalUser{name: "john", age: 27}
-    assert module == ExternalUser
-    user = %ExternalUser{name: "john", age: 27}
-    %^module{name: "john"} = user
-
-    case user do
-      %module{} = %{age: 27} -> module
+  describe "structs with variable name" do
+    test "extracts the struct module" do
+      %module{name: "john"} = %ExternalUser{name: "john", age: 27}
+      assert module == ExternalUser
     end
 
-    invalid_struct = %{__struct__: foo()}
+    test "returns the struct on match" do
+      assert Code.eval_string("%struct{} = %ExternalUser{}", [], __ENV__) ==
+               {%ExternalUser{}, [struct: ExternalUser]}
+    end
 
-    assert_raise CaseClauseError, fn ->
-      case invalid_struct do
-        %module{} -> module
+    test "supports the pin operator" do
+      module = ExternalUser
+      user = %ExternalUser{name: "john", age: 27}
+      %^module{name: "john"} = user
+    end
+
+    test "is supported in case" do
+      user = %ExternalUser{name: "john", age: 27}
+
+      case user do
+        %module{} = %{age: 27} -> assert module == ExternalUser
       end
     end
 
-    assert_raise CaseClauseError, fn ->
-      case invalid_struct do
-        %_{} -> :ok
+    defp foo(), do: "foo"
+    defp destruct1(%module{}), do: module
+    defp destruct2(%_{}), do: :ok
+
+    test "does not match" do
+      invalid_struct = %{__struct__: foo()}
+
+      assert_raise CaseClauseError, fn ->
+        case invalid_struct do
+          %module{} -> module
+        end
       end
-    end
 
-    assert_raise CaseClauseError, fn ->
-      foo = foo()
-
-      case invalid_struct do
-        %^foo{} -> :ok
+      assert_raise CaseClauseError, fn ->
+        case invalid_struct do
+          %_{} -> :ok
+        end
       end
-    end
 
-    assert_raise FunctionClauseError, fn ->
-      destruct1(invalid_struct)
-    end
+      assert_raise CaseClauseError, fn ->
+        foo = foo()
 
-    assert_raise FunctionClauseError, fn ->
-      destruct2(invalid_struct)
-    end
+        case invalid_struct do
+          %^foo{} -> :ok
+        end
+      end
 
-    assert_raise MatchError, fn ->
-      %module{} = invalid_struct
-      _ = module
-    end
+      assert_raise FunctionClauseError, fn ->
+        destruct1(invalid_struct)
+      end
 
-    assert_raise MatchError, fn ->
-      %_{} = invalid_struct
-    end
+      assert_raise FunctionClauseError, fn ->
+        destruct2(invalid_struct)
+      end
 
-    assert_raise MatchError, fn ->
-      foo = foo()
-      %^foo{} = invalid_struct
+      assert_raise MatchError, fn ->
+        %module{} = invalid_struct
+        _ = module
+      end
+
+      assert_raise MatchError, fn ->
+        %_{} = invalid_struct
+      end
+
+      assert_raise MatchError, fn ->
+        foo = foo()
+        %^foo{} = invalid_struct
+      end
     end
   end
-
-  defp foo(), do: "foo"
-
-  defp destruct1(%module{}), do: module
-
-  defp destruct2(%_{}), do: :ok
 
   test "structs when using dynamic modules" do
     defmodule Module.concat(MapTest, DynamicUser) do
@@ -313,6 +409,10 @@ defmodule MapTest do
       defmodule TestMod do
         @enforce_keys :foo
         defstruct [:foo]
+
+        # Verify it remain set afterwards
+        :foo = @enforce_keys
+
         def foo do
           %TestMod{}
         end

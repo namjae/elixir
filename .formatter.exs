@@ -1,9 +1,10 @@
 [
   inputs: [
     "lib/*/{lib,unicode,test}/**/*.{ex,exs}",
-    "lib/*/mix.exs"
+    "lib/*/*.exs",
+    "lib/ex_unit/examples/*.exs",
+    ".formatter.exs"
   ],
-
   locals_without_parens: [
     # Formatter tests
     assert_format: 2,
@@ -12,10 +13,7 @@
     assert_same: 2,
 
     # Errors tests
-    assert_eval_raise: 3,
-
-    # Mix tests
-    in_fixture: 2,
-    in_tmp: 2
-  ]
+    assert_eval_raise: 3
+  ],
+  normalize_bitstring_modifiers: false
 ]

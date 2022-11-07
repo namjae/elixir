@@ -1,6 +1,45 @@
 defprotocol IEx.Info do
   @fallback_to_any true
 
+  @moduledoc """
+  A protocol to print information in IEx about the given datastructure.
+
+  `IEx.Helpers.i/1` uses this protocol to display a term-specific list
+  of of information.
+
+  By default, an `Any` implementation will be used which returns
+  the `"Data type"`, `"Description"` and `"Reference modules"` sections.
+  """
+
+  @doc """
+  Returns information for the given term.
+
+  Information should be returned as a list of `info_name`-`info` tuples,
+  where `info_name` is a string-like value, such as an atom or a string
+  itself, and `info` is a string. `info_name` should be short. `info` can
+  be arbitrarily long and contain newlines.
+
+  `IEx.Helpers.i/1` will generate (and always display)
+  the 'Implemented protocols' and 'Term' sections in the result.
+
+  All other sections of information are added (and can be overridden)
+  by customized implementations of this function.
+
+  It is recommended to at least include the following sections for a
+  custom implementation:
+
+    * `"Data type"`: Name of the data type. Usually the name of the module
+       defining the data type.
+    * `"Description"`: One or a few sentences describing what the data type represents.
+    * `"Reference modules`: One or a few comma-separated module names that focus
+      on working with this datatype.
+
+  Other recommended sections are:
+
+    * `"Raw representation`: showing another way of writing the passed `term`.
+      This is mostly relevant for data-structures whose `String.Chars`-implementations
+      make use of sigils or other syntactic sugar.
+  """
   @spec info(term()) :: [{info_name :: String.Chars.t(), info :: String.t()}]
   def info(term)
 end
@@ -18,7 +57,7 @@ defimpl IEx.Info, for: Atom do
   def info(atom) do
     specific_info =
       cond do
-        Code.ensure_loaded?(atom) ->
+        module?(atom) ->
           info_module(atom)
 
         match?("Elixir." <> _, Atom.to_string(atom)) ->
@@ -43,12 +82,22 @@ defimpl IEx.Info, for: Atom do
     [{"Data type", "Atom"}] ++ description ++ specific_info
   end
 
+  defp module?(atom) do
+    case :code.get_object_code(atom) do
+      :error ->
+        Code.ensure_loaded?(atom)
+
+      {^atom, beam, _path} ->
+        info = :beam_lib.info(beam)
+        Keyword.fetch(info, :module) == {:ok, atom}
+    end
+  end
+
   defp info_module(mod) do
     extra =
-      if Code.get_docs(mod, :moduledoc) do
-        "Use h(#{inspect(mod)}) to access its documentation.\n"
-      else
-        ""
+      case Code.fetch_docs(mod) do
+        {:docs_v1, _, _, _, %{}, _, _} -> "Use h(#{inspect(mod)}) to access its documentation.\n"
+        _ -> ""
       end
 
     mod_info = mod.module_info()
@@ -121,21 +170,22 @@ defimpl IEx.Info, for: List do
     specific_info =
       cond do
         list == [] -> info_list(list)
-        List.ascii_printable?(list) -> info_charlist(list)
+        List.ascii_printable?(list) -> info_printable_charlist(list)
         Keyword.keyword?(list) -> info_kw_list(list)
+        List.improper?(list) -> info_improper_list(list)
         true -> info_list(list)
       end
 
     [{"Data type", "List"}] ++ specific_info
   end
 
-  defp info_charlist(charlist) do
+  defp info_printable_charlist(charlist) do
     description = """
-    This is a list of integers that is printed as a sequence of characters
-    delimited by single quotes because all the integers in it represent valid
-    ASCII characters. Conventionally, such lists of integers are referred to
-    as "charlists" (more precisely, a charlist is a list of Unicode codepoints,
-    and ASCII is a subset of Unicode).
+    This is a list of integers that is printed using the `~c` sigil syntax,
+    defined by the `Kernel.sigil_c/2` macro, because all the integers in it
+    represent printable ASCII characters. Conventionally, a list of Unicode
+    code points is known as a charlist and a list of ASCII characters is a
+    subset of it.
     """
 
     [
@@ -152,6 +202,20 @@ defimpl IEx.Info, for: List do
     """
 
     [{"Description", description}, {"Reference modules", "Keyword, List"}]
+  end
+
+  defp info_improper_list(_improper_list) do
+    description = """
+    This is what is referred to as an "improper list". An improper list is a
+    list which its last tail is not to an empty list. For example: [1, 2, 3]
+    is a proper list, as it is equivalent to [1, 2, 3 | []], as opposed to
+    [1, 2 | 3] which is an improper list since its last tail returns 3.
+    """
+
+    [
+      {"Description", description},
+      {"Reference modules", "List"}
+    ]
   end
 
   defp info_list(_list) do
@@ -175,7 +239,7 @@ defimpl IEx.Info, for: BitString do
   defp info_string(bitstring) do
     description = """
     This is a string: a UTF-8 encoded binary. It's printed surrounded by
-    "double quotes" because all UTF-8 encoded codepoints in it are printable.
+    "double quotes" because all UTF-8 encoded code points in it are printable.
     """
 
     [
@@ -192,7 +256,7 @@ defimpl IEx.Info, for: BitString do
     desc = """
     This is a string: a UTF-8 encoded binary. It's printed with the `<<>>`
     syntax (as opposed to double quotes) because it contains non-printable
-    UTF-8 encoded codepoints (the first non-printable codepoint being
+    UTF-8 encoded code points (the first non-printable code point being
     `#{inspect(first_non_printable)}`).
     """
 
@@ -249,7 +313,7 @@ end
 
 defimpl IEx.Info, for: Function do
   def info(fun) do
-    fun_info = :erlang.fun_info(fun)
+    fun_info = Function.info(fun)
 
     specific_info =
       if fun_info[:type] == :external and fun_info[:env] == [] do
@@ -339,7 +403,7 @@ defimpl IEx.Info, for: [Date, Time, NaiveDateTime] do
     case @for do
       Date -> {"D", "date"}
       Time -> {"T", "time"}
-      NaiveDateTime -> {"N", ~S{"naive" datetime (that is, a datetime without a timezone)}}
+      NaiveDateTime -> {"N", ~S{"naive" datetime (that is, a datetime without a time zone)}}
     end
 
   def info(value) do

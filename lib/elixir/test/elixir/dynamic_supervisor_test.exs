@@ -9,6 +9,35 @@ defmodule DynamicSupervisorTest do
     def init(args), do: args
   end
 
+  test "can be supervised directly" do
+    children = [{DynamicSupervisor, name: :dyn_sup_spec_test}]
+    assert {:ok, _} = Supervisor.start_link(children, strategy: :one_for_one)
+    assert DynamicSupervisor.which_children(:dyn_sup_spec_test) == []
+  end
+
+  test "multiple supervisors can be supervised and identified with simple child spec" do
+    {:ok, _} = Registry.start_link(keys: :unique, name: DynSup.Registry)
+
+    children = [
+      {DynamicSupervisor, name: :simple_name},
+      {DynamicSupervisor, name: {:global, :global_name}},
+      {DynamicSupervisor, name: {:via, Registry, {DynSup.Registry, "via_name"}}}
+    ]
+
+    assert {:ok, supsup} = Supervisor.start_link(children, strategy: :one_for_one)
+
+    assert {:ok, no_name_dynsup} =
+             Supervisor.start_child(supsup, {DynamicSupervisor, strategy: :one_for_one})
+
+    assert DynamicSupervisor.which_children(:simple_name) == []
+    assert DynamicSupervisor.which_children({:global, :global_name}) == []
+    assert DynamicSupervisor.which_children({:via, Registry, {DynSup.Registry, "via_name"}}) == []
+    assert DynamicSupervisor.which_children(no_name_dynsup) == []
+
+    assert Supervisor.start_child(supsup, {DynamicSupervisor, strategy: :one_for_one}) ==
+             {:error, {:already_started, no_name_dynsup}}
+  end
+
   describe "use/2" do
     test "generates child_spec/1" do
       assert Simple.child_spec([:hello]) == %{
@@ -39,14 +68,15 @@ defmodule DynamicSupervisorTest do
 
   describe "init/1" do
     test "set default options" do
-      assert DynamicSupervisor.init(strategy: :one_for_one) ==
-               {:ok, %{
-                 strategy: :one_for_one,
-                 intensity: 3,
-                 period: 5,
-                 max_children: :infinity,
-                 extra_arguments: []
-               }}
+      assert DynamicSupervisor.init([]) ==
+               {:ok,
+                %{
+                  strategy: :one_for_one,
+                  intensity: 3,
+                  period: 5,
+                  max_children: :infinity,
+                  extra_arguments: []
+                }}
     end
   end
 
@@ -69,6 +99,9 @@ defmodule DynamicSupervisorTest do
       assert DynamicSupervisor.start_link(Simple, {:ok, %{extra_arguments: -1}}) ==
                {:error, {:supervisor_data, {:invalid_extra_arguments, -1}}}
 
+      assert DynamicSupervisor.start_link(Simple, {:ok, %{auto_shutdown: :any_significant}}) ==
+               {:error, {:supervisor_data, {:invalid_auto_shutdown, :any_significant}}}
+
       assert DynamicSupervisor.start_link(Simple, :unknown) ==
                {:error, {:bad_return, {Simple, :init, :unknown}}}
 
@@ -88,6 +121,16 @@ defmodule DynamicSupervisorTest do
       # And the initial call
       assert {:supervisor, DynamicSupervisorTest.Simple, 1} =
                :proc_lib.translate_initial_call(pid)
+
+      # And shuts down
+      assert DynamicSupervisor.stop(__MODULE__) == :ok
+    end
+
+    test "with spawn_opt" do
+      {:ok, pid} =
+        DynamicSupervisor.start_link(strategy: :one_for_one, spawn_opt: [priority: :high])
+
+      assert Process.info(pid, :priority) == {:priority, :high}
     end
 
     test "sets initial call to the same as a regular supervisor" do
@@ -139,9 +182,9 @@ defmodule DynamicSupervisorTest do
       assert DynamicSupervisor.start_child(pid, {Task, fn -> :ok end}) == {:error, :max_children}
     end
 
-    defp fake_upgrade(pid, args) do
+    defp fake_upgrade(pid, init_arg) do
       :ok = :sys.suspend(pid)
-      :sys.replace_state(pid, fn state -> %{state | args: args} end)
+      :sys.replace_state(pid, fn state -> %{state | args: init_arg} end)
       res = :sys.change_code(pid, :gen_server, 123, :extra)
       :ok = :sys.resume(pid)
       res
@@ -165,7 +208,7 @@ defmodule DynamicSupervisorTest do
 
     test "supports new child spec" do
       {:ok, pid} = DynamicSupervisor.start_link(strategy: :one_for_one)
-      child = {Task, fn -> :timer.sleep(:infinity) end}
+      child = {Task, fn -> Process.sleep(:infinity) end}
       assert {:ok, pid} = DynamicSupervisor.start_child(pid, child)
       assert is_pid(pid)
     end
@@ -189,6 +232,20 @@ defmodule DynamicSupervisorTest do
 
       assert DynamicSupervisor.start_child(:not_used, %{id: 1, start: {Task, :foo, :bar}}) ==
                {:error, {:invalid_mfa, {Task, :foo, :bar}}}
+
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :foo, [:bar]},
+               shutdown: -1
+             }) ==
+               {:error, {:invalid_shutdown, -1}}
+
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :foo, [:bar]},
+               significant: true
+             }) ==
+               {:error, {:invalid_significant, true}}
     end
 
     test "with different returns" do
@@ -333,7 +390,7 @@ defmodule DynamicSupervisorTest do
       assert %{workers: 4, active: 2} = DynamicSupervisor.count_children(pid)
     end
 
-    test "restarting children counted in max_children" do
+    test "restarting on init children counted in max_children" do
       child = current_module_worker([:restart, :error], restart: :permanent)
       opts = [strategy: :one_for_one, max_children: 1, max_restarts: 100_000]
       {:ok, pid} = DynamicSupervisor.start_link(opts)
@@ -344,6 +401,39 @@ defmodule DynamicSupervisorTest do
 
       child = current_module_worker([:restart, :ok2], restart: :permanent)
       assert {:error, :max_children} = DynamicSupervisor.start_child(pid, child)
+    end
+
+    test "restarting on exit children counted in max_children" do
+      child = current_module_worker([:ok2], restart: :permanent)
+      opts = [strategy: :one_for_one, max_children: 1, max_restarts: 100_000]
+      {:ok, pid} = DynamicSupervisor.start_link(opts)
+
+      assert {:ok, child_pid} = DynamicSupervisor.start_child(pid, child)
+      assert_kill(child_pid, :shutdown)
+      assert %{workers: 1, active: 1} = DynamicSupervisor.count_children(pid)
+
+      child = current_module_worker([:ok2], restart: :permanent)
+      assert {:error, :max_children} = DynamicSupervisor.start_child(pid, child)
+    end
+
+    test "restarting a child with extra_arguments successfully restarts child" do
+      parent = self()
+
+      fun = fn ->
+        send(parent, :from_child)
+        Process.sleep(:infinity)
+      end
+
+      {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one, extra_arguments: [fun])
+      child = %{id: Task, restart: :transient, start: {Task, :start_link, []}}
+
+      assert {:ok, child} = DynamicSupervisor.start_child(sup, child)
+      assert is_pid(child)
+      assert_receive :from_child
+      assert %{active: 1, workers: 1} = DynamicSupervisor.count_children(sup)
+      assert_kill(child, :oops)
+      assert_receive :from_child
+      assert %{workers: 1, active: 1} = DynamicSupervisor.count_children(sup)
     end
 
     test "child is restarted when trying again" do
@@ -378,8 +468,33 @@ defmodule DynamicSupervisorTest do
       assert_receive {:EXIT, ^pid, :shutdown}
     end
 
-    def start_link(:ok3), do: {:ok, spawn_link(fn -> :timer.sleep(:infinity) end), :extra}
-    def start_link(:ok2), do: {:ok, spawn_link(fn -> :timer.sleep(:infinity) end)}
+    test "with valid shutdown" do
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+      for n <- 0..1 do
+        assert {:ok, child_pid} =
+                 DynamicSupervisor.start_child(pid, %{
+                   id: n,
+                   start: {Task, :start_link, [fn -> Process.sleep(:infinity) end]},
+                   shutdown: n
+                 })
+
+        assert_kill(child_pid, :shutdown)
+      end
+    end
+
+    test "with invalid valid shutdown" do
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :start_link, [fn -> :ok end]},
+               shutdown: -1
+             }) == {:error, {:invalid_shutdown, -1}}
+    end
+
+    def start_link(:ok3), do: {:ok, spawn_link(fn -> Process.sleep(:infinity) end), :extra}
+    def start_link(:ok2), do: {:ok, spawn_link(fn -> Process.sleep(:infinity) end)}
     def start_link(:error), do: {:error, :found}
     def start_link(:ignore), do: :ignore
     def start_link(:unknown), do: :unknown
@@ -450,9 +565,11 @@ defmodule DynamicSupervisorTest do
     test "terminates children with infinity shutdown and abnormal reason" do
       Process.flag(:trap_exit, true)
       {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      parent = self()
 
       fun = fn ->
         Process.flag(:trap_exit, true)
+        send(parent, :ready)
         receive(do: (_ -> exit({:shutdown, :oops})))
       end
 
@@ -461,10 +578,15 @@ defmodule DynamicSupervisorTest do
       assert {:ok, child2} = DynamicSupervisor.start_child(sup, child)
       assert {:ok, child3} = DynamicSupervisor.start_child(sup, child)
 
+      assert_receive :ready
+      assert_receive :ready
+      assert_receive :ready
+
       Process.monitor(child1)
       Process.monitor(child2)
       Process.monitor(child3)
       assert_kill(sup, :shutdown)
+
       assert_receive {:DOWN, _, :process, ^child1, {:shutdown, :oops}}
       assert_receive {:DOWN, _, :process, ^child2, {:shutdown, :oops}}
       assert_receive {:DOWN, _, :process, ^child3, {:shutdown, :oops}}
@@ -491,9 +613,11 @@ defmodule DynamicSupervisorTest do
     test "terminates children with integer shutdown and abnormal reason" do
       Process.flag(:trap_exit, true)
       {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      parent = self()
 
       fun = fn ->
         Process.flag(:trap_exit, true)
+        send(parent, :ready)
         receive(do: (_ -> exit({:shutdown, :oops})))
       end
 
@@ -502,10 +626,15 @@ defmodule DynamicSupervisorTest do
       assert {:ok, child2} = DynamicSupervisor.start_child(sup, child)
       assert {:ok, child3} = DynamicSupervisor.start_child(sup, child)
 
+      assert_receive :ready
+      assert_receive :ready
+      assert_receive :ready
+
       Process.monitor(child1)
       Process.monitor(child2)
       Process.monitor(child3)
       assert_kill(sup, :shutdown)
+
       assert_receive {:DOWN, _, :process, ^child1, {:shutdown, :oops}}
       assert_receive {:DOWN, _, :process, ^child2, {:shutdown, :oops}}
       assert_receive {:DOWN, _, :process, ^child3, {:shutdown, :oops}}
@@ -514,14 +643,16 @@ defmodule DynamicSupervisorTest do
     test "terminates children with expired integer shutdown" do
       Process.flag(:trap_exit, true)
       {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      parent = self()
 
       fun = fn ->
-        :timer.sleep(:infinity)
+        Process.sleep(:infinity)
       end
 
       tmt = fn ->
         Process.flag(:trap_exit, true)
-        :timer.sleep(:infinity)
+        send(parent, :ready)
+        Process.sleep(:infinity)
       end
 
       child_fun = Supervisor.child_spec({Task, fun}, shutdown: 1)
@@ -530,10 +661,12 @@ defmodule DynamicSupervisorTest do
       assert {:ok, child2} = DynamicSupervisor.start_child(sup, child_tmt)
       assert {:ok, child3} = DynamicSupervisor.start_child(sup, child_fun)
 
+      assert_receive :ready
       Process.monitor(child1)
       Process.monitor(child2)
       Process.monitor(child3)
       assert_kill(sup, :shutdown)
+
       assert_receive {:DOWN, _, :process, ^child1, :shutdown}
       assert_receive {:DOWN, _, :process, ^child2, :killed}
       assert_receive {:DOWN, _, :process, ^child3, :shutdown}
@@ -542,9 +675,11 @@ defmodule DynamicSupervisorTest do
     test "terminates children with permanent restart and normal reason" do
       Process.flag(:trap_exit, true)
       {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+      parent = self()
 
       fun = fn ->
         Process.flag(:trap_exit, true)
+        send(parent, :ready)
         receive(do: (_ -> exit(:normal)))
       end
 
@@ -552,6 +687,10 @@ defmodule DynamicSupervisorTest do
       assert {:ok, child1} = DynamicSupervisor.start_child(sup, child)
       assert {:ok, child2} = DynamicSupervisor.start_child(sup, child)
       assert {:ok, child3} = DynamicSupervisor.start_child(sup, child)
+
+      assert_receive :ready
+      assert_receive :ready
+      assert_receive :ready
 
       Process.monitor(child1)
       Process.monitor(child2)
@@ -623,7 +762,7 @@ defmodule DynamicSupervisorTest do
   end
 
   defp sleepy_worker(opts \\ []) do
-    mfa = {Task, :start_link, [:timer, :sleep, [:infinity]]}
+    mfa = {Task, :start_link, [Process, :sleep, [:infinity]]}
     Supervisor.child_spec(%{id: Task, start: mfa}, opts)
   end
 

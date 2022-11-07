@@ -3,7 +3,7 @@ defmodule Mix.Tasks.Compile.Yecc do
   alias Mix.Compilers.Erlang
 
   @recursive true
-  @manifest ".compile.yecc"
+  @manifest "compile.yecc"
   @switches [force: :boolean, all_warnings: :boolean]
 
   # These options can't be controlled with :yecc_options.
@@ -38,9 +38,7 @@ defmodule Mix.Tasks.Compile.Yecc do
 
   """
 
-  @doc """
-  Runs this task.
-  """
+  @impl true
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
 
@@ -56,6 +54,8 @@ defmodule Mix.Tasks.Compile.Yecc do
       Mix.raise(":yecc_options should be a list of options, got: #{inspect(options)}")
     end
 
+    opts = [parallel: true] ++ opts
+
     Erlang.compile(manifest(), mappings, :yrl, :erl, opts, fn input, output ->
       Erlang.ensure_application!(:parsetools, input)
       options = options ++ @forced_opts ++ [parserfile: Erlang.to_erl_file(output)]
@@ -63,15 +63,11 @@ defmodule Mix.Tasks.Compile.Yecc do
     end)
   end
 
-  @doc """
-  Returns Yecc manifests.
-  """
+  @impl true
   def manifests, do: [manifest()]
   defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
-  @doc """
-  Cleans up compilation artifacts.
-  """
+  @impl true
   def clean do
     Erlang.clean(manifest())
   end

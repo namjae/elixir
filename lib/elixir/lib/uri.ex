@@ -7,30 +7,52 @@ defmodule URI do
   according to [RFC 3986](https://tools.ietf.org/html/rfc3986).
   """
 
-  defstruct scheme: nil,
-            path: nil,
-            query: nil,
-            fragment: nil,
-            authority: nil,
-            userinfo: nil,
-            host: nil,
-            port: nil
+  @doc """
+  The URI struct.
+
+  The fields are defined to match the following URI representation
+  (with field names between brackets):
+
+      [scheme]://[userinfo]@[host]:[port][path]?[query]#[fragment]
+
+
+  Note the `authority` field is deprecated. `parse/1` will still
+  populate it for backwards compatibility but you should generally
+  avoid setting or getting it.
+  """
+  @derive {Inspect, optional: [:authority]}
+  defstruct [:scheme, :authority, :userinfo, :host, :port, :path, :query, :fragment]
 
   @type t :: %__MODULE__{
           scheme: nil | binary,
-          path: nil | binary,
-          query: nil | binary,
-          fragment: nil | binary,
-          authority: nil | binary,
+          authority: authority,
           userinfo: nil | binary,
           host: nil | binary,
-          port: nil | :inet.port_number()
+          port: nil | :inet.port_number(),
+          path: nil | binary,
+          query: nil | binary,
+          fragment: nil | binary
         }
+
+  @typedoc deprecated: "The authority field is deprecated"
+  @opaque authority :: nil | binary
+
+  defmodule Error do
+    defexception [:action, :reason, :part]
+
+    @doc false
+    def message(%Error{action: action, reason: reason, part: part}) do
+      "cannot #{action} due to reason #{reason}: #{inspect(part)}"
+    end
+  end
 
   import Bitwise
 
+  @reserved_characters ~c":/?#[]@!$&'()*+,;="
+  @formatted_reserved_characters Enum.map_join(@reserved_characters, ", ", &<<?`, &1, ?`>>)
+
   @doc """
-  Returns the default port for a given scheme.
+  Returns the default port for a given `scheme`.
 
   If the scheme is unknown to the `URI` module, this function returns
   `nil`. The default port for any scheme can be configured globally
@@ -47,7 +69,7 @@ defmodule URI do
   """
   @spec default_port(binary) :: nil | non_neg_integer
   def default_port(scheme) when is_binary(scheme) do
-    :elixir_config.safe_get({:uri, scheme}, nil)
+    :elixir_config.get({:uri, scheme}, nil)
   end
 
   @doc """
@@ -68,54 +90,88 @@ defmodule URI do
   end
 
   @doc """
-  Encodes an enumerable into a query string.
+  Encodes `enumerable` into a query string using `encoding`.
 
   Takes an enumerable that enumerates as a list of two-element
-  tuples (e.g., a map or a keyword list) and returns a string
-  in the form of `key1=value1&key2=value2...` where keys and
-  values are URL encoded as per `encode_www_form/1`.
+  tuples (for instance, a map or a keyword list) and returns a string
+  in the form of `key1=value1&key2=value2...`.
 
   Keys and values can be any term that implements the `String.Chars`
-  protocol, except lists which are explicitly forbidden.
+  protocol with the exception of lists, which are explicitly forbidden.
+
+  You can specify one of the following `encoding` strategies:
+
+    * `:www_form` - (default, since v1.12.0) keys and values are URL encoded as
+      per `encode_www_form/1`. This is the format typically used by browsers on
+      query strings and form data. It encodes " " as "+".
+
+    * `:rfc3986` - (since v1.12.0) the same as `:www_form` except it encodes
+      " " as "%20" according [RFC 3986](https://tools.ietf.org/html/rfc3986).
+      This is the best option if you are encoding in a non-browser situation,
+      since encoding spaces as "+" can be ambiguous to URI parsers. This can
+      inadvertently lead to spaces being interpreted as literal plus signs.
+
+  Encoding defaults to `:www_form` for backward compatibility.
 
   ## Examples
 
-      iex> hd = %{"foo" => 1, "bar" => 2}
-      iex> URI.encode_query(hd)
+      iex> query = %{"foo" => 1, "bar" => 2}
+      iex> URI.encode_query(query)
       "bar=2&foo=1"
 
       iex> query = %{"key" => "value with spaces"}
       iex> URI.encode_query(query)
       "key=value+with+spaces"
 
-      iex> URI.encode_query %{key: [:a, :list]}
-      ** (ArgumentError) encode_query/1 values cannot be lists, got: [:a, :list]
+      iex> query = %{"key" => "value with spaces"}
+      iex> URI.encode_query(query, :rfc3986)
+      "key=value%20with%20spaces"
+
+      iex> URI.encode_query(%{key: [:a, :list]})
+      ** (ArgumentError) encode_query/2 values cannot be lists, got: [:a, :list]
 
   """
-  @spec encode_query(term) :: binary
-  def encode_query(enumerable) do
-    Enum.map_join(enumerable, "&", &encode_kv_pair/1)
+  @spec encode_query(Enumerable.t(), :rfc3986 | :www_form) :: binary
+  def encode_query(enumerable, encoding \\ :www_form) do
+    Enum.map_join(enumerable, "&", &encode_kv_pair(&1, encoding))
   end
 
-  defp encode_kv_pair({key, _}) when is_list(key) do
-    raise ArgumentError, "encode_query/1 keys cannot be lists, got: #{inspect(key)}"
+  defp encode_kv_pair({key, _}, _encoding) when is_list(key) do
+    raise ArgumentError, "encode_query/2 keys cannot be lists, got: #{inspect(key)}"
   end
 
-  defp encode_kv_pair({_, value}) when is_list(value) do
-    raise ArgumentError, "encode_query/1 values cannot be lists, got: #{inspect(value)}"
+  defp encode_kv_pair({_, value}, _encoding) when is_list(value) do
+    raise ArgumentError, "encode_query/2 values cannot be lists, got: #{inspect(value)}"
   end
 
-  defp encode_kv_pair({key, value}) do
+  defp encode_kv_pair({key, value}, :rfc3986) do
+    encode(Kernel.to_string(key), &char_unreserved?/1) <>
+      "=" <> encode(Kernel.to_string(value), &char_unreserved?/1)
+  end
+
+  defp encode_kv_pair({key, value}, :www_form) do
     encode_www_form(Kernel.to_string(key)) <> "=" <> encode_www_form(Kernel.to_string(value))
   end
 
   @doc """
-  Decodes a query string into a map.
+  Decodes `query` into a map.
 
-  Given a query string of the form of `key1=value1&key2=value2...`, this
+  Given a query string in the form of `key1=value1&key2=value2...`, this
   function inserts each key-value pair in the query string as one entry in the
   given `map`. Keys and values in the resulting map will be binaries. Keys and
   values will be percent-unescaped.
+
+  You can specify one of the following `encoding` options:
+
+    * `:www_form` - (default, since v1.12.0) keys and values are decoded as per
+      `decode_www_form/1`. This is the format typically used by browsers on
+      query strings and form data. It decodes "+" as " ".
+
+    * `:rfc3986` - (since v1.12.0) keys and values are decoded as per
+      `decode/1`. The result is the same as `:www_form` except for leaving "+"
+      as is in line with [RFC 3986](https://tools.ietf.org/html/rfc3986).
+
+  Encoding defaults to `:www_form` for backward compatibility.
 
   Use `query_decoder/1` if you want to iterate over each value manually.
 
@@ -127,45 +183,54 @@ defmodule URI do
       iex> URI.decode_query("percent=oh+yes%21", %{"starting" => "map"})
       %{"percent" => "oh yes!", "starting" => "map"}
 
+      iex> URI.decode_query("percent=oh+yes%21", %{}, :rfc3986)
+      %{"percent" => "oh+yes!"}
+
   """
-  @spec decode_query(binary, map) :: map
-  def decode_query(query, map \\ %{})
+  @spec decode_query(binary, %{optional(binary) => binary}, :rfc3986 | :www_form) :: %{
+          optional(binary) => binary
+        }
+  def decode_query(query, map \\ %{}, encoding \\ :www_form)
 
-  # TODO: Remove on 2.0
-  def decode_query(query, %_{} = dict) when is_binary(query) do
-    IO.warn("URI.decode_query/2 is deprecated, please use URI.decode_query/1")
-    decode_query_into_dict(query, dict)
+  def decode_query(query, %_{} = dict, encoding) when is_binary(query) do
+    IO.warn(
+      "URI.decode_query/3 expects the second argument to be a map, other usage is deprecated"
+    )
+
+    decode_query_into_dict(query, dict, encoding)
   end
 
-  def decode_query(query, map) when is_binary(query) and is_map(map) do
-    decode_query_into_map(query, map)
+  def decode_query(query, map, encoding) when is_binary(query) and is_map(map) do
+    decode_query_into_map(query, map, encoding)
   end
 
-  # TODO: Remove on 2.0
-  def decode_query(query, dict) when is_binary(query) do
-    IO.warn("URI.decode_query/2 is deprecated, please use URI.decode_query/1")
-    decode_query_into_dict(query, dict)
+  def decode_query(query, dict, encoding) when is_binary(query) do
+    IO.warn(
+      "URI.decode_query/3 expects the second argument to be a map, other usage is deprecated"
+    )
+
+    decode_query_into_dict(query, dict, encoding)
   end
 
-  defp decode_query_into_map(query, map) do
-    case decode_next_query_pair(query) do
+  defp decode_query_into_map(query, map, encoding) do
+    case decode_next_query_pair(query, encoding) do
       nil ->
         map
 
       {{key, value}, rest} ->
-        decode_query_into_map(rest, Map.put(map, key, value))
+        decode_query_into_map(rest, Map.put(map, key, value), encoding)
     end
   end
 
-  defp decode_query_into_dict(query, dict) do
-    case decode_next_query_pair(query) do
+  defp decode_query_into_dict(query, dict, encoding) do
+    case decode_next_query_pair(query, encoding) do
       nil ->
         dict
 
       {{key, value}, rest} ->
         # Avoid warnings about Dict being deprecated
         dict_module = Dict
-        decode_query_into_dict(rest, dict_module.put(dict, key, value))
+        decode_query_into_dict(rest, dict_module.put(dict, key, value), encoding)
     end
   end
 
@@ -175,22 +240,40 @@ defmodule URI do
 
   Key and value in each tuple will be binaries and will be percent-unescaped.
 
+  You can specify one of the following `encoding` options:
+
+    * `:www_form` - (default, since v1.12.0) keys and values are decoded as per
+      `decode_www_form/1`. This is the format typically used by browsers on
+      query strings and form data. It decodes "+" as " ".
+
+    * `:rfc3986` - (since v1.12.0) keys and values are decoded as per
+      `decode/1`. The result is the same as `:www_form` except for leaving "+"
+      as is in line with [RFC 3986](https://tools.ietf.org/html/rfc3986).
+
+  Encoding defaults to `:www_form` for backward compatibility.
+
   ## Examples
 
       iex> URI.query_decoder("foo=1&bar=2") |> Enum.to_list()
       [{"foo", "1"}, {"bar", "2"}]
 
+      iex> URI.query_decoder("food=bread%26butter&drinks=tap%20water+please") |> Enum.to_list()
+      [{"food", "bread&butter"}, {"drinks", "tap water please"}]
+
+      iex> URI.query_decoder("food=bread%26butter&drinks=tap%20water+please", :rfc3986) |> Enum.to_list()
+      [{"food", "bread&butter"}, {"drinks", "tap water+please"}]
+
   """
-  @spec query_decoder(binary) :: Enumerable.t()
-  def query_decoder(query) when is_binary(query) do
-    Stream.unfold(query, &decode_next_query_pair/1)
+  @spec query_decoder(binary, :rfc3986 | :www_form) :: Enumerable.t()
+  def query_decoder(query, encoding \\ :www_form) when is_binary(query) do
+    Stream.unfold(query, &decode_next_query_pair(&1, encoding))
   end
 
-  defp decode_next_query_pair("") do
+  defp decode_next_query_pair("", _encoding) do
     nil
   end
 
-  defp decode_next_query_pair(query) do
+  defp decode_next_query_pair(query, encoding) do
     {undecoded_next_pair, rest} =
       case :binary.split(query, "&") do
         [next_pair, rest] -> {next_pair, rest}
@@ -199,18 +282,29 @@ defmodule URI do
 
     next_pair =
       case :binary.split(undecoded_next_pair, "=") do
-        [key, value] -> {decode_www_form(key), decode_www_form(value)}
-        [key] -> {decode_www_form(key), nil}
+        [key, value] ->
+          {decode_with_encoding(key, encoding), decode_with_encoding(value, encoding)}
+
+        [key] ->
+          {decode_with_encoding(key, encoding), ""}
       end
 
     {next_pair, rest}
   end
 
-  @doc """
-  Checks if the character is a "reserved" character in a URI.
+  defp decode_with_encoding(string, :www_form) do
+    decode_www_form(string)
+  end
 
-  Reserved characters are specified in
-  [RFC 3986, section 2.2](https://tools.ietf.org/html/rfc3986#section-2.2).
+  defp decode_with_encoding(string, :rfc3986) do
+    decode(string)
+  end
+
+  @doc ~s"""
+  Checks if `character` is a reserved one in a URI.
+
+  As specified in [RFC 3986, section 2.2](https://tools.ietf.org/html/rfc3986#section-2.2),
+  the following characters are reserved: #{@formatted_reserved_characters}
 
   ## Examples
 
@@ -218,16 +312,19 @@ defmodule URI do
       true
 
   """
-  @spec char_reserved?(char) :: boolean
-  def char_reserved?(char) when char in 0..0x10FFFF do
-    char in ':/?#[]@!$&\'()*+,;='
+  @spec char_reserved?(byte) :: boolean
+  def char_reserved?(character) do
+    character in @reserved_characters
   end
 
   @doc """
-  Checks if the character is a "unreserved" character in a URI.
+  Checks if `character` is an unreserved one in a URI.
 
-  Unreserved characters are specified in
-  [RFC 3986, section 2.3](https://tools.ietf.org/html/rfc3986#section-2.3).
+  As specified in [RFC 3986, section 2.3](https://tools.ietf.org/html/rfc3986#section-2.3),
+  the following characters are unreserved:
+
+    * Alphanumeric characters: `A-Z`, `a-z`, `0-9`
+    * `~`, `_`, `-`, `.`
 
   ## Examples
 
@@ -235,16 +332,17 @@ defmodule URI do
       true
 
   """
-  @spec char_unreserved?(char) :: boolean
-  def char_unreserved?(char) when char in 0..0x10FFFF do
-    char in ?0..?9 or char in ?a..?z or char in ?A..?Z or char in '~_-.'
+  @spec char_unreserved?(byte) :: boolean
+  def char_unreserved?(character) do
+    character in ?0..?9 or character in ?a..?z or character in ?A..?Z or character in ~c"~_-."
   end
 
   @doc """
-  Checks if the character is allowed unescaped in a URI.
+  Checks if `character` is allowed unescaped in a URI.
 
   This is the default used by `URI.encode/2` where both
-  reserved and unreserved characters are kept unescaped.
+  [reserved](`char_reserved?/1`) and [unreserved characters](`char_unreserved?/1`)
+  are kept unescaped.
 
   ## Examples
 
@@ -252,25 +350,27 @@ defmodule URI do
       false
 
   """
-  @spec char_unescaped?(char) :: boolean
-  def char_unescaped?(char) when char in 0..0x10FFFF do
-    char_reserved?(char) or char_unreserved?(char)
+  @spec char_unescaped?(byte) :: boolean
+  def char_unescaped?(character) do
+    char_reserved?(character) or char_unreserved?(character)
   end
 
   @doc """
-  Percent-escapes all characters that require escaped in a string.
+  Percent-escapes all characters that require escaping in `string`.
 
-  This means reserved characters, such as `:` and `/`, and the so-
-  called unreserved characters, which have the same meaning both
+  This means reserved characters, such as `:` and `/`, and the
+  so-called unreserved characters, which have the same meaning both
   escaped and unescaped, won't be escaped by default.
 
-  See `encode_www_form` if you are interested in escaping reserved
+  See `encode_www_form/1` if you are interested in escaping reserved
   characters too.
 
   This function also accepts a `predicate` function as an optional
   argument. If passed, this function will be called with each byte
-  in `string` as its argument and should return `true` if the given
-  byte should be left as is.
+  in `string` as its argument and should return a truthy value (anything other
+  than `false` or `nil`) if the given byte should be left as is, or return a
+  falsy value (`false` or `nil`) if the character should be escaped. Defaults
+  to `URI.char_unescaped?/1`.
 
   ## Examples
 
@@ -281,14 +381,18 @@ defmodule URI do
       "a str%69ng"
 
   """
-  @spec encode(binary, (byte -> boolean)) :: binary
+  @spec encode(binary, (byte -> as_boolean(term))) :: binary
   def encode(string, predicate \\ &char_unescaped?/1)
       when is_binary(string) and is_function(predicate, 1) do
-    for <<char <- string>>, into: "", do: percent(char, predicate)
+    for <<byte <- string>>, into: "", do: percent(byte, predicate)
   end
 
   @doc """
-  Encodes a string as "x-www-form-urlencoded".
+  Encodes `string` as "x-www-form-urlencoded".
+
+  Note "x-www-form-urlencoded" is not specified as part of
+  RFC 3986. However, it is a commonly used format to encode
+  query strings and form data by browsers.
 
   ## Example
 
@@ -298,8 +402,8 @@ defmodule URI do
   """
   @spec encode_www_form(binary) :: binary
   def encode_www_form(string) when is_binary(string) do
-    for <<char <- string>>, into: "" do
-      case percent(char, &char_unreserved?/1) do
+    for <<byte <- string>>, into: "" do
+      case percent(byte, &char_unreserved?/1) do
         "%20" -> "+"
         percent -> percent
       end
@@ -322,20 +426,21 @@ defmodule URI do
 
   ## Examples
 
-      iex> URI.decode("http%3A%2F%2Felixir-lang.org")
-      "http://elixir-lang.org"
+      iex> URI.decode("https%3A%2F%2Felixir-lang.org")
+      "https://elixir-lang.org"
 
   """
   @spec decode(binary) :: binary
   def decode(uri) do
     unpercent(uri, "", false)
-  catch
-    :malformed_uri ->
-      raise ArgumentError, "malformed URI #{inspect(uri)}"
   end
 
   @doc """
-  Decodes a string as "x-www-form-urlencoded".
+  Decodes `string` as "x-www-form-urlencoded".
+
+  Note "x-www-form-urlencoded" is not specified as part of
+  RFC 3986. However, it is a commonly used format to encode
+  query strings and form data by browsers.
 
   ## Examples
 
@@ -344,22 +449,23 @@ defmodule URI do
 
   """
   @spec decode_www_form(binary) :: binary
-  def decode_www_form(string) do
+  def decode_www_form(string) when is_binary(string) do
     unpercent(string, "", true)
-  catch
-    :malformed_uri ->
-      raise ArgumentError, "malformed URI #{inspect(string)}"
   end
 
   defp unpercent(<<?+, tail::binary>>, acc, spaces = true) do
     unpercent(tail, <<acc::binary, ?\s>>, spaces)
   end
 
-  defp unpercent(<<?%, hex1, hex2, tail::binary>>, acc, spaces) do
-    unpercent(tail, <<acc::binary, bsl(hex_to_dec(hex1), 4) + hex_to_dec(hex2)>>, spaces)
+  defp unpercent(<<?%, tail::binary>>, acc, spaces) do
+    with <<hex1, hex2, tail::binary>> <- tail,
+         dec1 when is_integer(dec1) <- hex_to_dec(hex1),
+         dec2 when is_integer(dec2) <- hex_to_dec(hex2) do
+      unpercent(tail, <<acc::binary, bsl(dec1, 4) + dec2>>, spaces)
+    else
+      _ -> unpercent(tail, <<acc::binary, ?%>>, spaces)
+    end
   end
-
-  defp unpercent(<<?%, _::binary>>, _acc, _spaces), do: throw(:malformed_uri)
 
   defp unpercent(<<head, tail::binary>>, acc, spaces) do
     unpercent(tail, <<acc::binary, head>>, spaces)
@@ -367,67 +473,331 @@ defmodule URI do
 
   defp unpercent(<<>>, acc, _spaces), do: acc
 
+  @compile {:inline, hex_to_dec: 1}
   defp hex_to_dec(n) when n in ?A..?F, do: n - ?A + 10
   defp hex_to_dec(n) when n in ?a..?f, do: n - ?a + 10
   defp hex_to_dec(n) when n in ?0..?9, do: n - ?0
-  defp hex_to_dec(_n), do: throw(:malformed_uri)
+  defp hex_to_dec(_n), do: nil
 
   @doc """
-  Parses a well-formed URI reference into its components.
+  Creates a new URI struct from a URI or a string.
 
-  Note this function expects a well-formed URI and does not perform
-  any validation. See the "Examples" section below for examples of how
-  `URI.parse/1` can be used to parse a wide range of URIs.
+  If a `%URI{}` struct is given, it returns `{:ok, uri}`. If a string is
+  given, it will parse and validate it. If the string is valid, it returns
+  `{:ok, uri}`, otherwise it returns `{:error, part}` with the invalid part
+  of the URI. For parsing URIs without further validation, see `parse/1`.
 
-  This function uses the parsing regular expression as defined
-  in [RFC 3986, Appendix B](https://tools.ietf.org/html/rfc3986#appendix-B).
+  This function can parse both absolute and relative URLs. You can check
+  if a URI is absolute or relative by checking if the `scheme` field is
+  `nil` or not.
 
-  When a URI is given without a port, the value returned by
-  `URI.default_port/1` for the URI's scheme is used for the `:port` field.
+  When a URI is given without a port, the value returned by `URI.default_port/1`
+  for the URI's scheme is used for the `:port` field. The scheme is also
+  normalized to lowercase.
+
+  ## Examples
+
+      iex> URI.new("https://elixir-lang.org/")
+      {:ok, %URI{
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: 443,
+        query: nil,
+        scheme: "https",
+        userinfo: nil
+      }}
+
+      iex> URI.new("//elixir-lang.org/")
+      {:ok, %URI{
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }}
+
+      iex> URI.new("/foo/bar")
+      {:ok, %URI{
+        fragment: nil,
+        host: nil,
+        path: "/foo/bar",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }}
+
+      iex> URI.new("foo/bar")
+      {:ok, %URI{
+        fragment: nil,
+        host: nil,
+        path: "foo/bar",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }}
+
+      iex> URI.new("//[fe80::]/")
+      {:ok, %URI{
+        fragment: nil,
+        host: "fe80::",
+        path: "/",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }}
+
+      iex> URI.new("https:?query")
+      {:ok, %URI{
+        fragment: nil,
+        host: nil,
+        path: nil,
+        port: 443,
+        query: "query",
+        scheme: "https",
+        userinfo: nil
+      }}
+
+      iex> URI.new("/invalid_greater_than_in_path/>")
+      {:error, ">"}
+
+  Giving an existing URI simply returns it wrapped in a tuple:
+
+      iex> {:ok, uri} = URI.new("https://elixir-lang.org/")
+      iex> URI.new(uri)
+      {:ok, %URI{
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: 443,
+        query: nil,
+        scheme: "https",
+        userinfo: nil
+      }}
+  """
+  @doc since: "1.13.0"
+  @spec new(t() | String.t()) :: {:ok, t()} | {:error, String.t()}
+  def new(%URI{} = uri), do: {:ok, uri}
+
+  def new(binary) when is_binary(binary) do
+    case :uri_string.parse(binary) do
+      %{} = map -> {:ok, uri_from_map(map)}
+      {:error, :invalid_uri, term} -> {:error, Kernel.to_string(term)}
+    end
+  end
+
+  @doc """
+  Similar to `new/1` but raises `URI.Error` if an invalid string is given.
+
+  ## Examples
+
+      iex> URI.new!("https://elixir-lang.org/")
+      %URI{
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: 443,
+        query: nil,
+        scheme: "https",
+        userinfo: nil
+      }
+
+      iex> URI.new!("/invalid_greater_than_in_path/>")
+      ** (URI.Error) cannot parse due to reason invalid_uri: ">"
+
+  Giving an existing URI simply returns it:
+
+      iex> uri = URI.new!("https://elixir-lang.org/")
+      iex> URI.new!(uri)
+      %URI{
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: 443,
+        query: nil,
+        scheme: "https",
+        userinfo: nil
+      }
+  """
+  @doc since: "1.13.0"
+  @spec new!(t() | String.t()) :: t()
+  def new!(%URI{} = uri), do: uri
+
+  def new!(binary) when is_binary(binary) do
+    case :uri_string.parse(binary) do
+      %{} = map ->
+        uri_from_map(map)
+
+      {:error, reason, part} ->
+        raise Error, action: :parse, reason: reason, part: Kernel.to_string(part)
+    end
+  end
+
+  defp uri_from_map(%{path: ""} = map), do: uri_from_map(%{map | path: nil})
+
+  defp uri_from_map(map) do
+    uri = Map.merge(%URI{}, map)
+
+    case map do
+      %{scheme: scheme} ->
+        scheme = String.downcase(scheme, :ascii)
+
+        case map do
+          %{port: port} when port != :undefined ->
+            %{uri | scheme: scheme}
+
+          %{} ->
+            case default_port(scheme) do
+              nil -> %{uri | scheme: scheme}
+              port -> %{uri | scheme: scheme, port: port}
+            end
+        end
+
+      %{} ->
+        uri
+    end
+  end
+
+  @doc """
+  Parses a URI into its components, without further validation.
+
+  This function can parse both absolute and relative URLs. You can check
+  if a URI is absolute or relative by checking if the `scheme` field is
+  nil or not. Furthermore, this function expects both absolute and
+  relative URIs to be well-formed and does not perform any validation.
+  See the "Examples" section below. Use `new/1` if you want to validate
+  the URI fields after parsing.
+
+  When a URI is given without a port, the value returned by `URI.default_port/1`
+  for the URI's scheme is used for the `:port` field. The scheme is also
+  normalized to lowercase.
 
   If a `%URI{}` struct is given to this function, this function returns it
   unmodified.
 
+  > Note: this function sets the field :authority for backwards
+  > compatibility reasons but it is deprecated.
+
   ## Examples
 
-      iex> URI.parse("http://elixir-lang.org/")
-      %URI{scheme: "http", path: "/", query: nil, fragment: nil,
-           authority: "elixir-lang.org", userinfo: nil,
-           host: "elixir-lang.org", port: 80}
+      iex> URI.parse("https://elixir-lang.org/")
+      %URI{
+        authority: "elixir-lang.org",
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: 443,
+        query: nil,
+        scheme: "https",
+        userinfo: nil
+      }
 
       iex> URI.parse("//elixir-lang.org/")
-      %URI{authority: "elixir-lang.org", fragment: nil, host: "elixir-lang.org",
-           path: "/", port: nil, query: nil, scheme: nil, userinfo: nil}
+      %URI{
+        authority: "elixir-lang.org",
+        fragment: nil,
+        host: "elixir-lang.org",
+        path: "/",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }
 
       iex> URI.parse("/foo/bar")
-      %URI{authority: nil, fragment: nil, host: nil, path: "/foo/bar",
-           port: nil, query: nil, scheme: nil, userinfo: nil}
+      %URI{
+        fragment: nil,
+        host: nil,
+        path: "/foo/bar",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }
 
       iex> URI.parse("foo/bar")
-      %URI{authority: nil, fragment: nil, host: nil, path: "foo/bar",
-           port: nil, query: nil, scheme: nil, userinfo: nil}
+      %URI{
+        fragment: nil,
+        host: nil,
+        path: "foo/bar",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }
+
+  In contrast to `URI.new/1`, this function will parse poorly-formed
+  URIs, for example:
+
+      iex> URI.parse("/invalid_greater_than_in_path/>")
+      %URI{
+        fragment: nil,
+        host: nil,
+        path: "/invalid_greater_than_in_path/>",
+        port: nil,
+        query: nil,
+        scheme: nil,
+        userinfo: nil
+      }
+
+  Another example is a URI with brackets in query strings. It is accepted
+  by `parse/1`, it is commonly accepted by browsers, but it will be refused
+  by `new/1`:
+
+      iex> URI.parse("/?foo[bar]=baz")
+      %URI{
+        fragment: nil,
+        host: nil,
+        path: "/",
+        port: nil,
+        query: "foo[bar]=baz",
+        scheme: nil,
+        userinfo: nil
+      }
 
   """
   @spec parse(t | binary) :: t
-  def parse(uri)
-
   def parse(%URI{} = uri), do: uri
 
   def parse(string) when is_binary(string) do
     # From https://tools.ietf.org/html/rfc3986#appendix-B
-    regex =
-      Regex.recompile!(
-        ~r/^(([a-z][a-z0-9\+\-\.]*):)?(\/\/([^\/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/i
-      )
+    # Parts:    12                        3  4          5       6  7        8 9
+    regex = ~r{^(([a-z][a-z0-9\+\-\.]*):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?}i
 
     parts = Regex.run(regex, string)
 
-    destructure [_, _, scheme, _, authority, path, _, query, _, fragment], parts
-    scheme = nillify(scheme)
-    authority = nillify(authority)
-    path = nillify(path)
-    query = nillify(query)
-    {userinfo, host, port} = split_authority(authority)
+    destructure [
+                  _full,
+                  # 1
+                  _scheme_with_colon,
+                  # 2
+                  scheme,
+                  # 3
+                  authority_with_slashes,
+                  # 4
+                  _authority,
+                  # 5
+                  path,
+                  # 6
+                  query_with_question_mark,
+                  # 7
+                  _query,
+                  # 8
+                  _fragment_with_hash,
+                  # 9
+                  fragment
+                ],
+                parts
+
+    path = nilify(path)
+    scheme = nilify(scheme)
+    query = nilify_query(query_with_question_mark)
+    {authority, userinfo, host, port} = split_authority(authority_with_slashes)
 
     scheme = scheme && String.downcase(scheme)
     port = port || (scheme && default_port(scheme))
@@ -444,31 +814,49 @@ defmodule URI do
     }
   end
 
+  defp nilify_query("?" <> query), do: query
+  defp nilify_query(_other), do: nil
+
   # Split an authority into its userinfo, host and port parts.
-  defp split_authority(string) do
-    regex = Regex.recompile!(~r/(^(.*)@)?(\[[a-zA-Z0-9:.]*\]|[^:]*)(:(\d*))?/)
-    components = Regex.run(regex, string || "")
+  #
+  # Note that the host field is returned *without* [] even if, according to
+  # RFC3986 grammar, a native IPv6 address requires them.
+  defp split_authority("") do
+    {nil, nil, nil, nil}
+  end
+
+  defp split_authority("//") do
+    {"", nil, "", nil}
+  end
+
+  defp split_authority("//" <> authority) do
+    regex = ~r/(^(.*)@)?(\[[a-zA-Z0-9:.]*\]|[^:]*)(:(\d*))?/
+    components = Regex.run(regex, authority)
 
     destructure [_, _, userinfo, host, _, port], components
-    userinfo = nillify(userinfo)
-    host = if nillify(host), do: host |> String.trim_leading("[") |> String.trim_trailing("]")
-    port = if nillify(port), do: String.to_integer(port)
+    userinfo = nilify(userinfo)
+    host = if nilify(host), do: host |> String.trim_leading("[") |> String.trim_trailing("]")
+    port = if nilify(port), do: String.to_integer(port)
 
-    {userinfo, host, port}
+    {authority, userinfo, host, port}
   end
 
   # Regex.run returns empty strings sometimes. We want
   # to replace those with nil for consistency.
-  defp nillify(""), do: nil
-  defp nillify(other), do: other
+  defp nilify(""), do: nil
+  defp nilify(other), do: other
 
   @doc """
-  Returns the string representation of the given `URI` struct.
+  Returns the string representation of the given [URI struct](`t:t/0`).
 
-      iex> URI.to_string(URI.parse("http://google.com"))
+  ## Examples
+
+      iex> uri = URI.parse("http://google.com")
+      iex> URI.to_string(uri)
       "http://google.com"
 
-      iex> URI.to_string(%URI{scheme: "foo", host: "bar.baz"})
+      iex> uri = URI.parse("foo://bar.baz")
+      iex> URI.to_string(uri)
       "foo://bar.baz"
 
   """
@@ -483,17 +871,17 @@ defmodule URI do
 
   ## Examples
 
-      iex> URI.merge(URI.parse("http://google.com"), "/query") |> to_string
+      iex> URI.merge(URI.parse("http://google.com"), "/query") |> to_string()
       "http://google.com/query"
 
-      iex> URI.merge("http://example.com", "http://google.com") |> to_string
+      iex> URI.merge("http://example.com", "http://google.com") |> to_string()
       "http://google.com"
 
   """
   @spec merge(t | binary, t | binary) :: t
   def merge(uri, rel)
 
-  def merge(%URI{authority: nil}, _rel) do
+  def merge(%URI{host: nil}, _rel) do
     raise ArgumentError, "you must merge onto an absolute URI"
   end
 
@@ -501,11 +889,11 @@ defmodule URI do
     %{rel | path: remove_dot_segments_from_path(rel.path)}
   end
 
-  def merge(base, %URI{authority: authority} = rel) when authority != nil do
+  def merge(base, %URI{host: host} = rel) when host != nil do
     %{rel | scheme: base.scheme, path: remove_dot_segments_from_path(rel.path)}
   end
 
-  def merge(%URI{} = base, %URI{path: rel_path} = rel) when rel_path in ["", nil] do
+  def merge(%URI{} = base, %URI{path: nil} = rel) do
     %{base | query: rel.query || base.query, fragment: rel.fragment}
   end
 
@@ -522,49 +910,83 @@ defmodule URI do
   defp merge_paths(_, "/" <> _ = rel_path), do: remove_dot_segments_from_path(rel_path)
 
   defp merge_paths(base_path, rel_path) do
-    [_ | base_segments] = path_to_segments(base_path)
-
-    path_to_segments(rel_path)
-    |> Kernel.++(base_segments)
+    (path_to_segments(base_path) ++ [:+] ++ path_to_segments(rel_path))
     |> remove_dot_segments([])
-    |> Enum.join("/")
+    |> join_reversed_segments()
   end
 
-  defp remove_dot_segments_from_path(nil) do
-    nil
-  end
+  defp remove_dot_segments_from_path(nil), do: nil
 
   defp remove_dot_segments_from_path(path) do
-    path
-    |> path_to_segments()
+    path_to_segments(path)
     |> remove_dot_segments([])
+    |> join_reversed_segments()
+  end
+
+  defp path_to_segments(path) do
+    case String.split(path, "/") do
+      ["" | tail] -> [:/ | tail]
+      segments -> segments
+    end
+  end
+
+  defp remove_dot_segments([], acc), do: acc
+  defp remove_dot_segments([:/ | tail], acc), do: remove_dot_segments(tail, [:/ | acc])
+  defp remove_dot_segments(["."], acc), do: remove_dot_segments([], ["" | acc])
+  defp remove_dot_segments(["." | tail], acc), do: remove_dot_segments(tail, acc)
+  defp remove_dot_segments([".." | tail], [:/]), do: remove_dot_segments(tail, [:/])
+  defp remove_dot_segments([".."], [_ | acc]), do: remove_dot_segments([], ["" | acc])
+  defp remove_dot_segments([".." | tail], [_ | acc]), do: remove_dot_segments(tail, acc)
+  defp remove_dot_segments([_, :+ | tail], acc), do: remove_dot_segments(tail, acc)
+  defp remove_dot_segments([head | tail], acc), do: remove_dot_segments(tail, [head | acc])
+
+  defp join_reversed_segments(segments) do
+    case Enum.reverse(segments) do
+      [:/ | tail] -> ["" | tail]
+      list -> list
+    end
     |> Enum.join("/")
   end
 
-  defp remove_dot_segments([], [head, ".." | acc]), do: remove_dot_segments([], [head | acc])
-  defp remove_dot_segments([], acc), do: acc
-  defp remove_dot_segments(["." | tail], acc), do: remove_dot_segments(tail, acc)
+  @doc """
+  Appends `query` to the given `uri`.
 
-  defp remove_dot_segments([head | tail], ["..", ".." | _] = acc),
-    do: remove_dot_segments(tail, [head | acc])
+  The given `query` is not automatically encoded, use `encode/2` or `encode_www_form/1`.
 
-  defp remove_dot_segments(segments, [_, ".." | acc]), do: remove_dot_segments(segments, acc)
-  defp remove_dot_segments([head | tail], acc), do: remove_dot_segments(tail, [head | acc])
+  ## Examples
 
-  defp path_to_segments(path) do
-    [head | tail] = String.split(path, "/")
-    reverse_and_discard_empty(tail, [head])
+      iex> URI.append_query(URI.parse("http://example.com/"), "x=1") |> URI.to_string()
+      "http://example.com/?x=1"
+
+      iex> URI.append_query(URI.parse("http://example.com/?x=1"), "y=2") |> URI.to_string()
+      "http://example.com/?x=1&y=2"
+
+      iex> URI.append_query(URI.parse("http://example.com/?x=1"), "x=2") |> URI.to_string()
+      "http://example.com/?x=1&x=2"
+  """
+  @doc since: "1.14.0"
+  @spec append_query(t(), binary()) :: t()
+  def append_query(%URI{} = uri, query) when is_binary(query) and uri.query in [nil, ""] do
+    %{uri | query: query}
   end
 
-  defp reverse_and_discard_empty([], acc), do: acc
-  defp reverse_and_discard_empty([head], acc), do: [head | acc]
-  defp reverse_and_discard_empty(["" | tail], acc), do: reverse_and_discard_empty(tail, acc)
-
-  defp reverse_and_discard_empty([head | tail], acc),
-    do: reverse_and_discard_empty(tail, [head | acc])
+  def append_query(%URI{} = uri, query) when is_binary(query) do
+    if String.ends_with?(uri.query, "&") do
+      %{uri | query: uri.query <> query}
+    else
+      %{uri | query: uri.query <> "&" <> query}
+    end
+  end
 end
 
 defimpl String.Chars, for: URI do
+  def to_string(%{host: host, path: path} = uri)
+      when host != nil and is_binary(path) and
+             path != "" and binary_part(path, 0, 1) != "/" do
+    raise ArgumentError,
+          ":path in URI must be empty or an absolute path if URL has a :host, got: #{inspect(uri)}"
+  end
+
   def to_string(%{scheme: scheme, port: port, path: path, query: query, fragment: fragment} = uri) do
     uri =
       case scheme && URI.default_port(scheme) do

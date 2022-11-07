@@ -11,18 +11,25 @@ defmodule ExUnit.CaptureLog do
         require Logger
 
         test "example" do
-          assert capture_log(fn ->
-            Logger.error "log msg"
-          end) =~ "log msg"
+          {result, log} =
+            with_log(fn ->
+              Logger.error("log msg")
+              2 + 2
+            end)
+
+          assert result == 4
+          assert log =~ "log msg"
         end
 
         test "check multiple captures concurrently" do
           fun = fn ->
             for msg <- ["hello", "hi"] do
-              assert capture_log(fn -> Logger.error msg end) =~ msg
+              assert capture_log(fn -> Logger.error(msg) end) =~ msg
             end
-            Logger.debug "testing"
+
+            Logger.debug("testing")
           end
+
           assert capture_log(fun) =~ "hello"
           assert capture_log(fun) =~ "testing"
         end
@@ -31,6 +38,8 @@ defmodule ExUnit.CaptureLog do
   """
 
   alias Logger.Backends.Console
+
+  @compile {:no_warn_undefined, Logger}
 
   @doc """
   Captures Logger messages generated when evaluating `fun`.
@@ -42,35 +51,56 @@ defmodule ExUnit.CaptureLog do
   to ensure explicit log messages from other processes are captured
   by waiting for their exit or monitor signal.
 
-  However, `capture_log` does not guarantee to capture log messages
-  originated from processes spawned using a low level `Kernel` spawn
-  function (e.g. `Kernel.spawn/1`) and such processes exit with an
-  exception or a throw. Therefore, prefer using a `Task`, or other OTP
-  process, will send explicit logs before its exit or monitor signals
-  and will not cause VM generated log messages.
-
   Note that when the `async` is set to `true`, the messages from another
   test might be captured. This is OK as long you consider such cases in
   your assertions.
 
   It is possible to configure the level to capture with `:level`,
   which will set the capturing level for the duration of the
-  capture, for instance, if the log level is set to :error
+  capture, for instance, if the log level is set to `:error`, then
   any message with the lower level will be ignored.
   The default level is `nil`, which will capture all messages.
+  Note this setting does not override the overall `Logger.level/0` value.
+  Therefore, if `Logger.level/0` is set to a higher level than the one
+  configured in this function, no message will be captured.
   The behaviour is undetermined if async tests change Logger level.
 
   The format, metadata and colors can be configured with `:format`,
   `:metadata` and `:colors` respectively. These three options
   defaults to the `:console` backend configuration parameters.
+
+  To get the result of the evaluation along with the captured log,
+  use `with_log/2`.
   """
-  @spec capture_log(keyword, (() -> any)) :: String.t()
+  @spec capture_log(keyword, (-> any)) :: String.t()
   def capture_log(opts \\ [], fun) do
+    {_, log} = with_log(opts, fun)
+    log
+  end
+
+  @doc """
+  Invokes the given `fun` and returns the result and captured log.
+
+  It accepts the same arguments and options as `capture_log/2`.
+
+  ## Examples
+
+      {result, log} =
+        with_log(fn ->
+          Logger.error("log msg")
+          2 + 2
+        end)
+
+      assert result == 4
+      assert log =~ "log msg"
+  """
+  @doc since: "1.13.0"
+  @spec with_log(keyword, (-> any)) :: {any, String.t()}
+  def with_log(opts \\ [], fun) do
     opts = Keyword.put_new(opts, :level, nil)
     {:ok, string_io} = StringIO.open("")
 
     try do
-      _ = :gen_event.which_handlers(:error_logger)
       :ok = add_capture(string_io, opts)
       ref = ExUnit.CaptureServer.log_capture_on(self())
 
@@ -81,17 +111,14 @@ defmodule ExUnit.CaptureLog do
         :ok = ExUnit.CaptureServer.log_capture_off(ref)
         :ok = remove_capture(string_io)
       end
-
-      :ok
     catch
       kind, reason ->
-        stack = System.stacktrace()
         _ = StringIO.close(string_io)
-        :erlang.raise(kind, reason, stack)
+        :erlang.raise(kind, reason, __STACKTRACE__)
     else
-      :ok ->
+      result ->
         {:ok, content} = StringIO.close(string_io)
-        elem(content, 1)
+        {result, elem(content, 1)}
     end
   end
 

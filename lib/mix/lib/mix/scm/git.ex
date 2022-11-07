@@ -2,14 +2,21 @@ defmodule Mix.SCM.Git do
   @behaviour Mix.SCM
   @moduledoc false
 
+  @impl true
   def fetchable? do
     true
   end
 
+  @impl true
   def format(opts) do
-    opts[:git]
+    if rev = get_opts_rev(opts) do
+      "#{redact_uri(opts[:git])} - #{rev}"
+    else
+      redact_uri(opts[:git])
+    end
   end
 
+  @impl true
   def format_lock(opts) do
     case opts[:lock] do
       {:git, _, lock_rev, lock_opts} ->
@@ -26,28 +33,31 @@ defmodule Mix.SCM.Git do
     end
   end
 
+  @impl true
   def accepts_options(_app, opts) do
     opts =
       opts
       |> Keyword.put(:checkout, opts[:dest])
       |> sparse_opts()
+      |> subdir_opts()
 
     cond do
       gh = opts[:github] ->
         opts
         |> Keyword.delete(:github)
         |> Keyword.put(:git, "https://github.com/#{gh}.git")
-        |> validate_git_options
+        |> validate_git_options()
 
       opts[:git] ->
         opts
-        |> validate_git_options
+        |> validate_git_options()
 
       true ->
         nil
     end
   end
 
+  @impl true
   def checked_out?(opts) do
     # Are we inside a Git repository?
     opts[:checkout]
@@ -55,8 +65,8 @@ defmodule Mix.SCM.Git do
     |> File.regular?()
   end
 
+  @impl true
   def lock_status(opts) do
-    assert_git!()
     lock = opts[:lock]
 
     cond do
@@ -79,29 +89,31 @@ defmodule Mix.SCM.Git do
     end
   end
 
+  @impl true
   def equal?(opts1, opts2) do
     opts1[:git] == opts2[:git] and get_lock_opts(opts1) == get_lock_opts(opts2)
   end
 
+  @impl true
   def managers(_opts) do
     []
   end
 
+  @impl true
   def checkout(opts) do
-    assert_git!()
     path = opts[:checkout]
     File.rm_rf!(path)
-    File.mkdir_p!(path)
+    File.mkdir_p!(opts[:dest])
 
     File.cd!(path, fn ->
-      git!(["init", "--quiet"])
+      git!(~w[-c core.hooksPath='' init --quiet])
       git!(["--git-dir=.git", "remote", "add", "origin", opts[:git]])
       checkout(path, opts)
     end)
   end
 
+  @impl true
   def update(opts) do
-    assert_git!()
     path = opts[:checkout]
     File.cd!(path, fn -> checkout(path, opts) end)
   end
@@ -120,11 +132,11 @@ defmodule Mix.SCM.Git do
     |> git!()
 
     # Migrate the Git repo
-    rev = get_lock_rev(opts[:lock], opts) || get_opts_rev(opts)
+    rev = get_lock_rev(opts[:lock], opts) || get_opts_rev(opts) || default_branch()
     git!(["--git-dir=.git", "checkout", "--quiet", rev])
 
     if opts[:submodules] do
-      git!(["--git-dir=.git", "submodule", "update", "--init", "--recursive"])
+      git!(~w[-c core.hooksPath='' --git-dir=.git submodule update --init --recursive])
     end
 
     # Get the new repo lock
@@ -134,6 +146,15 @@ defmodule Mix.SCM.Git do
   defp sparse_opts(opts) do
     if opts[:sparse] do
       dest = Path.join(opts[:dest], opts[:sparse])
+      Keyword.put(opts, :dest, dest)
+    else
+      opts
+    end
+  end
+
+  defp subdir_opts(opts) do
+    if opts[:subdir] do
+      dest = Path.join(opts[:dest], opts[:subdir])
       Keyword.put(opts, :dest, dest)
     else
       opts
@@ -182,7 +203,7 @@ defmodule Mix.SCM.Git do
   defp validate_git_options(opts) do
     err =
       "You should specify only one of branch, ref or tag, and only once. " <>
-        "Error on Git dependency: #{opts[:git]}"
+        "Error on Git dependency: #{redact_uri(opts[:git])}"
 
     validate_single_uniq(opts, [:branch, :ref, :tag], err)
   end
@@ -211,7 +232,7 @@ defmodule Mix.SCM.Git do
   defp get_lock_rev(_, _), do: nil
 
   defp get_lock_opts(opts) do
-    lock_opts = Keyword.take(opts, [:branch, :ref, :tag, :sparse])
+    lock_opts = Keyword.take(opts, [:branch, :ref, :tag, :sparse, :subdir])
 
     if opts[:submodules] do
       lock_opts ++ [submodules: true]
@@ -224,7 +245,14 @@ defmodule Mix.SCM.Git do
     if branch = opts[:branch] do
       "origin/#{branch}"
     else
-      opts[:ref] || opts[:tag] || "origin/master"
+      opts[:ref] || opts[:tag]
+    end
+  end
+
+  defp redact_uri(git) do
+    case URI.parse(git) do
+      %{userinfo: nil} -> git
+      uri -> URI.to_string(%{uri | userinfo: "****:****"})
     end
   end
 
@@ -232,9 +260,10 @@ defmodule Mix.SCM.Git do
     # These commands can fail and we don't want to raise.
     origin_command = ["--git-dir=.git", "config", "remote.origin.url"]
     rev_command = ["--git-dir=.git", "rev-parse", "--verify", "--quiet", "HEAD"]
+    opts = cmd_opts([])
 
-    with {origin, 0} <- System.cmd("git", origin_command),
-         {rev, 0} <- System.cmd("git", rev_command) do
+    with {origin, 0} <- System.cmd("git", origin_command, opts),
+         {rev, 0} <- System.cmd("git", rev_command, opts) do
       %{origin: String.trim(origin), rev: String.trim(rev)}
     else
       _ -> %{origin: nil, rev: nil}
@@ -246,39 +275,55 @@ defmodule Mix.SCM.Git do
     :ok
   end
 
+  defp default_branch() do
+    git!(["--git-dir=.git", "remote", "set-head", "origin", "-a"])
+    "origin/HEAD"
+  end
+
   defp git!(args, into \\ default_into()) do
-    case System.cmd("git", args, into: into, stderr_to_stdout: true) do
-      {response, 0} -> response
-      {_, _} -> Mix.raise("Command \"git #{Enum.join(args, " ")}\" failed")
+    opts = cmd_opts(into: into, stderr_to_stdout: true)
+
+    try do
+      System.cmd("git", args, opts)
+    catch
+      :error, :enoent ->
+        Mix.raise(
+          "Error fetching/updating Git repository: the \"git\" " <>
+            "executable is not available in your PATH. Please install " <>
+            "Git on this machine or pass --no-deps-check if you want to " <>
+            "run a previously built application on a system without Git."
+        )
+    else
+      {response, 0} ->
+        response
+
+      {response, _} when is_binary(response) ->
+        Mix.raise("Command \"git #{Enum.join(args, " ")}\" failed with reason: #{response}")
+
+      {_, _} ->
+        Mix.raise("Command \"git #{Enum.join(args, " ")}\" failed")
     end
   end
 
   defp default_into() do
     case Mix.shell() do
-      Mix.Shell.IO -> IO.stream(:stdio, :line)
+      Mix.Shell.IO -> IO.stream()
       _ -> ""
     end
   end
 
-  defp assert_git! do
-    case Mix.State.fetch(:git_available) do
-      {:ok, true} ->
-        :ok
-
-      :error ->
-        if System.find_executable("git") do
-          Mix.State.put(:git_available, true)
-        else
-          Mix.raise(
-            "Error fetching/updating Git repository: the \"git\" " <>
-              "executable is not available in your PATH. Please install " <>
-              "Git on this machine or pass --no-deps-check if you want to " <>
-              "run a previously built application on a system without Git."
-          )
-        end
+  # Attempt to set the current working directory by default.
+  # This addresses an issue changing the working directory when executing from
+  # within a secondary node since file I/O is done through the main node.
+  defp cmd_opts(opts) do
+    case File.cwd() do
+      {:ok, cwd} -> Keyword.put(opts, :cd, cwd)
+      _ -> opts
     end
   end
 
+  # Also invoked by lib/mix/test/test_helper.exs
+  @doc false
   def git_version do
     case Mix.State.fetch(:git_version) do
       {:ok, version} ->
@@ -288,7 +333,7 @@ defmodule Mix.SCM.Git do
         version =
           ["--version"]
           |> git!("")
-          |> parse_version
+          |> parse_version()
 
         Mix.State.put(:git_version, version)
         version

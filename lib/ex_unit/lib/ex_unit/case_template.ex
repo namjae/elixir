@@ -1,12 +1,27 @@
 defmodule ExUnit.CaseTemplate do
   @moduledoc """
-  This module allows a developer to define a test case
-  template to be used throughout their tests. This is useful
-  when there are a set of functions that should be shared
-  between tests or a set of setup callbacks.
+  Defines a module template to be used throughout your test suite.
 
-  By using this module, the callbacks and assertions
-  available for regular test cases will also be available.
+  This is useful when there are a set of setup callbacks or a set
+  of functions that should be shared between test modules.
+
+  Let's imagine that you create a `MyCase` module that calls `use
+  ExUnit.CaseTemplate`. When a test case module calls `use MyCase`, the
+  following things hold true:
+
+    * All the functionality that `MyCase` would have had available from
+      `use ExUnit.Case` is available (same as if `MyCase` called `use
+      ExUnit.Case` directly)
+
+    * All the functions and macros defined in `MyCase` are imported into
+      the test case
+
+    * The `setup` and `setup_all` callbacks that you define in `MyCase`
+      get used in the test case module
+
+  The options that you pass to `use MyCase` get also passed to `use
+  ExUnit.Case` under the hood. This means you can do things like `use
+  MyCase, async: true`. You can also access this options in `using/2`.
 
   ## Example
 
@@ -14,7 +29,7 @@ defmodule ExUnit.CaseTemplate do
         use ExUnit.CaseTemplate
 
         setup do
-          IO.puts "This will run before each test that uses this case"
+          IO.puts("This will run before each test that uses this case")
         end
       end
 
@@ -23,6 +38,20 @@ defmodule ExUnit.CaseTemplate do
 
         test "truth" do
           assert true
+        end
+      end
+
+  If you need to "hook" into `use MyCase` and do other things as well,
+  you can use the `using/2` macro. See its documentation for more
+  information and examples.
+
+      defmodule MyCase do
+        use ExUnit.CaseTemplate
+
+        using do
+          quote do
+            import MyApp.TestHelpers
+          end
         end
       end
 
@@ -45,6 +74,7 @@ defmodule ExUnit.CaseTemplate do
   end
 
   @doc false
+  # We inject this code in the module that calls "use MyTemplate".
   def __proxy__(module, opts) do
     quote do
       use ExUnit.Case, unquote(opts)
@@ -63,6 +93,9 @@ defmodule ExUnit.CaseTemplate do
   Allows a developer to customize the using block
   when the case template is used.
 
+  You can use an optional `var` argument when calling `using/2`. ExUnit
+  will pass whatever argument you pass to `use MyCase` as this `var` argument. See the examples below for clarification.
+
   ## Example
 
       defmodule MyCase do
@@ -75,6 +108,36 @@ defmodule ExUnit.CaseTemplate do
           end
         end
       end
+
+  You can specify an argument to `using/2`:
+
+      defmodule MyCase do
+        use ExUnit.CaseTemplate
+
+        using options do
+          quote do
+            if unquote(options)[:import_helpers] do
+              import MyApp.TestHelpers
+            end
+          end
+        end
+      end
+
+  The second argument passed to `use MyCase` gets forwarded to `using/2` too:
+
+      defmodule SomeTestCase do
+        use MyCase, async: true, import_helpers: true, async: true
+
+        test "the truth" do
+          # truth/0 comes from MyApp.TestHelpers:
+          assert truth()
+        end
+      end
+
+  > #### Sharing options with `use ExUnit.Case` {: .warning}
+  >
+  > The second argument that you pass to `use MyCase` is *also* passed
+  > as the second argument to `use ExUnit.Case`.
 
   """
   defmacro using(var \\ quote(do: _), do: block) do

@@ -16,946 +16,838 @@ defmodule Mix.Tasks.XrefTest do
     :ok
   end
 
-  ## Warnings
+  describe "calls/1" do
+    test "returns all function calls" do
+      files = %{
+        "lib/a.ex" => """
+        defmodule A do
+          def a, do: A.a()
+          def a(arg), do: A.a(arg)
+          def c, do: B.a()
+        end
+        """,
+        "lib/b.ex" => """
+        defmodule B do
+          def a, do: nil
+        end
+        """
+      }
 
-  test "warnings: reports nothing with no references" do
-    assert_no_warnings("defmodule A do end")
-  end
+      output = [
+        %{callee: {A, :a, 0}, caller_module: A, file: "lib/a.ex", line: 2},
+        %{callee: {A, :a, 1}, caller_module: A, file: "lib/a.ex", line: 3},
+        %{callee: {B, :a, 0}, caller_module: A, file: "lib/a.ex", line: 4}
+      ]
 
-  test "warnings: reports missing functions" do
-    code = """
-    defmodule A do
-      def a, do: A.no_func
-      def b, do: A.a()
-
-      @file "lib/external_source.ex"
-      def c, do: &A.no_func/1
-    end
-    """
-
-    warning = """
-    warning: function A.no_func/0 is undefined or private
-      lib/a.ex:2
-
-    warning: function A.no_func/1 is undefined or private
-      lib/external_source.ex:6
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: reports missing functions respecting arity" do
-    code = """
-    defmodule A do
-      def a, do: :ok
-      def b, do: A.a(1)
-
-      @file "lib/external_source.ex"
-      def c, do: A.b(1)
-    end
-    """
-
-    warning = """
-    warning: function A.a/1 is undefined or private. Did you mean one of:
-
-          * a/0
-
-      lib/a.ex:3
-
-    warning: function A.b/1 is undefined or private. Did you mean one of:
-
-          * b/0
-
-      lib/external_source.ex:6
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: reports missing modules" do
-    code = """
-    defmodule A do
-      def a, do: D.no_module
-
-      @file "lib/external_source.ex"
-      def c, do: E.no_module
-    end
-    """
-
-    warning = """
-    warning: function D.no_module/0 is undefined (module D is not available)
-      lib/a.ex:2
-
-    warning: function E.no_module/0 is undefined (module E is not available)
-      lib/external_source.ex:5
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: reports missing captures" do
-    code = """
-    defmodule A do
-      def a, do: &A.no_func/0
-
-      @file "lib/external_source.ex"
-      def c, do: &A.no_func/1
-    end
-    """
-
-    warning = """
-    warning: function A.no_func/0 is undefined or private
-      lib/a.ex:2
-
-    warning: function A.no_func/1 is undefined or private
-      lib/external_source.ex:5
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: doesn't report missing funcs at compile time" do
-    assert_no_warnings("""
-      Enum.map([], fn _ -> BadReferencer.no_func4() end)
-
-      if function_exported?(List, :flatten, 1) do
-        List.flatten([1, 2, 3])
-      else
-        List.old_flatten([1, 2, 3])
-      end
-    """)
-  end
-
-  test "warnings: protocols are checked, ignoring missing built-in impls" do
-    code = """
-    defprotocol AProtocol do
-      def func(arg)
+      assert_all_calls(files, output)
     end
 
-    defmodule AImplementation do
-      defimpl AProtocol do
-        def func(_), do: B.no_func
-      end
-    end
-    """
+    test "returns function call inside expanded macro" do
+      files = %{
+        "lib/a.ex" => """
+        defmodule A do
+          defmacro a_macro(x) do
+            quote do
+              A.b(unquote(x))
+            end
+          end
+          def b(x), do: x
+        end
+        """,
+        "lib/b.ex" => """
+        defmodule B do
+          require A
+          def a, do: A.a_macro(1)
+        end
+        """
+      }
 
-    warning = """
-    warning: function B.no_func/0 is undefined or private
-      lib/a.ex:7
+      output = [
+        %{callee: {A, :b, 1}, caller_module: B, file: "lib/b.ex", line: 3}
+      ]
 
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: handles Erlang ops" do
-    assert_no_warnings("""
-    defmodule A do
-      def a(a, b), do: a and b
-      def b(a, b), do: a or b
-    end
-    """)
-  end
-
-  test "warnings: handles Erlang modules" do
-    code = """
-    defmodule A do
-      def a, do: :not_a_module.no_module
-      def b, do: :lists.no_func
-    end
-    """
-
-    warning = """
-    warning: function :lists.no_func/0 is undefined or private
-      lib/a.ex:3
-
-    warning: function :not_a_module.no_module/0 is undefined (module :not_a_module is not available)
-      lib/a.ex:2
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: handles multiple modules in one file" do
-    code = """
-    defmodule A1 do
-      def a, do: A2.no_func
-      def b, do: A2.a
+      assert_all_calls(files, output)
     end
 
-    defmodule A2 do
-      def a, do: A1.no_func
-      def b, do: A1.b
-    end
-    """
+    test "returns empty on cover compiled modules" do
+      files = %{
+        "lib/a.ex" => """
+        defmodule A do
+          def a, do: A.a()
+        end
+        """
+      }
 
-    warning = """
-    warning: function A1.no_func/0 is undefined or private
-      lib/a.ex:7
-
-    warning: function A2.no_func/0 is undefined or private
-      lib/a.ex:2
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: doesn't load unloaded modules" do
-    code = """
-    defmodule A1 do
-      @compile {:autoload, false}
-      @on_load :init
-      def init do
-        raise "oops"
-      end
+      assert_all_calls(files, [], fn ->
+        :cover.start()
+        :cover.compile_beam_directory(to_charlist(Mix.Project.compile_path()))
+      end)
+    after
+      :cover.stop()
     end
 
-    defmodule A2 do
-      def a, do: A1.no_func
-      def b, do: A1.init
-    end
-    """
+    defp assert_all_calls(files, expected, after_compile \\ fn -> :ok end) do
+      in_fixture("no_mixfile", fn ->
+        generate_files(files)
 
-    warning = """
-    warning: function A1.no_func/0 is undefined or private
-      lib/a.ex:10
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: groups multiple warnings in one file" do
-    code = """
-    defmodule A do
-      def a, do: A.no_func
-
-      @file "lib/external_source.ex"
-      def b, do: A2.no_func
-
-      def c, do: A.no_func
-      def d, do: A2.no_func
-    end
-    """
-
-    warning = """
-    warning: function A.no_func/0 is undefined or private
-    Found at 2 locations:
-      lib/a.ex:2
-      lib/a.ex:7
-
-    warning: function A2.no_func/0 is undefined (module A2 is not available)
-    Found at 2 locations:
-      lib/a.ex:8
-      lib/external_source.ex:5
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: handles module body conditionals" do
-    code = """
-    defmodule A do
-      if function_exported?(List, :flatten, 1) do
-        List.flatten([1, 2, 3])
-      else
-        List.old_flatten([1, 2, 3])
-      end
-
-      if function_exported?(List, :flatten, 1) do
-        def flatten(arg), do: List.flatten(arg)
-      else
-        def flatten(arg), do: List.old_flatten(arg)
-      end
-
-      if function_exported?(List, :flatten, 1) do
-        def flatten2(arg), do: List.old_flatten(arg)
-      else
-        def flatten2(arg), do: List.flatten(arg)
-      end
-    end
-    """
-
-    warning = """
-    warning: function List.old_flatten/1 is undefined or private. Did you mean one of:
-
-          * flatten/1
-          * flatten/2
-
-      lib/a.ex:15
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: imports" do
-    assert_no_warnings("""
-    defmodule A do
-      import Record
-
-      def a(a, b), do: extract(a, b)
-      def b(arg), do: is_record(arg)
-    end
-    """)
-  end
-
-  test "warnings: aliases" do
-    code = """
-    defmodule A do
-      alias Enum, as: E
-
-      def a(a, b), do: E.map2(a, b)
-      def b, do: &E.map2/2
-
-      @file "lib/external_source.ex"
-      def c do
-        alias Enum, as: EE
-        &EE.map2/2
-      end
-    end
-    """
-
-    warning = """
-    warning: function Enum.map2/2 is undefined or private. Did you mean one of:
-
-          * map/2
-
-    Found at 3 locations:
-      lib/a.ex:4
-      lib/a.ex:5
-      lib/external_source.ex:10
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  test "warnings: requires" do
-    assert_no_warnings("""
-    defmodule A do
-      require Integer
-
-      def a(a), do: Integer.is_even(a)
-    end
-    """)
-  end
-
-  defp assert_warnings(contents, expected) do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", contents)
-
-      output =
-        capture_io(:stderr, fn ->
-          assert Mix.Task.run("xref", ["warnings"]) != {:ok, []}
-        end)
-
-      assert output == expected
+        Mix.Task.run("compile")
+        after_compile.()
+        xref = Mix.Tasks.Xref
+        assert Enum.sort(xref.calls()) == Enum.sort(expected)
+      end)
     end
   end
 
-  defp assert_no_warnings(contents) do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", contents)
-
-      output =
-        capture_io(:stderr, fn ->
-          assert Mix.Task.run("xref", ["warnings"]) == {:ok, []}
-        end)
-
-      assert output == ""
-    end
-  end
-
-  ## Unreachable
-
-  test "unreachable: reports nothing with no references" do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", "defmodule A do end")
-
-      assert Mix.Task.run("xref", ["unreachable"]) == :ok
-    end
-  end
-
-  test "unreachable: reports missing functions" do
-    code = """
-    defmodule A do
-      def a, do: A.no_func
-      def b, do: A.a()
-
-      @file "lib/external_source.ex"
-      def c, do: A.no_func
-    end
-    """
-
-    warning = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:2: A.no_func/0
-    lib/external_source.ex:6: A.no_func/0
-    """
-
-    assert_unreachable(code, warning)
-  end
-
-  defp assert_unreachable(contents, expected, result \\ :error) do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", contents)
-
-      assert Mix.Task.run("xref", ["unreachable"]) == result
-
-      assert ^expected = receive_until_no_messages([])
-    end
-  end
-
-  ## Exclude
-
-  test "exclude: excludes specified modules and MFAs" do
-    defmodule ExcludeSample do
-      def project do
-        [
-          app: :sample,
-          version: "0.1.0",
-          xref: [exclude: [MissingModule, {MissingModule2, :no_func, 2}]]
-        ]
-      end
-    end
-
-    Mix.Project.push(ExcludeSample)
-
-    code = """
-    defmodule A do
-      def a, do: MissingModule.no_func(1)
-      def b, do: MissingModule2.no_func(1, 2)
-      def c, do: MissingModule2.no_func(1)
-      def d, do: MissingModule3.no_func(1, 2)
-    end
-    """
-
-    warning = """
-    warning: function MissingModule2.no_func/1 is undefined (module MissingModule2 is not available)
-      lib/a.ex:4
-
-    warning: function MissingModule3.no_func/2 is undefined (module MissingModule3 is not available)
-      lib/a.ex:5
-
-    """
-
-    assert_warnings(code, warning)
-  end
-
-  ## Callers
-
-  test "callers: prints callers of specified Module" do
-    files = %{
+  describe "mix xref callers MODULE" do
+    @callers_files %{
       "lib/a.ex" => """
       defmodule A do
-        def a, do: A.a()
-        def a(arg), do: A.a(arg)
-        def b, do: A.b()
-        def c, do: B.a()
-
-        @file "lib/external_source.ex"
-        def d, do: A.a()
-      end
-      """
-    }
-
-    output = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:2: A.a/0
-    lib/external_source.ex:8: A.a/0
-    lib/a.ex:3: A.a/1
-    lib/a.ex:4: A.b/0
-    """
-
-    assert_callers("A", files, output)
-  end
-
-  test "callers: prints callers of specified Module.func" do
-    files = %{
-      "lib/a.ex" => """
-      defmodule A do
-        def a, do: A.a()
-        def a(arg), do: A.a(arg)
-        def b, do: A.b()
-        def c, do: B.a()
-
-        @file "lib/external_source.ex"
-        def d, do: A.a()
-      end
-      """
-    }
-
-    output = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:2: A.a/0
-    lib/external_source.ex:8: A.a/0
-    lib/a.ex:3: A.a/1
-    """
-
-    assert_callers("A.a", files, output)
-  end
-
-  test "callers: prints callers of specified Module.func/arity" do
-    files = %{
-      "lib/a.ex" => """
-      defmodule A do
-        def a, do: A.a()
-        def a(arg), do: A.a(arg)
-        def b, do: A.b()
-        def c, do: B.a()
-
-        @file "lib/external_source.ex"
-        def d, do: A.a()
-      end
-      """
-    }
-
-    output = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:2: A.a/0
-    lib/external_source.ex:8: A.a/0
-    """
-
-    assert_callers("A.a/0", files, output)
-  end
-
-  test "callers: lists compile calls and macros" do
-    files = %{
-      "lib/a.ex" => """
-      defmodule A do
-        defmacro a_macro, do: :ok
         def a, do: :ok
       end
       """,
       "lib/b.ex" => """
       defmodule B do
-        require A
-
-        A.a_macro()
-        A.a()
-
-        @file "lib/external_source.ex"
-        def b do
-          A.a_macro()
-          A.a()
-        end
+        def b, do: A.a()
       end
       """
     }
 
-    output = """
+    @callers_output """
     Compiling 2 files (.ex)
     Generated sample app
-    lib/b.ex:5: A.a/0
-    lib/external_source.ex:10: A.a/0
-    lib/b.ex:4: A.a_macro/0
-    lib/external_source.ex:9: A.a_macro/0
+    lib/b.ex (runtime)
     """
 
-    assert_callers("A", files, output)
-  end
+    test "prints callers of specified Module" do
+      assert_callers("A", @callers_files, @callers_output)
+    end
 
-  test "callers: handles aliases" do
-    files = %{
-      "lib/a.ex" => """
-      defmodule A do
-        alias Enum, as: E
-
-        E.map([], &E.flatten/1)
-
-        def a(a, b), do: E.map(a, b)
-
-        @file "lib/external_source.ex"
-        def b() do
-          alias Enum, as: EE
-          EE.map([], &EE.flatten/1)
-        end
-      end
-      """
-    }
-
-    output = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:4: Enum.flatten/1
-    lib/external_source.ex:11: Enum.flatten/1
-    lib/a.ex:4: Enum.map/2
-    lib/a.ex:6: Enum.map/2
-    lib/external_source.ex:11: Enum.map/2
-    """
-
-    assert_callers("Enum", files, output)
-  end
-
-  test "callers: handles imports" do
-    files = %{
-      "lib/a.ex" => ~S"""
-      defmodule A do
-        import Integer
-
-        &is_even/1
-        &parse/1
-
-        _ = is_even(Enum.random([1]))
-        _ = parse("2")
-
-        def a(a), do: is_even(a)
-        def b(a), do: parse(a)
-        _ = is_even(Enum.random([1])); def c(a), do: is_even(a)
-      end
-      """,
-      "lib/b.ex" => ~S"""
-      defmodule B do
-        &Integer.parse/1
-
-        @file "lib/external_source.ex"
-        def a(a) do
-          import Integer
-          parse(1)
-          is_even(a)
-        end
-      end
-      """
-    }
-
-    output = """
-    Compiling 2 files (.ex)
-    Generated sample app
-    lib/a.ex:4: Integer.is_even/1
-    lib/a.ex:7: Integer.is_even/1
-    lib/a.ex:10: Integer.is_even/1
-    lib/a.ex:12: Integer.is_even/1
-    lib/external_source.ex:8: Integer.is_even/1
-    lib/a.ex:5: Integer.parse/1
-    lib/a.ex:8: Integer.parse/1
-    lib/a.ex:11: Integer.parse/1
-    lib/b.ex:2: Integer.parse/1
-    lib/external_source.ex:7: Integer.parse/1
-    """
-
-    assert_callers("Integer", files, output)
-  end
-
-  test "callers: no argument gives error" do
-    in_fixture "no_mixfile", fn ->
-      message = "xref doesn't support this command. For more information run \"mix help xref\""
+    test "filter by compile-connected label with fail-above" do
+      message = "Too many references (found: 1, permitted: 0)"
 
       assert_raise Mix.Error, message, fn ->
-        assert Mix.Task.run("xref", ["callers"]) == :error
+        assert_callers(~w[--fail-above 0], "A", @callers_files, @callers_output)
       end
     end
-  end
 
-  test "callers: gives nice error for quotable but invalid callers spec" do
-    in_fixture "no_mixfile", fn ->
-      message =
-        "xref callers CALLEE expects Module, Module.function, or Module.function/arity, got: Module.func(arg)"
+    test "handles aliases" do
+      files = %{
+        "lib/a.ex" => """
+        defmodule A do
+          alias Enum, as: E
 
-      assert_raise Mix.Error, message, fn ->
-        Mix.Task.run("xref", ["callers", "Module.func(arg)"])
-      end
-    end
-  end
+          def a(a, b), do: E.map(a, b)
 
-  test "callers: gives nice error for unquotable callers spec" do
-    in_fixture "no_mixfile", fn ->
-      message =
-        "xref callers CALLEE expects Module, Module.function, or Module.function/arity, got: %"
-
-      assert_raise Mix.Error, message, fn ->
-        Mix.Task.run("xref", ["callers", "%"])
-      end
-    end
-  end
-
-  defp assert_callers(callee, files, expected) do
-    in_fixture "no_mixfile", fn ->
-      for {file, contents} <- files do
-        File.write!(file, contents)
-      end
-
-      assert Mix.Task.run("xref", ["callers", callee]) == :ok
-
-      assert ^expected = receive_until_no_messages([])
-    end
-  end
-
-  ## Graph
-
-  test "graph: basic usage" do
-    assert_graph("""
-    lib/a.ex
-    └── lib/b.ex
-        └── lib/a.ex
-    lib/b.ex
-    lib/c.ex
-    lib/d.ex
-    └── lib/a.ex (compile)
-    """)
-  end
-
-  test "graph: stats" do
-    assert_graph(["--format", "stats"], """
-    Tracked files: 4 (nodes)
-    Compile dependencies: 1 (edges)
-    Structs dependencies: 0 (edges)
-    Runtime dependencies: 2 (edges)
-
-    Top 4 files with most outgoing dependencies:
-      * lib/d.ex (1)
-      * lib/b.ex (1)
-      * lib/a.ex (1)
-      * lib/c.ex (0)
-
-    Top 2 files with most incoming dependencies:
-      * lib/a.ex (2)
-      * lib/b.ex (1)
-    """)
-  end
-
-  test "graph: exclude many" do
-    assert_graph(~w[--exclude lib/c.ex --exclude lib/b.ex], """
-    lib/a.ex
-    lib/d.ex
-    └── lib/a.ex (compile)
-    """)
-  end
-
-  test "graph: exclude one" do
-    assert_graph(~w[--exclude lib/d.ex], """
-    lib/a.ex
-    └── lib/b.ex
-        └── lib/a.ex
-    lib/b.ex
-    lib/c.ex
-    """)
-  end
-
-  test "graph: source" do
-    assert_graph(~w[--source lib/a.ex], """
-    lib/b.ex
-    └── lib/a.ex
-        └── lib/b.ex
-    """)
-  end
-
-  test "graph: only nodes" do
-    assert_graph(~w[--only-nodes], """
-    lib/a.ex
-    lib/b.ex
-    lib/c.ex
-    lib/d.ex
-    """)
-  end
-
-  test "graph: filter by compile label" do
-    assert_graph(~w[--label compile], """
-    lib/a.ex
-    lib/b.ex
-    lib/c.ex
-    lib/d.ex
-    └── lib/a.ex (compile)
-    """)
-  end
-
-  test "graph: filter by runtime label" do
-    assert_graph(~w[--label runtime], """
-    lib/a.ex
-    └── lib/b.ex
-        └── lib/a.ex
-    lib/b.ex
-    lib/c.ex
-    lib/d.ex
-    """)
-  end
-
-  test "graph: invalid source" do
-    assert_raise Mix.Error, "Source could not be found: lib/a2.ex", fn ->
-      assert_graph(~w[--source lib/a2.ex], "")
-    end
-  end
-
-  test "graph: sink" do
-    assert_graph(~w[--sink lib/b.ex], """
-    lib/a.ex
-    └── lib/b.ex
-        └── lib/a.ex
-    lib/d.ex
-    └── lib/a.ex (compile)
-    """)
-  end
-
-  test "graph: invalid sink" do
-    assert_raise Mix.Error, "Sink could not be found: lib/b2.ex", fn ->
-      assert_graph(~w[--sink lib/b2.ex], "")
-    end
-  end
-
-  test "graph: sink and source is error" do
-    assert_raise Mix.Error, "mix xref graph expects only one of --source and --sink", fn ->
-      assert_graph(~w[--source lib/a.ex --sink lib/b.ex], "")
-    end
-  end
-
-  test "graph: with dynamic module" do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", """
-      B.define()
-      """)
-
-      File.write!("lib/b.ex", """
-      defmodule B do
-        def define do
-          defmodule A do
+          @file "lib/external_source.ex"
+          def b() do
+            alias Enum, as: EE
+            EE.map([], &EE.flatten/1)
           end
         end
-      end
-      """)
+        """
+      }
 
-      assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/a.ex (runtime)
+      """
 
-      assert File.read!("xref_graph.dot") === """
-             digraph "xref graph" {
-               "lib/a.ex"
-               "lib/b.ex"
-             }
-             """
+      assert_callers("Enum", files, output)
+    end
+
+    test "handles imports" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          import Integer
+          &is_even/1
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          import Integer
+          parse("1")
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/a.ex (compile)
+      lib/b.ex (compile)
+      """
+
+      assert_callers("Integer", files, output)
+    end
+
+    test "no argument gives error" do
+      in_fixture("no_mixfile", fn ->
+        message = "xref doesn't support this command. For more information run \"mix help xref\""
+
+        assert_raise Mix.Error, message, fn ->
+          assert Mix.Task.run("xref", ["callers"]) == :error
+        end
+      end)
+    end
+
+    test "callers: gives nice error for quotable but invalid callers spec" do
+      in_fixture("no_mixfile", fn ->
+        message = "xref callers MODULE expects a MODULE, got: Module.func(arg)"
+
+        assert_raise Mix.Error, message, fn ->
+          Mix.Task.run("xref", ["callers", "Module.func(arg)"])
+        end
+      end)
+    end
+
+    test "gives nice error for unquotable callers spec" do
+      in_fixture("no_mixfile", fn ->
+        message = "xref callers MODULE expects a MODULE, got: %"
+
+        assert_raise Mix.Error, message, fn ->
+          Mix.Task.run("xref", ["callers", "%"])
+        end
+      end)
+    end
+
+    defp assert_callers(opts \\ [], module, files, expected) do
+      in_fixture("no_mixfile", fn ->
+        for {file, contents} <- files do
+          File.write!(file, contents)
+        end
+
+        capture_io(:stderr, fn ->
+          assert Mix.Task.run("xref", opts ++ ["callers", module]) == :ok
+        end)
+
+        assert ^expected = receive_until_no_messages([])
+      end)
     end
   end
 
-  test "graph: with struct" do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", """
-      defmodule A do
-        def fun do
-          %B{}
+  describe "mix xref trace FILE" do
+    test "shows labelled traces" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          defstruct [:foo, :bar]
+          defmacro macro, do: :ok
+          def fun, do: :ok
         end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          import A
+          A.macro()
+          macro()
+          A.fun()
+          fun()
+          def calls_macro, do: A.macro()
+          def calls_fun, do: A.fun()
+          def calls_struct, do: %A{}
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/b.ex:2: require A (export)
+      lib/b.ex:3: call A.macro/0 (compile)
+      lib/b.ex:4: import A.macro/0 (compile)
+      lib/b.ex:5: call A.fun/0 (compile)
+      lib/b.ex:6: call A.fun/0 (compile)
+      lib/b.ex:6: import A.fun/0 (compile)
+      lib/b.ex:7: call A.macro/0 (compile)
+      lib/b.ex:8: call A.fun/0 (runtime)
+      lib/b.ex:9: struct A (export)
+      """
+
+      assert_trace("lib/b.ex", files, output)
+    end
+
+    test "shows traces for module callbacks" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          @before_compile :"Elixir.B"
+          @after_compile :"Elixir.B"
+          @after_verify :"Elixir.B"
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          defmacro __before_compile__(_env), do: :ok
+          defmacro __after_compile__(_env, _binary), do: :ok
+          def __after_verify__(_module), do: :ok
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/a.ex:1: call B.__after_compile__/2 (compile)
+      lib/a.ex:1: call B.__after_verify__/1 (compile)
+      lib/a.ex:1: call B.__before_compile__/1 (compile)
+      """
+
+      assert_trace("lib/a.ex", files, output)
+    end
+
+    test "shows module with `@behaviour` calling `behaviour_info/1`" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          @callback fun() :: integer
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          @behaviour :"Elixir.A"
+          def fun, do: 42
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/b.ex:1: call A.behaviour_info/1 (runtime)
+      """
+
+      assert_trace("lib/b.ex", files, output)
+    end
+
+    test "filters per label" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          defmacro macro, do: :ok
+          def fun, do: :ok
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          require A
+          def calls_macro, do: A.macro()
+          def calls_fun, do: A.fun()
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/b.ex:3: call A.macro/0 (compile)
+      """
+
+      assert_trace(~w[--label compile], "lib/b.ex", files, output)
+    end
+
+    test "fails if above limit per label" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          defmacro macro, do: :ok
+          def fun, do: :ok
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          require A
+          def calls_macro, do: A.macro()
+          def calls_fun, do: A.fun()
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/b.ex:3: call A.macro/0 (compile)
+      """
+
+      message = "Too many traces (found: 1, permitted: 0)"
+
+      assert_raise Mix.Error, message, fn ->
+        assert_trace(~w[--label compile --fail-above 0], "lib/b.ex", files, output)
       end
-      """)
+    end
 
-      File.write!("lib/b.ex", """
-      defmodule B do
-        defstruct []
-      end
-      """)
+    defp assert_trace(opts \\ [], file, files, expected) do
+      in_fixture("no_mixfile", fn ->
+        for {file, contents} <- files do
+          File.write!(file, contents)
+        end
 
-      assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
+        capture_io(:stderr, fn ->
+          assert Mix.Task.run("xref", opts ++ ["trace", file]) == :ok
+        end)
 
-      assert File.read!("xref_graph.dot") === """
-             digraph "xref graph" {
-               "lib/a.ex"
-               "lib/a.ex" -> "lib/b.ex" [label="(struct)"]
-               "lib/b.ex"
-             }
-             """
+        assert ^expected = receive_until_no_messages([])
+      end)
     end
   end
 
-  test "graph: with mixed cyclic dependencies" do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", """
-      defmodule A.Behaviour do
-        @callback foo :: :foo
-      end
-
-      defmodule A do
-        B
-
-        def foo do
-          :foo
-        end
-      end
+  describe "mix xref graph" do
+    test "basic usage" do
+      assert_graph("""
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      |-- lib/a.ex
+      |-- lib/c.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/e.ex
+      lib/e.ex
       """)
-
-      File.write!("lib/b.ex", """
-      defmodule B do
-        # Let's also test that we track literal atom behaviours
-        @behaviour :"Elixir.A.Behaviour"
-
-        def foo do
-          A.foo
-        end
-      end
-      """)
-
-      assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
-
-      assert File.read!("xref_graph.dot") === """
-             digraph "xref graph" {
-               "lib/a.ex"
-               "lib/a.ex" -> "lib/b.ex" [label="(compile)"]
-               "lib/b.ex" -> "lib/a.ex" [label="(compile)"]
-               "lib/b.ex"
-             }
-             """
     end
-  end
 
-  defp assert_graph(opts \\ [], expected) do
-    in_fixture "no_mixfile", fn ->
-      File.write!("lib/a.ex", """
-      defmodule A do
-        def a do
-          B.a
-        end
+    test "stats" do
+      assert_graph(["--format", "stats"], """
+      Tracked files: 5 (nodes)
+      Compile dependencies: 3 (edges)
+      Exports dependencies: 0 (edges)
+      Runtime dependencies: 3 (edges)
+      Cycles: 1
 
-        def b, do: :ok
-      end
+      Top 5 files with most outgoing dependencies:
+        * lib/b.ex (3)
+        * lib/d.ex (1)
+        * lib/c.ex (1)
+        * lib/a.ex (1)
+        * lib/e.ex (0)
+
+      Top 5 files with most incoming dependencies:
+        * lib/e.ex (2)
+        * lib/d.ex (1)
+        * lib/c.ex (1)
+        * lib/b.ex (1)
+        * lib/a.ex (1)
       """)
-
-      File.write!("lib/b.ex", """
-      defmodule B do
-        def a do
-          A.a
-          B.a
-        end
-      end
-      """)
-
-      File.write!("lib/c.ex", """
-      defmodule C do
-      end
-      """)
-
-      File.write!("lib/d.ex", """
-      defmodule :d do
-        A.b
-      end
-      """)
-
-      assert Mix.Task.run("xref", opts ++ ["graph"]) == :ok
-
-      assert "Compiling 4 files (.ex)\nGenerated sample app\n" <> result =
-               receive_until_no_messages([])
-
-      assert normalize_graph_output(result) == normalize_graph_output(expected)
     end
-  end
 
-  defp normalize_graph_output(graph) do
-    String.replace(graph, "└──", "`--")
-  end
+    test "cycles" do
+      assert_graph(["--format", "cycles"], """
+      1 cycles found. Showing them in decreasing size:
 
-  describe "inside umbrellas" do
-    test "generates reports considering siblings" do
-      in_fixture "umbrella_dep/deps/umbrella", fn ->
+      Cycle of length 3:
+
+          lib/b.ex
+          lib/a.ex
+          lib/b.ex
+
+      """)
+    end
+
+    test "cycles with `--fail-above`" do
+      message = "Too many cycles (found: 1, permitted: 0)"
+
+      assert_raise Mix.Error, message, fn ->
+        assert_graph(["--format", "cycles", "--fail-above", "0"], """
+        1 cycles found. Showing them in decreasing size:
+
+        Cycle of length 3:
+
+            lib/b.ex
+            lib/a.ex
+            lib/b.ex
+
+        """)
+      end
+    end
+
+    test "cycles with min cycle size" do
+      assert_graph(["--format", "cycles", "--min-cycle-size", "3"], """
+      No cycles found
+      """)
+    end
+
+    test "unknown label" do
+      assert_raise Mix.Error, "Unknown --label bad in mix xref graph", fn ->
+        assert_graph(["--label", "bad"], "")
+      end
+    end
+
+    test "unknown format" do
+      assert_raise Mix.Error, "Unknown --format bad in mix xref graph", fn ->
+        assert_graph(["--format", "bad"], "")
+      end
+    end
+
+    test "exclude many" do
+      assert_graph(~w[--exclude lib/c.ex --exclude lib/b.ex], """
+      lib/a.ex
+      lib/d.ex
+      `-- lib/e.ex
+      lib/e.ex
+      """)
+    end
+
+    test "exclude one" do
+      assert_graph(~w[--exclude lib/d.ex], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      |-- lib/a.ex
+      |-- lib/c.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      lib/e.ex
+      """)
+    end
+
+    @abc_linear_files %{
+      "lib/a.ex" => "defmodule A, do: def(a, do: B.b())",
+      "lib/b.ex" => "defmodule B, do: def(b, do: C.c())",
+      "lib/c.ex" => "defmodule C, do: def(c, do: true)"
+    }
+
+    test "exclude one from linear case" do
+      assert_graph(
+        ~w[--exclude lib/b.ex],
+        """
+        lib/a.ex
+        lib/c.ex
+        """,
+        files: @abc_linear_files
+      )
+    end
+
+    test "exclude one with source from linear case" do
+      assert_graph(
+        ~w[--exclude lib/b.ex --source lib/a.ex],
+        """
+        lib/a.ex
+        """,
+        files: @abc_linear_files
+      )
+    end
+
+    test "invalid exclude" do
+      assert_raise Mix.Error, "Excluded files could not be found: lib/a2.ex, lib/a3.ex", fn ->
+        assert_graph(~w[--exclude lib/a2.ex --exclude lib/a.ex --exclude lib/a3.ex], "")
+      end
+    end
+
+    test "only nodes" do
+      assert_graph(~w[--only-nodes], """
+      lib/a.ex
+      lib/b.ex
+      lib/c.ex
+      lib/d.ex
+      lib/e.ex
+      """)
+    end
+
+    test "only nodes with compile direct label" do
+      assert_graph(~w[--label compile --only-direct --only-nodes], """
+      lib/a.ex
+      lib/b.ex
+      lib/c.ex
+      """)
+    end
+
+    test "filter by compile label" do
+      assert_graph(~w[--label compile], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      """)
+    end
+
+    test "filter by compile-connected label" do
+      assert_graph(~w[--label compile-connected], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      """)
+    end
+
+    test "filter by compile-connected label with exclusions" do
+      assert_graph(~w[--label compile-connected --exclude lib/e.ex], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      """)
+    end
+
+    test "filter by compile-connected label with fail-above" do
+      message = "Too many references (found: 2, permitted: 1)"
+
+      assert_raise Mix.Error, message, fn ->
+        assert_graph(~w[--label compile-connected --fail-above 1], """
+        lib/a.ex
+        `-- lib/b.ex (compile)
+        lib/c.ex
+        `-- lib/d.ex (compile)
+        """)
+      end
+    end
+
+    test "exclude many with fail-above" do
+      message = "Too many references (found: 1, permitted: 0)"
+
+      assert_raise Mix.Error, message, fn ->
+        assert_graph(~w[--exclude lib/c.ex --exclude lib/b.ex --fail-above 0], """
+        lib/a.ex
+        lib/d.ex
+        `-- lib/e.ex
+        lib/e.ex
+        """)
+      end
+    end
+
+    test "filter by compile direct label" do
+      assert_graph(~w[--label compile --only-direct], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      """)
+    end
+
+    test "filter by runtime label" do
+      assert_graph(~w[--label runtime], """
+      lib/b.ex
+      |-- lib/a.ex
+      `-- lib/c.ex
+      lib/d.ex
+      `-- lib/e.ex
+      """)
+    end
+
+    test "sources" do
+      assert_graph(~w[--source lib/a.ex --source lib/c.ex], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+          |-- lib/a.ex
+          |-- lib/c.ex
+          `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+          `-- lib/e.ex
+      """)
+    end
+
+    test "source with compile label" do
+      assert_graph(~w[--source lib/a.ex --label compile], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+          `-- lib/e.ex (compile)
+      """)
+    end
+
+    test "source with compile-connected label" do
+      assert_graph(~w[--source lib/a.ex --label compile-connected], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      """)
+    end
+
+    test "source with compile direct label" do
+      assert_graph(~w[--source lib/a.ex --label compile --only-direct], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+          `-- lib/e.ex (compile)
+      """)
+    end
+
+    test "invalid sources" do
+      assert_raise Mix.Error, "Sources could not be found: lib/a2.ex, lib/a3.ex", fn ->
+        assert_graph(~w[--source lib/a2.ex --source lib/a.ex --source lib/a3.ex], "")
+      end
+    end
+
+    test "sink" do
+      assert_graph(~w[--sink lib/e.ex], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      |-- lib/a.ex
+      |-- lib/c.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/e.ex
+      """)
+    end
+
+    test "sink with compile label" do
+      assert_graph(~w[--sink lib/e.ex --label compile], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      """)
+    end
+
+    test "sink with compile-connected label" do
+      assert_graph(~w[--sink lib/e.ex --label compile-connected], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      """)
+    end
+
+    test "sink with compile direct label" do
+      assert_graph(~w[--sink lib/e.ex --label compile --only-direct], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+      lib/b.ex
+      `-- lib/e.ex (compile)
+      """)
+    end
+
+    test "multiple sinks" do
+      assert_graph(~w[--sink lib/a.ex --sink lib/c.ex], """
+      lib/b.ex
+      |-- lib/a.ex
+      |   `-- lib/b.ex (compile)
+      `-- lib/c.ex
+      """)
+    end
+
+    test "multiple sinks with only nodes" do
+      assert_graph(~w[--sink lib/a.ex --sink lib/c.ex --sink lib/e.ex --only-nodes], """
+      lib/b.ex
+      lib/d.ex
+      """)
+    end
+
+    test "invalid sink" do
+      assert_raise Mix.Error, "Sinks could not be found: lib/b2.ex, lib/b3.ex", fn ->
+        assert_graph(~w[--sink lib/b2.ex --sink lib/b.ex --sink lib/b3.ex], "")
+      end
+    end
+
+    test "sink and source" do
+      assert_graph(~w[--source lib/a.ex --sink lib/b.ex], """
+      lib/a.ex
+      `-- lib/b.ex (compile)
+          `-- lib/a.ex
+      """)
+    end
+
+    test "with dynamic module" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        B.define()
+        """)
+
+        File.write!("lib/b.ex", """
+        defmodule B do
+          def define do
+            defmodule A do
+            end
+          end
+        end
+        """)
+
+        assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
+
+        assert File.read!("xref_graph.dot") === """
+               digraph "xref graph" {
+                 "lib/a.ex"
+                 "lib/a.ex" -> "lib/b.ex" [label="(compile)"]
+                 "lib/b.ex"
+               }
+               """
+      end)
+    end
+
+    test "with export" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        defmodule A do
+          def fun do
+            %B{}
+          end
+        end
+        """)
+
+        File.write!("lib/b.ex", """
+        defmodule B do
+          defstruct []
+        end
+        """)
+
+        assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
+
+        assert File.read!("xref_graph.dot") === """
+               digraph "xref graph" {
+                 "lib/a.ex"
+                 "lib/a.ex" -> "lib/b.ex" [label="(export)"]
+                 "lib/b.ex"
+               }
+               """
+      end)
+    end
+
+    test "with mixed cyclic dependencies" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        defmodule A.Using do
+          defmacro __using__(_), do: 42
+        end
+
+        defmodule A do
+          B
+
+          def foo do
+            :foo
+          end
+        end
+        """)
+
+        File.write!("lib/b.ex", """
+        defmodule B do
+          # Let's also test that we track literal atom behaviours
+          use :"Elixir.A.Using"
+
+          def foo do
+            A.foo()
+          end
+        end
+        """)
+
+        assert Mix.Task.run("xref", ["graph", "--format", "dot"]) == :ok
+
+        assert File.read!("xref_graph.dot") === """
+               digraph "xref graph" {
+                 "lib/a.ex"
+                 "lib/a.ex" -> "lib/b.ex" [label="(compile)"]
+                 "lib/b.ex" -> "lib/a.ex" [label="(compile)"]
+                 "lib/b.ex"
+               }
+               """
+      end)
+    end
+
+    test "generates reports considering siblings inside umbrellas" do
+      Mix.Project.pop()
+
+      in_fixture("umbrella_dep/deps/umbrella", fn ->
         Mix.Project.in_project(:bar, "apps/bar", fn _ ->
           File.write!("lib/bar.ex", """
           defmodule Bar do
             def bar do
-              Foo.foo
+              Foo.foo()
             end
           end
           """)
@@ -968,24 +860,144 @@ defmodule Mix.Tasks.XrefTest do
           assert receive_until_no_messages([]) == """
                  Tracked files: 2 (nodes)
                  Compile dependencies: 0 (edges)
-                 Structs dependencies: 0 (edges)
+                 Exports dependencies: 0 (edges)
                  Runtime dependencies: 1 (edges)
+                 Cycles: 0
 
                  Top 2 files with most outgoing dependencies:
                    * lib/bar.ex (1)
                    * lib/foo.ex (0)
 
-                 Top 1 files with most incoming dependencies:
+                 Top 2 files with most incoming dependencies:
                    * lib/foo.ex (1)
+                   * lib/bar.ex (0)
                  """
 
-          Mix.Tasks.Xref.run(["callers", "Foo.foo"])
+          Mix.Tasks.Xref.run(["callers", "Foo"])
 
           assert receive_until_no_messages([]) == """
-                 lib/bar.ex:3: Foo.foo/0
+                 lib/bar.ex (runtime)
                  """
         end)
+      end)
+    end
+
+    test "skip project compilation with --no-compile" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        defmodule A do
+          def a, do: :ok
+        end
+        """)
+
+        Mix.Tasks.Xref.run(["graph", "--no-compile"])
+        refute receive_until_no_messages([]) =~ "lib/a.ex"
+      end)
+    end
+
+    test "group with multiple unconnected files" do
+      assert_graph(~w[--group lib/a.ex,lib/c.ex,lib/e.ex], """
+      lib/a.ex+
+      |-- lib/b.ex (compile)
+      `-- lib/d.ex (compile)
+      lib/b.ex
+      `-- lib/a.ex+ (compile)
+      lib/d.ex
+      `-- lib/a.ex+
+      """)
+    end
+
+    test "group with directly dependent files and cycle" do
+      assert_graph(["--group", "lib/a.ex,lib/b.ex,"], """
+      lib/a.ex+
+      |-- lib/c.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/e.ex
+      lib/e.ex
+      """)
+    end
+
+    test "multiple groups" do
+      assert_graph(~w[--group lib/a.ex,lib/b.ex --group lib/c.ex,lib/e.ex], """
+      lib/a.ex+
+      `-- lib/c.ex+ (compile)
+      lib/c.ex+
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/c.ex+
+      """)
+    end
+
+    test "group with sink" do
+      assert_graph(~w[--group lib/a.ex,lib/c.ex,lib/e.ex --sink lib/e.ex], """
+      lib/b.ex
+      `-- lib/a.ex+ (compile)
+          |-- lib/b.ex (compile)
+          `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/a.ex+
+      """)
+    end
+
+    @default_files %{
+      "lib/a.ex" => """
+      defmodule A do
+        def a, do: :ok
+        B.b2()
       end
+      """,
+      "lib/b.ex" => """
+      defmodule B do
+        def b1, do: A.a() == C.c()
+        def b2, do: :ok
+        :e.e()
+      end
+      """,
+      "lib/c.ex" => """
+      defmodule C do
+        def c, do: :ok
+        :d.d()
+      end
+      """,
+      "lib/d.ex" => """
+      defmodule :d do
+        def d, do: :ok
+        def e, do: :e.e()
+      end
+      """,
+      "lib/e.ex" => """
+      defmodule :e do
+        def e, do: :ok
+      end
+      """
+    }
+
+    defp assert_graph(opts \\ [], expected, params \\ []) do
+      in_fixture("no_mixfile", fn ->
+        nb_files =
+          Enum.count(params[:files] || @default_files, fn {path, content} ->
+            File.write!(path, content)
+          end)
+
+        assert Mix.Task.run("xref", opts ++ ["graph"]) == :ok
+        first_line = "Compiling #{nb_files} files (.ex)"
+
+        assert [
+                 ^first_line | ["Generated sample app" | result]
+               ] = receive_until_no_messages([]) |> String.split("\n")
+
+        assert normalize_graph_output(result |> Enum.join("\n")) == expected
+      end)
+    end
+
+    defp normalize_graph_output(graph) do
+      graph
+      |> String.replace("├──", "|--")
+      |> String.replace("└──", "`--")
+      |> String.replace("│", "|")
     end
   end
 
@@ -996,6 +1008,12 @@ defmodule Mix.Tasks.XrefTest do
       {:mix_shell, :info, [line]} -> receive_until_no_messages([acc, line | "\n"])
     after
       0 -> IO.iodata_to_binary(acc)
+    end
+  end
+
+  defp generate_files(files) do
+    for {file, contents} <- files do
+      File.write!(file, contents)
     end
   end
 end

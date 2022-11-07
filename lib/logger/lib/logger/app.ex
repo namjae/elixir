@@ -1,39 +1,41 @@
 defmodule Logger.App do
   @moduledoc false
 
+  require Logger
+
   use Application
 
   @doc false
   def start(_type, _args) do
-    otp_reports? = Application.get_env(:logger, :handle_otp_reports)
-    sasl_reports? = Application.get_env(:logger, :handle_sasl_reports)
-    threshold = Application.get_env(:logger, :discard_threshold_for_error_logger)
-    error_handler = {:error_logger, Logger.ErrorHandler, {otp_reports?, sasl_reports?, threshold}}
+    start_options = Application.get_env(:logger, :start_options)
+    otp_reports? = Application.fetch_env!(:logger, :handle_otp_reports)
+    counter = :counters.new(1, [:atomics])
 
     children = [
       %{
         id: :gen_event,
-        start: {:gen_event, :start_link, [{:local, Logger}]},
+        start: {:gen_event, :start_link, [{:local, Logger}, start_options]},
         modules: :dynamic
       },
-      {Logger.Watcher, {Logger, Logger.Config, []}},
-      {Logger.WatcherSupervisor, {Logger.Config, :handlers, []}},
-      %{
-        id: Logger.ErrorHandler,
-        start: {Logger.Watcher, :start_link, [error_handler]}
-      }
+      {Logger.Watcher, {Logger.Config, counter}},
+      Logger.BackendSupervisor
     ]
-
-    config = Logger.Config.new()
 
     case Supervisor.start_link(children, strategy: :rest_for_one, name: Logger.Supervisor) do
       {:ok, sup} ->
-        handlers = [error_logger_tty_h: otp_reports?, sasl_report_tty_h: sasl_reports?]
-        delete_handlers(handlers)
-        {:ok, sup, config}
+        primary_config = add_elixir_handler(otp_reports?, counter)
+
+        default_handlers =
+          if otp_reports? do
+            delete_erlang_handler()
+          else
+            []
+          end
+
+        handlers = [{:primary, primary_config} | default_handlers]
+        {:ok, sup, handlers}
 
       {:error, _} = error ->
-        Logger.Config.delete(config)
         error
     end
   end
@@ -44,46 +46,85 @@ defmodule Logger.App do
   end
 
   @doc false
-  def stop(config) do
-    Logger.Config.deleted_handlers()
-    |> add_handlers()
+  def stop(handlers) do
+    _ = :logger.remove_handler(Logger)
+    _ = :logger.remove_primary_filter(:process_level)
+    add_handlers(handlers)
 
-    Logger.Config.delete(config)
+    :logger.add_primary_filter(
+      :silence_logger_exit,
+      {&Logger.Filter.silence_logger_exit/2, []}
+    )
   end
 
   @doc false
-  def config_change(_changed, _new, _removed) do
-    Logger.Config.configure([])
+  def config_change(changed, _new, _removed) do
+    # All other config has already been persisted, we only need to
+    # update the level and reload the logger state.
+    Logger.configure(Keyword.take(changed, [:level]))
   end
 
   @doc """
   Stops the application without sending messages to error logger.
   """
   def stop() do
-    try do
-      Logger.Config.deleted_handlers([])
-    catch
-      :exit, {:noproc, _} ->
-        {:error, {:not_started, :logger}}
+    Application.stop(:logger)
+  end
+
+  defp add_elixir_handler(otp_reports?, counter) do
+    config = %{
+      level: :all,
+      config: %{counter: counter},
+      filter_default: :log,
+      filters:
+        if not otp_reports? do
+          [filter_elixir_domain: {&Logger.Filter.filter_elixir_domain/2, []}]
+        else
+          []
+        end
+    }
+
+    primary_config = :logger.get_primary_config()
+    level = Application.get_env(:logger, :level, :debug)
+
+    level =
+      if level == :warn do
+        IO.warn(":logger has be set to :warn in config files, please use :warning instead")
+        :warning
+      else
+        level
+      end
+
+    level = Logger.Handler.elixir_level_to_erlang_level(level)
+
+    :ok = :logger.set_primary_config(:level, level)
+    :ok = :logger.add_primary_filter(:process_level, {&Logger.Filter.process_level/2, []})
+    :ok = :logger.add_handler(Logger, Logger.Handler, config)
+    primary_config
+  end
+
+  defp delete_erlang_handler() do
+    with {:ok, %{module: module} = config} <- :logger.get_handler_config(:default),
+         :ok <- :logger.remove_handler(:default) do
+      handler_config = {:default, module, config}
+
+      [handler_config]
     else
-      deleted_handlers ->
-        result = Application.stop(:logger)
-        add_handlers(deleted_handlers)
-        result
+      _ -> []
     end
   end
 
-  defp delete_handlers(handlers) do
-    to_delete =
-      for {handler, delete?} <- handlers,
-          delete? && :error_logger.delete_report_handler(handler) != {:error, :module_not_found},
-          do: handler
-
-    [] = Logger.Config.deleted_handlers(to_delete)
-    :ok
-  end
-
   defp add_handlers(handlers) do
-    Enum.each(handlers, &:error_logger.add_report_handler/1)
+    for handler <- handlers do
+      case handler do
+        {handler, module, config} ->
+          :logger.add_handler(handler, module, config)
+
+        {:primary, config} ->
+          :logger.set_primary_config(config)
+      end
+    end
+
+    :ok
   end
 end

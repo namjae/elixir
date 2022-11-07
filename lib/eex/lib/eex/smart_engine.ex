@@ -24,18 +24,35 @@ defmodule EEx.SmartEngine do
       # sample.ex
       defmodule Sample do
         require EEx
-        EEx.function_from_file :def, :sample, "sample.eex", [:assigns]
+        EEx.function_from_file(:def, :sample, "sample.eex", [:assigns])
       end
 
       # iex
-      Sample.sample(a: 1, b: 2) #=> "3"
+      Sample.sample(a: 1, b: 2)
+      #=> "3"
 
   """
 
-  use EEx.Engine
+  @behaviour EEx.Engine
 
-  def handle_expr(buffer, mark, expr) do
+  @impl true
+  defdelegate init(opts), to: EEx.Engine
+
+  @impl true
+  defdelegate handle_body(state), to: EEx.Engine
+
+  @impl true
+  defdelegate handle_begin(state), to: EEx.Engine
+
+  @impl true
+  defdelegate handle_end(state), to: EEx.Engine
+
+  @impl true
+  defdelegate handle_text(state, meta, text), to: EEx.Engine
+
+  @impl true
+  def handle_expr(state, marker, expr) do
     expr = Macro.prewalk(expr, &EEx.Engine.handle_assign/1)
-    super(buffer, mark, expr)
+    EEx.Engine.handle_expr(state, marker, expr)
   end
 end

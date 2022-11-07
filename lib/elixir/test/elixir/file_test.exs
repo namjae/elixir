@@ -1,26 +1,16 @@
 Code.require_file("test_helper.exs", __DIR__)
 
-defmodule Elixir.FileCase do
-  use ExUnit.CaseTemplate
+defmodule FileTest do
+  use ExUnit.Case
   import PathHelpers
-
-  using do
-    quote do
-      import PathHelpers
-    end
-  end
 
   setup do
     File.mkdir_p!(tmp_path())
     on_exit(fn -> File.rm_rf(tmp_path()) end)
     :ok
   end
-end
 
-defmodule FileTest do
-  use Elixir.FileCase
-
-  defmodule Rename do
+  describe "rename" do
     # Following Erlang's underlying implementation
     #
     # Renaming files
@@ -45,8 +35,6 @@ defmodule FileTest do
     # other tests
     # {:error, :enoent} -> rename unknown source
     # :ok               -> rename preserves mode
-    use Elixir.FileCase
-
     test "rename file to existing file default behaviour" do
       src = tmp_fixture_path("file.txt")
       dest = tmp_path("tmp.file")
@@ -85,7 +73,7 @@ defmodule FileTest do
 
       try do
         File.mkdir_p(Path.join(dest, "a"))
-        assert File.rename(src, dest) == {:error, :eisdir}
+        assert File.rename(src, dest) in [{:error, :eisdir}, {:error, :eexist}]
         assert File.exists?(src)
         refute File.exists?(Path.join(dest, "file.txt"))
       after
@@ -137,6 +125,35 @@ defmodule FileTest do
       after
         File.rm_rf(src)
         File.rm_rf(dest)
+      end
+    end
+
+    test "rename! file to existing file default behaviour" do
+      src = tmp_fixture_path("file.txt")
+      dest = tmp_path("tmp.file")
+
+      File.write!(dest, "hello")
+
+      try do
+        assert File.exists?(dest)
+        assert File.rename!(src, dest) == :ok
+        refute File.exists?(src)
+        assert File.read!(dest) == "FOO\n"
+      after
+        File.rm_rf(src)
+        File.rm_rf(dest)
+      end
+    end
+
+    test "rename! with invalid file" do
+      src = tmp_fixture_path("invalid.txt")
+      dest = tmp_path("tmp.file")
+
+      message =
+        "could not rename from #{inspect(src)} to #{inspect(dest)}: no such file or directory"
+
+      assert_raise File.RenameError, message, fn ->
+        File.rename!(src, dest)
       end
     end
 
@@ -216,7 +233,7 @@ defmodule FileTest do
 
       try do
         assert File.exists?(src)
-        assert File.rename(src, dest) == {:error, :einval}
+        assert File.rename(src, dest) in [{:error, :einval}, {:error, :eexist}]
         assert File.exists?(src)
       after
         File.rm_rf(src)
@@ -342,9 +359,7 @@ defmodule FileTest do
     end
   end
 
-  defmodule Cp do
-    use Elixir.FileCase
-
+  describe "cp" do
     test "cp with src file and dest file" do
       src = fixture_path("file.txt")
       dest = tmp_path("sample.txt")
@@ -455,7 +470,7 @@ defmodule FileTest do
       end
     end
 
-    test "copy file to itself" do
+    test "cp itself" do
       src = dest = tmp_path("tmp.file")
 
       File.write!(src, "here")
@@ -577,6 +592,86 @@ defmodule FileTest do
       assert File.cp_r(src, dest) == {:error, :enoent, src}
     end
 
+    test "cp_r with absolute symlink" do
+      linked_src = fixture_path("cp_r")
+      src = tmp_path("tmp/src")
+      dest = tmp_path("tmp/dest")
+
+      File.mkdir_p!(src)
+      :ok = :file.make_symlink(Path.join(linked_src, "a"), Path.join(src, "sym"))
+
+      try do
+        {:ok, files} = File.cp_r(src, dest)
+        assert length(files) == 2
+
+        assert File.exists?(tmp_path("tmp/dest/sym/1.txt"))
+        assert File.exists?(tmp_path("tmp/dest/sym/a/2.txt"))
+      after
+        File.rm_rf(src)
+        File.rm_rf(dest)
+      end
+    end
+
+    test "cp_r with dereference absolute symlink" do
+      linked_src = fixture_path("cp_r")
+      src = tmp_path("tmp/src")
+      dest = tmp_path("tmp/dest")
+
+      File.mkdir_p!(src)
+      :ok = :file.make_symlink(Path.join(linked_src, "a"), Path.join(src, "sym"))
+
+      try do
+        {:ok, files} = File.cp_r(src, dest, dereference_symlinks: true)
+        assert length(files) == 5
+
+        assert File.exists?(tmp_path("tmp/dest/sym/1.txt"))
+        assert File.exists?(tmp_path("tmp/dest/sym/a/2.txt"))
+      after
+        File.rm_rf(src)
+        File.rm_rf(dest)
+      end
+    end
+
+    @tag :unix
+    test "cp_r with relative symlink" do
+      doc = tmp_path("tmp/doc")
+      src = tmp_path("tmp/src")
+      dest = tmp_path("tmp/dest")
+
+      File.mkdir_p!(src)
+      File.write!(doc, "hello")
+      :ok = :file.make_symlink("../doc", Path.join(src, "sym"))
+
+      try do
+        {:ok, files} = File.cp_r(src, dest)
+        assert length(files) == 2
+        assert File.lstat!(tmp_path("tmp/dest/sym")).type == :symlink
+      after
+        File.rm_rf(src)
+        File.rm_rf(dest)
+      end
+    end
+
+    @tag :unix
+    test "cp_r with dereference relative symlink" do
+      doc = tmp_path("tmp/doc")
+      src = tmp_path("tmp/src")
+      dest = tmp_path("tmp/dest")
+
+      File.mkdir_p!(src)
+      File.write!(doc, "hello")
+      :ok = :file.make_symlink("../doc", Path.join(src, "sym"))
+
+      try do
+        {:ok, files} = File.cp_r(src, dest, dereference_symlinks: true)
+        assert length(files) == 2
+        assert File.lstat!(tmp_path("tmp/dest/sym")).type == :regular
+      after
+        File.rm_rf(src)
+        File.rm_rf(dest)
+      end
+    end
+
     test "cp_r with dir and file conflict" do
       src = fixture_path("cp_r")
       dest = tmp_path("tmp")
@@ -672,7 +767,7 @@ defmodule FileTest do
       end
     end
 
-    test "cp_r with src_unknown!" do
+    test "cp_r! with src unknown" do
       src = fixture_path("unknown")
       dest = tmp_path("tmp")
 
@@ -699,10 +794,6 @@ defmodule FileTest do
       %File.Stat{mode: src_mode} = File.stat!(src)
       %File.Stat{mode: dest_mode} = File.stat!(dest)
       assert src_mode == dest_mode
-    end
-
-    defp io_error?(result) do
-      elem(result, 1) in [:enotdir, :eio, :enoent, :eisdir]
     end
   end
 
@@ -755,21 +846,19 @@ defmodule FileTest do
     end
   end
 
-  defmodule OpenReadWrite do
-    use Elixir.FileCase
-
+  describe "open-read-write" do
     test "read with binary" do
       assert {:ok, "FOO\n"} = File.read(fixture_path("file.txt"))
       assert {:error, :enoent} = File.read(fixture_path("missing.txt"))
     end
 
     test "read with list" do
-      assert {:ok, "FOO\n"} = File.read(Path.expand('fixtures/file.txt', __DIR__))
-      assert {:error, :enoent} = File.read(Path.expand('fixtures/missing.txt', __DIR__))
+      assert {:ok, "FOO\n"} = File.read(Path.expand(~c"fixtures/file.txt", __DIR__))
+      assert {:error, :enoent} = File.read(Path.expand(~c"fixtures/missing.txt", __DIR__))
     end
 
     test "read with UTF-8" do
-      assert {:ok, "Русский\n日\n"} = File.read(Path.expand('fixtures/utf8.txt', __DIR__))
+      assert {:ok, "Русский\n日\n"} = File.read(Path.expand(~c"fixtures/utf8.txt", __DIR__))
     end
 
     test "read!" do
@@ -786,7 +875,7 @@ defmodule FileTest do
 
       try do
         refute File.exists?(fixture)
-        assert File.write(fixture, 'test text') == :ok
+        assert File.write(fixture, ~c"test text") == :ok
         assert File.read(fixture) == {:ok, "test text"}
       after
         File.rm(fixture)
@@ -826,7 +915,7 @@ defmodule FileTest do
 
     test "open file with charlist" do
       {:ok, file} = File.open(fixture_path("file.txt"), [:charlist])
-      assert IO.gets(file, "") == 'FOO\n'
+      assert IO.gets(file, "") == ~c"FOO\n"
       assert File.close(file) == :ok
     end
 
@@ -886,7 +975,7 @@ defmodule FileTest do
     end
 
     test "open a missing file" do
-      assert File.open('missing.txt') == {:error, :enoent}
+      assert File.open(~c"missing.txt") == {:error, :enoent}
     end
 
     test "open a file with function" do
@@ -898,7 +987,7 @@ defmodule FileTest do
       message = "could not open \"missing.txt\": no such file or directory"
 
       assert_raise File.Error, message, fn ->
-        File.open!('missing.txt')
+        File.open!(~c"missing.txt")
       end
     end
 
@@ -908,9 +997,7 @@ defmodule FileTest do
     end
   end
 
-  defmodule Mkdir do
-    use Elixir.FileCase
-
+  describe "mkdir" do
     test "mkdir with binary" do
       fixture = tmp_path("tmp_test")
 
@@ -1054,16 +1141,9 @@ defmodule FileTest do
         File.mkdir_p!(invalid)
       end
     end
-
-    defp io_error?(result) do
-      {:error, errorcode} = result
-      errorcode in [:enotdir, :eio, :enoent, :eisdir]
-    end
   end
 
-  defmodule Rm do
-    use Elixir.FileCase
-
+  describe "rm" do
     test "rm file" do
       fixture = tmp_path("tmp_test.txt")
       File.write(fixture, "test")
@@ -1086,7 +1166,7 @@ defmodule FileTest do
     end
 
     test "rm nonexistent file" do
-      assert File.rm('missing.txt') == {:error, :enoent}
+      assert File.rm(~c"missing.txt") == {:error, :enoent}
     end
 
     test "rm!" do
@@ -1265,100 +1345,385 @@ defmodule FileTest do
       fixture = fixture_path("file.txt/path")
       assert File.rm_rf!(fixture) == []
     end
+  end
 
-    defp io_error?(result) do
-      elem(result, 1) in [:enotdir, :eio, :enoent, :eisdir]
+  describe "stat" do
+    test "stat" do
+      {:ok, info} = File.stat(__ENV__.file)
+      assert info.mtime
+    end
+
+    test "stat!" do
+      assert File.stat!(__ENV__.file).mtime
+    end
+
+    test "stat with invalid file" do
+      assert {:error, _} = File.stat("./invalid_file")
+    end
+
+    test "stat! with invalid_file" do
+      assert_raise File.Error, fn ->
+        File.stat!("./invalid_file")
+      end
+    end
+
+    test "lstat" do
+      {:ok, info} = File.lstat(__ENV__.file)
+      assert info.mtime
+    end
+
+    test "lstat!" do
+      assert File.lstat!(__ENV__.file).mtime
+    end
+
+    test "lstat with invalid file" do
+      invalid_file = tmp_path("invalid_file")
+      assert {:error, _} = File.lstat(invalid_file)
+    end
+
+    test "lstat! with invalid file" do
+      invalid_file = tmp_path("invalid_file")
+
+      assert_raise File.Error, fn ->
+        File.lstat!(invalid_file)
+      end
+    end
+
+    test "lstat with dangling symlink" do
+      invalid_file = tmp_path("invalid_file")
+      dest = tmp_path("dangling_symlink")
+      File.ln_s(invalid_file, dest)
+
+      try do
+        assert {:ok, info} = File.lstat(dest)
+        assert info.type == :symlink
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "lstat! with dangling symlink" do
+      invalid_file = tmp_path("invalid_file")
+      dest = tmp_path("dangling_symlink")
+      File.ln_s(invalid_file, dest)
+
+      try do
+        assert File.lstat!(dest).type == :symlink
+      after
+        File.rm(dest)
+      end
     end
   end
 
-  test "stat" do
-    {:ok, info} = File.stat(__ENV__.file)
-    assert info.mtime
-  end
+  describe "IO stream" do
+    test "IO stream UTF-8" do
+      src = File.open!(fixture_path("file.txt"), [:utf8])
+      dest = tmp_path("tmp_test.txt")
 
-  test "stat!" do
-    assert File.stat!(__ENV__.file).mtime
-  end
+      try do
+        stream = IO.stream(src, :line)
 
-  test "stat with invalid file" do
-    assert {:error, _} = File.stat("./invalid_file")
-  end
+        File.open(dest, [:write], fn target ->
+          Enum.into(stream, IO.stream(target, :line), &String.replace(&1, "O", "A"))
+        end)
 
-  test "stat! with invalid_file" do
-    assert_raise File.Error, fn ->
-      File.stat!("./invalid_file")
+        assert File.read(dest) == {:ok, "FAA\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "IO stream" do
+      src = File.open!(fixture_path("file.txt"))
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        stream = IO.binstream(src, :line)
+
+        File.open(dest, [:write], fn target ->
+          Enum.into(stream, IO.binstream(target, :line), &String.replace(&1, "O", "A"))
+        end)
+
+        assert File.read(dest) == {:ok, "FAA\n"}
+      after
+        File.rm(dest)
+      end
     end
   end
 
-  test "lstat" do
-    {:ok, info} = File.lstat(__ENV__.file)
-    assert info.mtime
-  end
+  describe "file stream" do
+    test "returns a struct" do
+      src = fixture_path("file.txt")
+      stream = File.stream!(src)
+      assert %File.Stream{} = stream
+      assert stream.modes == [:raw, :read_ahead, :binary]
+      assert stream.raw
+      assert stream.line_or_bytes == :line
 
-  test "lstat!" do
-    assert File.lstat!(__ENV__.file).mtime
-  end
+      stream = File.stream!(src, read_ahead: false)
+      assert %File.Stream{} = stream
+      assert stream.modes == [:raw, :binary]
+      assert stream.raw
 
-  test "lstat with invalid file" do
-    invalid_file = tmp_path("invalid_file")
-    assert {:error, _} = File.lstat(invalid_file)
-  end
+      stream = File.stream!(src, read_ahead: 5000)
+      assert %File.Stream{} = stream
+      assert stream.modes == [:raw, {:read_ahead, 5000}, :binary]
+      assert stream.raw
 
-  test "lstat! with invalid file" do
-    invalid_file = tmp_path("invalid_file")
+      stream = File.stream!(src, [:utf8], 10)
+      assert %File.Stream{} = stream
+      assert stream.modes == [{:encoding, :utf8}, :binary]
+      refute stream.raw
+      assert stream.line_or_bytes == 10
+    end
 
-    assert_raise File.Error, fn ->
-      File.lstat!(invalid_file)
+    test "counts bytes/characters" do
+      src = fixture_path("file.txt")
+      stream = File.stream!(src)
+      assert Enum.count(stream) == 1
+
+      stream = File.stream!(src, [:utf8])
+      assert Enum.count(stream) == 1
+
+      stream = File.stream!(src, [], 2)
+      assert Enum.count(stream) == 2
+    end
+
+    test "reads and writes lines" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        stream = File.stream!(src)
+
+        File.open(dest, [:write], fn target ->
+          Enum.each(stream, fn line ->
+            IO.write(target, String.replace(line, "O", "A"))
+          end)
+        end)
+
+        assert File.read(dest) == {:ok, "FAA\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "reads and writes bytes" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        stream = File.stream!(src, [], 1)
+
+        File.open(dest, [:write], fn target ->
+          Enum.each(stream, fn <<char>> ->
+            IO.write(target, <<char + 1>>)
+          end)
+        end)
+
+        assert File.read(dest) == {:ok, "GPP\v"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "is collectable" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        original = File.stream!(dest)
+
+        stream =
+          File.stream!(src)
+          |> Stream.map(&String.replace(&1, "O", "A"))
+          |> Enum.into(original)
+
+        assert stream == original
+        assert File.read(dest) == {:ok, "FAA\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "is collectable with append" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        original = File.stream!(dest, [:append])
+
+        File.stream!(src, [:append])
+        |> Stream.map(&String.replace(&1, "O", "A"))
+        |> Enum.into(original)
+
+        File.stream!(src, [:append])
+        |> Enum.into(original)
+
+        assert File.read(dest) == {:ok, "FAA\nFOO\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "keeps BOM when raw" do
+      src = fixture_path("utf8_bom.txt")
+
+      assert src
+             |> File.stream!([])
+             |> Enum.take(1) == [<<239, 187, 191>> <> "Русский\n"]
+
+      assert src
+             |> File.stream!([], 1)
+             |> Enum.take(5) == [<<239>>, <<187>>, <<191>>, <<208>>, <<160>>]
+
+      assert src |> File.stream!([]) |> Enum.count() == 2
+      assert src |> File.stream!([], 1) |> Enum.count() == 22
+    end
+
+    test "trims BOM via option when raw" do
+      src = fixture_path("utf8_bom.txt")
+
+      assert src
+             |> File.stream!([:trim_bom])
+             |> Enum.take(1) == ["Русский\n"]
+
+      assert src
+             |> File.stream!([:trim_bom], 1)
+             |> Enum.take(5) == [<<208>>, <<160>>, <<209>>, <<131>>, <<209>>]
+
+      assert src |> File.stream!([:trim_bom]) |> Enum.count() == 2
+      assert src |> File.stream!([:trim_bom], 1) |> Enum.count() == 19
+    end
+
+    test "keeps BOM with utf8 encoding" do
+      src = fixture_path("utf8_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, :utf8}])
+             |> Enum.take(1) == [<<239, 187, 191>> <> "Русский\n"]
+
+      assert src
+             |> File.stream!([{:encoding, :utf8}], 1)
+             |> Enum.take(9) == ["\uFEFF", "Р", "у", "с", "с", "к", "и", "й", "\n"]
+    end
+
+    test "trims BOM via option with utf8 encoding" do
+      src = fixture_path("utf8_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, :utf8}, :trim_bom])
+             |> Enum.take(1) == ["Русский\n"]
+
+      assert src
+             |> File.stream!([{:encoding, :utf8}, :trim_bom], 1)
+             |> Enum.take(8) == ["Р", "у", "с", "с", "к", "и", "й", "\n"]
+    end
+
+    test "keeps BOM with UTF16 BE" do
+      src = fixture_path("utf16_be_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :big}}])
+             |> Enum.take(1) == ["\uFEFFРусский\n"]
+    end
+
+    test "keeps BOM with UTF16 LE" do
+      src = fixture_path("utf16_le_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :little}}])
+             |> Enum.take(1) == ["\uFEFFРусский\n"]
+    end
+
+    test "trims BOM via option with utf16 BE encoding" do
+      src = fixture_path("utf16_be_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :big}}, :trim_bom])
+             |> Enum.take(1) == ["Русский\n"]
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :big}}, :trim_bom], 1)
+             |> Enum.take(8) == ["Р", "у", "с", "с", "к", "и", "й", "\n"]
+    end
+
+    test "trims BOM via option with utf16 LE encoding" do
+      src = fixture_path("utf16_le_bom.txt")
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :little}}, :trim_bom])
+             |> Enum.take(1) == ["Русский\n"]
+
+      assert src
+             |> File.stream!([{:encoding, {:utf16, :little}}, :trim_bom], 1)
+             |> Enum.take(8) == ["Р", "у", "с", "с", "к", "и", "й", "\n"]
+    end
+
+    test "reads and writes line by line in UTF-8" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        stream = File.stream!(src)
+
+        File.open(dest, [:write, :utf8], fn target ->
+          Enum.each(stream, fn line ->
+            IO.write(target, String.replace(line, "O", "A"))
+          end)
+        end)
+
+        assert File.read(dest) == {:ok, "FAA\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "reads and writes character in UTF-8" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        stream = File.stream!(src, [:utf8], 1)
+
+        File.open(dest, [:write], fn target ->
+          Enum.each(stream, fn <<char::utf8>> ->
+            IO.write(target, <<char + 1::utf8>>)
+          end)
+        end)
+
+        assert File.read(dest) == {:ok, "GPP\v"}
+      after
+        File.rm(dest)
+      end
     end
   end
 
-  test "lstat with dangling symlink" do
-    invalid_file = tmp_path("invalid_file")
-    dest = tmp_path("dangling_symlink")
-    File.ln_s(invalid_file, dest)
+  describe "links" do
+    test "read_link with regular file" do
+      dest = tmp_path("symlink")
+      File.touch(dest)
 
-    try do
-      assert {:ok, info} = File.lstat(dest)
-      assert info.type == :symlink
-    after
-      File.rm(dest)
+      try do
+        assert File.read_link(dest) == {:error, :einval}
+      after
+        File.rm(dest)
+      end
     end
-  end
 
-  test "lstat! with dangling symlink" do
-    invalid_file = tmp_path("invalid_file")
-    dest = tmp_path("dangling_symlink")
-    File.ln_s(invalid_file, dest)
-
-    try do
-      assert File.lstat!(dest).type == :symlink
-    after
-      File.rm(dest)
+    test "read_link with nonexistent file" do
+      dest = tmp_path("does_not_exist")
+      assert File.read_link(dest) == {:error, :enoent}
     end
-  end
 
-  test "read_link with regular file" do
-    dest = tmp_path("symlink")
-    File.touch(dest)
-
-    try do
-      assert File.read_link(dest) == {:error, :einval}
-    after
-      File.rm(dest)
+    test "read_link! with nonexistent file" do
+      dest = tmp_path("does_not_exist")
+      assert_raise File.Error, fn -> File.read_link!(dest) end
     end
-  end
 
-  test "read_link with nonexistent file" do
-    dest = tmp_path("does_not_exist")
-    assert File.read_link(dest) == {:error, :enoent}
-  end
-
-  test "read_link! with nonexistent file" do
-    dest = tmp_path("does_not_exist")
-    assert_raise File.Error, fn -> File.read_link!(dest) end
-  end
-
-  unless windows?() do
+    @tag :unix
     test "read_link with symlink" do
       target = tmp_path("does_not_need_to_exist")
       dest = tmp_path("symlink")
@@ -1371,6 +1736,7 @@ defmodule FileTest do
       end
     end
 
+    @tag :unix
     test "read_link! with symlink" do
       target = tmp_path("does_not_need_to_exist")
       dest = tmp_path("symlink")
@@ -1382,574 +1748,383 @@ defmodule FileTest do
         File.rm(dest)
       end
     end
-  end
 
-  test "IO stream UTF-8" do
-    src = File.open!(fixture_path("file.txt"), [:utf8])
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = IO.stream(src, :line)
-
-      File.open(dest, [:write], fn target ->
-        Enum.into(stream, IO.stream(target, :line), &String.replace(&1, "O", "A"))
-      end)
-
-      assert File.read(dest) == {:ok, "FAA\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "IO stream" do
-    src = File.open!(fixture_path("file.txt"))
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = IO.binstream(src, :line)
-
-      File.open(dest, [:write], fn target ->
-        Enum.into(stream, IO.binstream(target, :line), &String.replace(&1, "O", "A"))
-      end)
-
-      assert File.read(dest) == {:ok, "FAA\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream map" do
-    src = fixture_path("file.txt")
-    stream = File.stream!(src)
-    assert %File.Stream{} = stream
-    assert stream.modes == [:raw, :read_ahead, :binary]
-    assert stream.raw
-    assert stream.line_or_bytes == :line
-
-    src = fixture_path("file.txt")
-    stream = File.stream!(src, [:utf8], 10)
-    assert %File.Stream{} = stream
-    assert stream.modes == [{:encoding, :utf8}, :binary]
-    refute stream.raw
-    assert stream.line_or_bytes == 10
-  end
-
-  test "stream count" do
-    src = fixture_path("file.txt")
-    stream = File.stream!(src)
-    assert Enum.count(stream) == 1
-
-    stream = File.stream!(src, [:utf8])
-    assert Enum.count(stream) == 1
-
-    stream = File.stream!(src, [], 2)
-    assert Enum.count(stream) == 2
-  end
-
-  test "stream keeps BOM" do
-    src = fixture_path("utf8_bom.txt")
-
-    bom_line =
-      src
-      |> File.stream!()
-      |> Enum.take(1)
-
-    assert [<<239, 187, 191>> <> "Русский\n"] == bom_line
-  end
-
-  test "trim BOM via option" do
-    src = fixture_path("utf8_bom.txt")
-
-    bom_line =
-      src
-      |> File.stream!([:trim_bom])
-      |> Enum.take(1)
-
-    assert ["Русский\n"] == bom_line
-  end
-
-  test "stream line UTF-8" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = File.stream!(src)
-
-      File.open(dest, [:write, :utf8], fn target ->
-        Enum.each(stream, fn line ->
-          IO.write(target, String.replace(line, "O", "A"))
-        end)
-      end)
-
-      assert File.read(dest) == {:ok, "FAA\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream bytes UTF-8" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = File.stream!(src, [:utf8], 1)
-
-      File.open(dest, [:write], fn target ->
-        Enum.each(stream, fn line ->
-          IO.write(target, String.replace(line, "OO", "AA"))
-        end)
-      end)
-
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream line" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = File.stream!(src)
-
-      File.open(dest, [:write], fn target ->
-        Enum.each(stream, fn line ->
-          IO.write(target, String.replace(line, "O", "A"))
-        end)
-      end)
-
-      assert File.read(dest) == {:ok, "FAA\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream bytes" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      stream = File.stream!(src, [], 1)
-
-      File.open(dest, [:write], fn target ->
-        Enum.each(stream, fn line ->
-          IO.write(target, String.replace(line, "OO", "AA"))
-        end)
-      end)
-
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream into" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-
-      original = File.stream!(dest)
-
-      stream =
-        File.stream!(src)
-        |> Stream.map(&String.replace(&1, "O", "A"))
-        |> Enum.into(original)
-
-      assert stream == original
-      assert File.read(dest) == {:ok, "FAA\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "stream into append" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      original = File.stream!(dest, [:append])
-
-      File.stream!(src, [:append])
-      |> Stream.map(&String.replace(&1, "O", "A"))
-      |> Enum.into(original)
-
-      File.stream!(src, [:append])
-      |> Enum.into(original)
-
-      assert File.read(dest) == {:ok, "FAA\nFOO\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "ln" do
-    existing = fixture_path("file.txt")
-    new = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(new)
-      assert File.ln(existing, new) == :ok
-      assert File.read(new) == {:ok, "FOO\n"}
-    after
-      File.rm(new)
-    end
-  end
-
-  test "ln with existing destination" do
-    existing = fixture_path("file.txt")
-    assert File.ln(existing, existing) == {:error, :eexist}
-  end
-
-  test "ln! with existing destination" do
-    assert_raise File.LinkError, fn ->
+    test "ln" do
       existing = fixture_path("file.txt")
-      File.ln!(existing, existing)
-    end
-  end
+      new = tmp_path("tmp_test.txt")
 
-  test "ln_s" do
-    existing = fixture_path("file.txt")
-    new = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(new)
-      assert File.ln_s(existing, new) == :ok
-      assert File.read(new) == {:ok, "FOO\n"}
-    after
-      File.rm(new)
-    end
-  end
-
-  test "ln_s with existing destination" do
-    existing = fixture_path("file.txt")
-    assert File.ln_s(existing, existing) == {:error, :eexist}
-  end
-
-  test "ln_s! with existing destination" do
-    existing = fixture_path("file.txt")
-
-    assert_raise File.LinkError, fn ->
-      File.ln_s!(existing, existing)
-    end
-  end
-
-  test "copy" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy(src, dest) == {:ok, 4}
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "copy with an io_device" do
-    {:ok, src} = File.open(fixture_path("file.txt"))
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy(src, dest) == {:ok, 4}
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.close(src)
-      File.rm(dest)
-    end
-  end
-
-  test "copy with raw io_device" do
-    {:ok, src} = File.open(fixture_path("file.txt"), [:raw])
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy(src, dest) == {:ok, 4}
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.close(src)
-      File.rm(dest)
-    end
-  end
-
-  test "copy with ram io_device" do
-    {:ok, src} = File.open("FOO\n", [:ram])
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy(src, dest) == {:ok, 4}
-      assert File.read(dest) == {:ok, "FOO\n"}
-    after
-      File.close(src)
-      File.rm(dest)
-    end
-  end
-
-  test "copy with bytes count" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy(src, dest, 2) == {:ok, 2}
-      assert {:ok, "FO"} == File.read(dest)
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "copy with invalid file" do
-    src = fixture_path("invalid.txt")
-    dest = tmp_path("tmp_test.txt")
-    assert File.copy(src, dest, 2) == {:error, :enoent}
-  end
-
-  test "copy!" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy!(src, dest) == 4
-      assert {:ok, "FOO\n"} == File.read(dest)
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "copy! with bytes count" do
-    src = fixture_path("file.txt")
-    dest = tmp_path("tmp_test.txt")
-
-    try do
-      refute File.exists?(dest)
-      assert File.copy!(src, dest, 2) == 2
-      assert {:ok, "FO"} == File.read(dest)
-    after
-      File.rm(dest)
-    end
-  end
-
-  test "copy! with invalid file" do
-    src = fixture_path("invalid.txt")
-    dest = tmp_path("tmp_test.txt")
-    message = "could not copy from #{inspect(src)} to #{inspect(dest)}: no such file or directory"
-
-    assert_raise File.CopyError, message, fn ->
-      File.copy!(src, dest, 2)
-    end
-  end
-
-  test "cwd and cd" do
-    {:ok, current} = File.cwd()
-
-    try do
-      assert File.cd(fixture_path()) == :ok
-      assert File.exists?("file.txt")
-    after
-      File.cd!(current)
-    end
-  end
-
-  if :file.native_name_encoding() == :utf8 do
-    test "cwd and cd with UTF-8" do
-      File.mkdir_p(tmp_path("héllò"))
-
-      File.cd!(tmp_path("héllò"), fn ->
-        assert Path.basename(File.cwd!()) == "héllò"
-      end)
-    after
-      File.rm_rf(tmp_path("héllò"))
-    end
-  end
-
-  test "invalid cd" do
-    assert io_error?(File.cd(fixture_path("file.txt")))
-  end
-
-  test "invalid_cd!" do
-    message =
-      ~r"\Acould not set current working directory to #{inspect(fixture_path("file.txt"))}: (not a directory|no such file or directory)"
-
-    assert_raise File.Error, message, fn ->
-      File.cd!(fixture_path("file.txt"))
-    end
-  end
-
-  test "cd with function" do
-    assert File.cd!(fixture_path(), fn ->
-             assert File.exists?("file.txt")
-             :cd_result
-           end) == :cd_result
-  end
-
-  test "touch with no file" do
-    fixture = tmp_path("tmp_test.txt")
-    time = {{2010, 4, 17}, {14, 0, 0}}
-
-    try do
-      refute File.exists?(fixture)
-      assert File.touch(fixture, time) == :ok
-      assert {:ok, ""} == File.read(fixture)
-      assert File.stat!(fixture).mtime == time
-    after
-      File.rm(fixture)
-    end
-  end
-
-  test "touch with timestamp" do
-    fixture = tmp_path("tmp_test.txt")
-
-    try do
-      assert File.touch!(fixture) == :ok
-      stat = File.stat!(fixture)
-
-      assert File.touch!(fixture, last_year()) == :ok
-      assert stat.mtime > File.stat!(fixture).mtime
-    after
-      File.rm(fixture)
-    end
-  end
-
-  test "touch with dir" do
-    assert File.touch(fixture_path()) == :ok
-  end
-
-  test "touch with failure" do
-    fixture = fixture_path("file.txt/bar")
-    assert io_error?(File.touch(fixture))
-  end
-
-  test "touch! with success" do
-    assert File.touch!(fixture_path()) == :ok
-  end
-
-  test "touch! with failure" do
-    fixture = fixture_path("file.txt/bar")
-
-    message =
-      ~r"\Acould not touch #{inspect(fixture)}: (not a directory|no such file or directory)"
-
-    assert_raise File.Error, message, fn ->
-      File.touch!(fixture)
-    end
-  end
-
-  test "chmod with success" do
-    fixture = tmp_path("tmp_test.txt")
-
-    File.touch(fixture)
-
-    try do
-      assert File.chmod(fixture, 0o100666) == :ok
-      stat = File.stat!(fixture)
-      assert stat.mode == 0o100666
-
-      unless windows?() do
-        assert File.chmod(fixture, 0o100777) == :ok
-        stat = File.stat!(fixture)
-        assert stat.mode == 0o100777
+      try do
+        refute File.exists?(new)
+        assert File.ln(existing, new) == :ok
+        assert File.read(new) == {:ok, "FOO\n"}
+      after
+        File.rm(new)
       end
-    after
-      File.rm(fixture)
     end
-  end
 
-  test "chmod! with success" do
-    fixture = tmp_path("tmp_test.txt")
+    test "ln with existing destination" do
+      existing = fixture_path("file.txt")
+      assert File.ln(existing, existing) == {:error, :eexist}
+    end
 
-    File.touch(fixture)
-
-    try do
-      assert File.chmod!(fixture, 0o100666) == :ok
-      stat = File.stat!(fixture)
-      assert stat.mode == 0o100666
-
-      unless windows?() do
-        assert File.chmod!(fixture, 0o100777) == :ok
-        stat = File.stat!(fixture)
-        assert stat.mode == 0o100777
+    test "ln! with existing destination" do
+      assert_raise File.LinkError, fn ->
+        existing = fixture_path("file.txt")
+        File.ln!(existing, existing)
       end
-    after
+    end
+
+    test "ln_s" do
+      existing = fixture_path("file.txt")
+      new = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(new)
+        assert File.ln_s(existing, new) == :ok
+        assert File.read(new) == {:ok, "FOO\n"}
+      after
+        File.rm(new)
+      end
+    end
+
+    test "ln_s with existing destination" do
+      existing = fixture_path("file.txt")
+      assert File.ln_s(existing, existing) == {:error, :eexist}
+    end
+
+    test "ln_s! with existing destination" do
+      existing = fixture_path("file.txt")
+
+      assert_raise File.LinkError, fn ->
+        File.ln_s!(existing, existing)
+      end
+    end
+  end
+
+  describe "copy" do
+    test "copy" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy(src, dest) == {:ok, 4}
+        assert File.read(dest) == {:ok, "FOO\n"}
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "copy with an io_device" do
+      {:ok, src} = File.open(fixture_path("file.txt"))
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy(src, dest) == {:ok, 4}
+        assert File.read(dest) == {:ok, "FOO\n"}
+      after
+        File.close(src)
+        File.rm(dest)
+      end
+    end
+
+    test "copy with raw io_device" do
+      {:ok, src} = File.open(fixture_path("file.txt"), [:raw])
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy(src, dest) == {:ok, 4}
+        assert File.read(dest) == {:ok, "FOO\n"}
+      after
+        File.close(src)
+        File.rm(dest)
+      end
+    end
+
+    test "copy with ram io_device" do
+      {:ok, src} = File.open("FOO\n", [:ram])
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy(src, dest) == {:ok, 4}
+        assert File.read(dest) == {:ok, "FOO\n"}
+      after
+        File.close(src)
+        File.rm(dest)
+      end
+    end
+
+    test "copy with bytes count" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy(src, dest, 2) == {:ok, 2}
+        assert {:ok, "FO"} == File.read(dest)
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "copy with invalid file" do
+      src = fixture_path("invalid.txt")
+      dest = tmp_path("tmp_test.txt")
+      assert File.copy(src, dest, 2) == {:error, :enoent}
+    end
+
+    test "copy!" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy!(src, dest) == 4
+        assert {:ok, "FOO\n"} == File.read(dest)
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "copy! with bytes count" do
+      src = fixture_path("file.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      try do
+        refute File.exists?(dest)
+        assert File.copy!(src, dest, 2) == 2
+        assert {:ok, "FO"} == File.read(dest)
+      after
+        File.rm(dest)
+      end
+    end
+
+    test "copy! with invalid file" do
+      src = fixture_path("invalid.txt")
+      dest = tmp_path("tmp_test.txt")
+
+      message =
+        "could not copy from #{inspect(src)} to #{inspect(dest)}: no such file or directory"
+
+      assert_raise File.CopyError, message, fn ->
+        File.copy!(src, dest, 2)
+      end
+    end
+  end
+
+  describe "cwd and cd" do
+    test "cwd and cd" do
+      {:ok, current} = File.cwd()
+
+      try do
+        assert File.cd(fixture_path()) == :ok
+        assert File.exists?("file.txt")
+      after
+        File.cd!(current)
+      end
+    end
+
+    if :file.native_name_encoding() == :utf8 do
+      test "cwd and cd with UTF-8" do
+        File.mkdir_p(tmp_path("héllò"))
+
+        File.cd!(tmp_path("héllò"), fn ->
+          assert Path.basename(File.cwd!()) == "héllò"
+        end)
+      after
+        File.rm_rf(tmp_path("héllò"))
+      end
+    end
+
+    test "invalid cd" do
+      assert io_error?(File.cd(fixture_path("file.txt")))
+    end
+
+    test "invalid_cd!" do
+      message =
+        ~r"\Acould not set current working directory to #{inspect(fixture_path("file.txt"))}: (not a directory|no such file or directory|I/O error)"
+
+      assert_raise File.Error, message, fn ->
+        File.cd!(fixture_path("file.txt"))
+      end
+    end
+
+    test "cd with function" do
+      assert File.cd!(fixture_path(), fn ->
+               assert File.exists?("file.txt")
+               :cd_result
+             end) == :cd_result
+    end
+  end
+
+  describe "touch" do
+    test "touch with no file" do
+      fixture = tmp_path("tmp_test.txt")
+      time = {{2010, 4, 17}, {14, 0, 0}}
+
+      try do
+        refute File.exists?(fixture)
+        assert File.touch(fixture, time) == :ok
+        assert {:ok, ""} == File.read(fixture)
+        assert File.stat!(fixture).mtime == time
+      after
+        File.rm(fixture)
+      end
+    end
+
+    test "touch with Erlang timestamp" do
+      fixture = tmp_path("tmp_erlang_touch.txt")
+
+      try do
+        assert File.touch!(fixture, :erlang.universaltime()) == :ok
+        stat = File.stat!(fixture)
+
+        assert File.touch!(fixture, last_year()) == :ok
+        assert stat.mtime > File.stat!(fixture).mtime
+      after
+        File.rm(fixture)
+      end
+    end
+
+    test "touch with posix timestamp" do
+      fixture = tmp_path("tmp_posix_touch.txt")
+
+      try do
+        assert File.touch!(fixture, System.os_time(:second)) == :ok
+        stat = File.stat!(fixture)
+
+        assert File.touch!(fixture, last_year()) == :ok
+        assert stat.mtime > File.stat!(fixture).mtime
+      after
+        File.rm(fixture)
+      end
+    end
+
+    test "touch with dir" do
+      assert File.touch(fixture_path()) == :ok
+    end
+
+    test "touch with failure" do
+      fixture = fixture_path("file.txt/bar")
+      assert io_error?(File.touch(fixture))
+    end
+
+    test "touch! raises" do
+      fixture = fixture_path("file.txt/bar")
+
+      message =
+        ~r"\Acould not touch #{inspect(fixture)}: (not a directory|no such file or directory)"
+
+      assert_raise File.Error, message, fn ->
+        File.touch!(fixture)
+      end
+    end
+  end
+
+  describe "ch*" do
+    test "chmod with success" do
+      fixture = tmp_path("tmp_test.txt")
+
+      File.touch(fixture)
+
+      try do
+        assert File.chmod(fixture, 0o100666) == :ok
+        stat = File.stat!(fixture)
+        assert stat.mode == 0o100666
+
+        unless windows?() do
+          assert File.chmod(fixture, 0o100777) == :ok
+          stat = File.stat!(fixture)
+          assert stat.mode == 0o100777
+        end
+      after
+        File.rm(fixture)
+      end
+    end
+
+    test "chmod! with success" do
+      fixture = tmp_path("tmp_test.txt")
+
+      File.touch(fixture)
+
+      try do
+        assert File.chmod!(fixture, 0o100666) == :ok
+        stat = File.stat!(fixture)
+        assert stat.mode == 0o100666
+
+        unless windows?() do
+          assert File.chmod!(fixture, 0o100777) == :ok
+          stat = File.stat!(fixture)
+          assert stat.mode == 0o100777
+        end
+      after
+        File.rm(fixture)
+      end
+    end
+
+    test "chmod with failure" do
+      fixture = tmp_path("tmp_test.txt")
       File.rm(fixture)
+
+      assert File.chmod(fixture, 0o100777) == {:error, :enoent}
     end
-  end
 
-  test "chmod with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
+    test "chmod! with failure" do
+      fixture = tmp_path("tmp_test.txt")
+      File.rm(fixture)
 
-    assert File.chmod(fixture, 0o100777) == {:error, :enoent}
-  end
+      message = ~r"could not change mode for #{inspect(fixture)}: no such file or directory"
 
-  test "chmod! with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
-
-    message = ~r"could not change mode for #{inspect(fixture)}: no such file or directory"
-
-    assert_raise File.Error, message, fn ->
-      File.chmod!(fixture, 0o100777)
+      assert_raise File.Error, message, fn ->
+        File.chmod!(fixture, 0o100777)
+      end
     end
-  end
 
-  test "chgrp with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
+    test "chgrp with failure" do
+      fixture = tmp_path("tmp_test.txt")
+      File.rm(fixture)
 
-    assert File.chgrp(fixture, 1) == {:error, :enoent}
-  end
-
-  test "chgrp! with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
-
-    message = ~r"could not change group for #{inspect(fixture)}: no such file or directory"
-
-    assert_raise File.Error, message, fn ->
-      File.chgrp!(fixture, 1)
+      assert File.chgrp(fixture, 1) == {:error, :enoent}
     end
-  end
 
-  test "chown with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
+    test "chgrp! with failure" do
+      fixture = tmp_path("tmp_test.txt")
+      File.rm(fixture)
 
-    assert File.chown(fixture, 1) == {:error, :enoent}
-  end
+      message = ~r"could not change group for #{inspect(fixture)}: no such file or directory"
 
-  test "chown! with failure" do
-    fixture = tmp_path("tmp_test.txt")
-    File.rm(fixture)
+      assert_raise File.Error, message, fn ->
+        File.chgrp!(fixture, 1)
+      end
+    end
 
-    message = ~r"could not change owner for #{inspect(fixture)}: no such file or directory"
+    test "chown with failure" do
+      fixture = tmp_path("tmp_test.txt")
+      File.rm(fixture)
 
-    assert_raise File.Error, message, fn ->
-      File.chown!(fixture, 1)
+      assert File.chown(fixture, 1) == {:error, :enoent}
+    end
+
+    test "chown! with failure" do
+      fixture = tmp_path("tmp_test.txt")
+      File.rm(fixture)
+
+      message = ~r"could not change owner for #{inspect(fixture)}: no such file or directory"
+
+      assert_raise File.Error, message, fn ->
+        File.chown!(fixture, 1)
+      end
     end
   end
 
   defp last_year do
-    last_year(:calendar.local_time())
-  end
-
-  defp last_year({{year, 2, 29}, time}) do
-    {{year - 1, 2, 28}, time}
-  end
-
-  defp last_year({{year, month, day}, time}) do
-    {{year - 1, month, day}, time}
+    System.os_time(:second) - 365 * 24 * 60 * 60
   end
 
   defp io_error?(result) do
-    {:error, errorcode} = result
-    errorcode in [:enotdir, :eio, :enoent, :eisdir]
+    elem(result, 1) in [:enotdir, :eio, :enoent, :eisdir]
   end
 end

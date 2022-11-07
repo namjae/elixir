@@ -12,18 +12,26 @@ defmodule Mix.Compilers.Erlang do
 
   `mappings` should be a list of tuples in the form of `{src, dest}` paths.
 
+  ## Options
+
+    * `:force` - forces compilation regardless of modification times
+
+    * `:parallel` - a mapset of files to compile in parallel
+
   ## Examples
 
   For example, a simple compiler for Lisp Flavored Erlang
   would be implemented like:
 
-      manifest = Path.join Mix.Project.manifest_path, ".compile.lfe"
-      dest = Mix.Project.compile_path
+      manifest = Path.join(Mix.Project.manifest_path(), "compile.lfe")
+      dest = Mix.Project.compile_path()
 
-      compile manifest, [{"src", dest}], :lfe, :beam, opts, fn input, output ->
-        :lfe_comp.file(to_erl_file(input),
-                       [{output_dir, Path.dirname(output)}, :return])
-      end
+      compile(manifest, [{"src", dest}], :lfe, :beam, opts, fn input, output ->
+        :lfe_comp.file(
+          to_erl_file(input),
+          [{:outdir, Path.dirname(output)}, :return, :report]
+        )
+      end)
 
   The command above will:
 
@@ -54,17 +62,6 @@ defmodule Mix.Compilers.Erlang do
     compile(manifest, files, src_ext, opts, callback)
   end
 
-  def compile(manifest, mappings, src_ext, dest_ext, force, callback)
-      when is_boolean(force) or is_nil(force) do
-    # TODO: Remove this on v2.0
-    IO.warn(
-      "Mix.Compilers.Erlang.compile/6 with a boolean or nil as 5th argument is deprecated, " <>
-        "please pass [force: true] or [] instead"
-    )
-
-    compile(manifest, mappings, src_ext, dest_ext, [force: force], callback)
-  end
-
   @doc """
   Compiles the given `mappings`.
 
@@ -73,6 +70,13 @@ defmodule Mix.Compilers.Erlang do
   A `manifest` file and a `callback` to be invoked for each src/dest pair
   must be given. A src/dest pair where destination is `nil` is considered
   to be up to date and won't be (re-)compiled.
+
+  ## Options
+
+    * `:force` - forces compilation regardless of modification times
+
+    * `:parallel` - a mapset of files to compile in parallel
+
   """
   def compile(manifest, mappings, opts \\ [], callback) do
     compile(manifest, mappings, :erl, opts, callback)
@@ -82,17 +86,13 @@ defmodule Mix.Compilers.Erlang do
     stale = for {:stale, src, dest} <- mappings, do: {src, dest}
 
     # Get the previous entries from the manifest
-    timestamp = :calendar.universal_time()
+    timestamp = System.os_time(:second)
     entries = read_manifest(manifest)
 
-    # Files to remove are the ones in the manifest
-    # but they no longer have a source
+    # Files to remove are the ones in the manifest but they no longer have a source
     removed =
-      Enum.filter(entries, fn {dest, _} ->
-        not Enum.any?(mappings, fn {_status, _mapping_src, mapping_dest} ->
-          mapping_dest == dest
-        end)
-      end)
+      entries
+      |> Enum.filter(fn {dest, _} -> not List.keymember?(mappings, dest, 2) end)
       |> Enum.map(&elem(&1, 0))
 
     # Remove manifest entries with no source
@@ -107,7 +107,7 @@ defmodule Mix.Compilers.Erlang do
 
     if opts[:all_warnings], do: show_warnings(entries)
 
-    if stale == [] && removed == [] do
+    if stale == [] and removed == [] do
       {:noop, manifest_warnings(entries)}
     else
       Mix.Utils.compiling_n(length(stale), ext)
@@ -118,11 +118,26 @@ defmodule Mix.Compilers.Erlang do
       # and what not).
       Code.prepend_path(Mix.Project.compile_path())
 
+      {parallel, serial} =
+        case opts[:parallel] || false do
+          true -> {stale, []}
+          false -> {[], stale}
+          parallel -> Enum.split_with(stale, fn {source, _target} -> source in parallel end)
+        end
+
+      serial_results = Enum.map(serial, &do_compile(&1, callback, timestamp, verbose))
+
+      parallel_results =
+        parallel
+        |> Task.async_stream(&do_compile(&1, callback, timestamp, verbose),
+          timeout: :infinity,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
       # Compile stale files and print the results
       {status, new_entries, warnings, errors} =
-        stale
-        |> Enum.map(&do_compile(&1, callback, timestamp, verbose))
-        |> Enum.reduce({:ok, [], [], []}, &combine_results/2)
+        Enum.reduce(serial_results ++ parallel_results, {:ok, [], [], []}, &combine_results/2)
 
       write_manifest(manifest, entries ++ new_entries, timestamp)
 
@@ -141,7 +156,7 @@ defmodule Mix.Compilers.Erlang do
   end
 
   @doc """
-  Ensures the native Erlang application is available.
+  Ensures the native OTP application is available.
   """
   def ensure_application!(app, input) do
     case Application.ensure_all_started(app) do
@@ -162,7 +177,7 @@ defmodule Mix.Compilers.Erlang do
   Removes compiled files for the given `manifest`.
   """
   def clean(manifest) do
-    Enum.each(read_manifest(manifest), &File.rm/1)
+    Enum.each(read_manifest(manifest), fn {file, _} -> File.rm(file) end)
     File.rm(manifest)
   end
 
@@ -187,6 +202,13 @@ defmodule Mix.Compilers.Erlang do
     else
       Mix.raise(":erlc_paths should be a list of paths, got: #{inspect(erlc_paths)}")
     end
+  end
+
+  @doc """
+  Returns the output paths in the manifest.
+  """
+  def outputs(manifest) do
+    manifest |> read_manifest() |> Enum.map(&elem(&1, 0))
   end
 
   defp extract_targets(src_dir, src_ext, dest_dir, dest_ext, force) do
@@ -221,13 +243,12 @@ defmodule Mix.Compilers.Erlang do
   end
 
   defp write_manifest(file, entries, timestamp) do
-    Path.dirname(file) |> File.mkdir_p!()
+    File.mkdir_p!(Path.dirname(file))
     File.write!(file, :erlang.term_to_binary({@manifest_vsn, entries}))
     File.touch!(file, timestamp)
   end
 
   defp do_compile({input, output}, callback, timestamp, verbose) do
-    # TODO: Deprecate {:ok, _} and :error return on Elixir v1.8
     case callback.(input, output) do
       {:ok, _, warnings} ->
         File.touch!(output, timestamp)
@@ -238,9 +259,19 @@ defmodule Mix.Compilers.Erlang do
         {:error, [], warnings, errors}
 
       {:ok, _} ->
+        IO.warn(
+          "returning {:ok, contents} in the Mix.Compilers.Erlang.compile/6 callback is deprecated " <>
+            "The callback should return {:ok, contents, warnings} or {:error, errors, warnings}"
+        )
+
         {:ok, [], [], []}
 
       :error ->
+        IO.warn(
+          "returning :error in the Mix.Compilers.Erlang.compile/6 callback is deprecated " <>
+            "The callback should return {:ok, contents, warnings} or {:error, errors, warnings}"
+        )
+
         {:error, [], [], []}
     end
   end
@@ -260,10 +291,10 @@ defmodule Mix.Compilers.Erlang do
 
   defp to_diagnostics(warnings_or_errors, severity) do
     for {file, issues} <- warnings_or_errors,
-        {line, module, data} <- issues do
+        {location, module, data} <- issues do
       %Mix.Task.Compiler.Diagnostic{
         file: Path.absname(file),
-        position: line,
+        position: location_normalize(location),
         message: to_string(module.format_error(data)),
         severity: severity,
         compiler_name: to_string(module),
@@ -275,8 +306,19 @@ defmodule Mix.Compilers.Erlang do
   defp show_warnings(entries) do
     for {_, warnings} <- entries,
         {file, issues} <- warnings,
-        {line, module, message} <- issues do
-      IO.puts("#{file}:#{line}: Warning: #{module.format_error(message)}")
+        {location, module, message} <- issues do
+      IO.puts("#{file}:#{location_to_string(location)} warning: #{module.format_error(message)}")
     end
   end
+
+  defp location_normalize({line, column})
+       when is_integer(line) and line >= 1 and is_integer(column) and column >= 0,
+       do: {line, column}
+
+  defp location_normalize(line) when is_integer(line) and line >= 1, do: line
+  defp location_normalize(_), do: 0
+
+  defp location_to_string({line, column}), do: "#{line}:#{column}:"
+  defp location_to_string(0), do: ""
+  defp location_to_string(line), do: "#{line}:"
 end

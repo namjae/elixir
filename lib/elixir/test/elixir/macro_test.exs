@@ -17,42 +17,49 @@ end
 
 defmodule MacroTest do
   use ExUnit.Case, async: true
+  doctest Macro
 
   # Changing the lines above will make compilation
   # fail since we are asserting on the caller lines
   import Macro.ExternalTest
 
   describe "escape/2" do
-    test "handles tuples with size different than two" do
+    test "returns tuples with size equal to two" do
+      assert Macro.escape({:a, :b}) == {:a, :b}
+    end
+
+    test "returns lists" do
+      assert Macro.escape([1, 2, 3]) == [1, 2, 3]
+    end
+
+    test "escapes tuples with size different than two" do
       assert Macro.escape({:a}) == {:{}, [], [:a]}
       assert Macro.escape({:a, :b, :c}) == {:{}, [], [:a, :b, :c]}
       assert Macro.escape({:a, {1, 2, 3}, :c}) == {:{}, [], [:a, {:{}, [], [1, 2, 3]}, :c]}
     end
 
-    test "simply returns tuples with size equal to two" do
-      assert Macro.escape({:a, :b}) == {:a, :b}
-    end
-
-    test "simply returns any other structure" do
-      assert Macro.escape([1, 2, 3]) == [1, 2, 3]
-    end
-
-    test "handles maps" do
+    test "escapes maps" do
       assert Macro.escape(%{a: 1}) == {:%{}, [], [a: 1]}
     end
 
-    test "handles bitstring" do
+    test "escapes bitstring" do
       assert {:<<>>, [], args} = Macro.escape(<<300::12>>)
-      assert [{:::, [], [1, {:size, [], [4]}]}, {:::, [], [",", {:binary, [], []}]}] = args
+      assert [{:"::", [], [1, {:size, [], [4]}]}, {:"::", [], [",", {:binary, [], nil}]}] = args
     end
 
-    test "works recursively" do
+    test "escapes recursively" do
       assert Macro.escape([1, {:a, :b, :c}, 3]) == [1, {:{}, [], [:a, :b, :c]}, 3]
     end
 
-    test "with improper lists" do
+    test "escapes improper lists" do
       assert Macro.escape([1 | 2]) == [{:|, [], [1, 2]}]
       assert Macro.escape([1, 2 | 3]) == [1, {:|, [], [2, 3]}]
+    end
+
+    test "prunes metadata" do
+      meta = [nothing: :important, counter: 1]
+      assert Macro.escape({:foo, meta, []}) == {:{}, [], [:foo, meta, []]}
+      assert Macro.escape({:foo, meta, []}, prune_metadata: true) == {:{}, [], [:foo, [], []]}
     end
 
     test "with unquote" do
@@ -83,7 +90,7 @@ defmodule MacroTest do
     end
 
     test "with alias or no arguments remote unquote" do
-      contents = quote(unquote: false, do: Kernel.unquote(:self))
+      contents = quote(unquote: false, do: Kernel.unquote(:self)())
       assert eval_escaped(contents) == quote(do: Kernel.self())
 
       contents = quote(unquote: false, do: x.unquote(Foo))
@@ -114,6 +121,10 @@ defmodule MacroTest do
         quote(unquote: false, do: [1, unquote_splicing([2]), 3, unquote_splicing([4]) | [5]])
 
       assert eval_escaped(contents) == [1, 2, 3, 4, 5]
+    end
+
+    test "does not add context to quote" do
+      assert Macro.escape({:quote, [], [[do: :foo]]}) == {:{}, [], [:quote, [], [[do: :foo]]]}
     end
   end
 
@@ -167,17 +178,9 @@ defmodule MacroTest do
       assert Macro.expand_once(quote(do: __ENV__.unknown), env) == quote(do: __ENV__.unknown)
     end
 
-    defmacro local_macro() do
-      :local_macro
-    end
+    defmacro local_macro(), do: raise("ignored")
 
-    test "local macro" do
-      assert Macro.expand_once(quote(do: local_macro), __ENV__) == :local_macro
-    end
-
-    test "checks vars" do
-      local_macro = 1
-      assert local_macro == 1
+    test "vars" do
       expr = {:local_macro, [], nil}
       assert Macro.expand_once(expr, __ENV__) == expr
     end
@@ -196,7 +199,7 @@ defmodule MacroTest do
       quoted =
         quote context: Kernel do
           case 1 do
-            unquote(temp_var) when unquote(temp_var) in [false, nil] -> false
+            unquote(temp_var) when :"Elixir.Kernel".in(unquote(temp_var), [false, nil]) -> false
             unquote(temp_var) -> unquote(temp_var)
           end
         end
@@ -210,7 +213,7 @@ defmodule MacroTest do
       quoted =
         quote context: Kernel do
           case 1 do
-            unquote(temp_var) when unquote(temp_var) in [false, nil] -> false
+            unquote(temp_var) when :"Elixir.Kernel".in(unquote(temp_var), [false, nil]) -> false
             unquote(temp_var) -> unquote(temp_var)
           end
         end
@@ -223,10 +226,20 @@ defmodule MacroTest do
       assert Macro.expand_once(expr, __ENV__) == expr
     end
 
+    test "propagates generated" do
+      assert {:||, meta, [1, false]} = Macro.expand_once(quote(do: oror(1, false)), __ENV__)
+      refute meta[:generated]
+
+      assert {:||, meta, [1, false]} =
+               Macro.expand_once(quote(generated: true, do: oror(1, false)), __ENV__)
+
+      assert meta[:generated]
+    end
+
     test "does not expand module attributes" do
       message =
-        "could not call get_attribute with argument #{inspect(__MODULE__)} " <>
-          "because the module is already compiled"
+        "could not call Module.get_attribute/2 because the module #{inspect(__MODULE__)} " <>
+          "is already compiled. Use the Module.__info__/1 callback or Code.fetch_docs/1 instead"
 
       assert_raise ArgumentError, message, fn ->
         Macro.expand_once(quote(do: @foo), __ENV__)
@@ -248,7 +261,7 @@ defmodule MacroTest do
     quoted =
       quote context: Kernel do
         case 1 do
-          unquote(temp_var) when unquote(temp_var) in [false, nil] -> false
+          unquote(temp_var) when :"Elixir.Kernel".in(unquote(temp_var), [false, nil]) -> false
           unquote(temp_var) -> unquote(temp_var)
         end
       end
@@ -256,24 +269,178 @@ defmodule MacroTest do
     assert expand_and_clean(quote(do: oror(1, false)), __ENV__) == quoted
   end
 
+  test "expand_literals/2" do
+    assert Macro.expand_literals(quote(do: Foo), __ENV__) == Foo
+    assert Macro.expand_literals(quote(do: Foo + Bar), __ENV__) == quote(do: Foo + Bar)
+    assert Macro.expand_literals(quote(do: __MODULE__), __ENV__) == __MODULE__
+    assert Macro.expand_literals(quote(do: __MODULE__.Foo), __ENV__) == __MODULE__.Foo
+    assert Macro.expand_literals(quote(do: [Foo, 1 + 2]), __ENV__) == [Foo, quote(do: 1 + 2)]
+  end
+
+  test "expand_literals/3" do
+    fun = fn node, acc ->
+      expanded = Macro.expand(node, __ENV__)
+      {expanded, [expanded | acc]}
+    end
+
+    assert Macro.expand_literals(quote(do: Foo), [], fun) == {Foo, [Foo]}
+    assert Macro.expand_literals(quote(do: Foo + Bar), [], fun) == {quote(do: Foo + Bar), []}
+    assert Macro.expand_literals(quote(do: __MODULE__), [], fun) == {__MODULE__, [__MODULE__]}
+
+    assert Macro.expand_literals(quote(do: __MODULE__.Foo), [], fun) ==
+             {__MODULE__.Foo, [__MODULE__.Foo, __MODULE__]}
+  end
+
   test "var/2" do
     assert Macro.var(:foo, nil) == {:foo, [], nil}
     assert Macro.var(:foo, Other) == {:foo, [], Other}
   end
 
+  describe "dbg/3" do
+    defmacrop dbg_format(ast, options \\ quote(do: [syntax_colors: []])) do
+      quote do
+        {result, formatted} =
+          ExUnit.CaptureIO.with_io(fn ->
+            unquote(Macro.dbg(ast, options, __CALLER__))
+          end)
+
+        # Make sure there's an empty line after the output.
+        assert String.ends_with?(formatted, "\n\n") or
+                 String.ends_with?(formatted, "\n\n" <> IO.ANSI.reset())
+
+        {result, formatted}
+      end
+    end
+
+    test "with a simple expression" do
+      {result, formatted} = dbg_format(1 + 1)
+      assert result == 2
+      assert formatted =~ "1 + 1 #=> 2"
+    end
+
+    test "with variables" do
+      my_var = 1 + 1
+      {result, formatted} = dbg_format(my_var)
+      assert result == 2
+      assert formatted =~ "my_var #=> 2"
+    end
+
+    test "with a function call" do
+      {result, formatted} = dbg_format(Atom.to_string(:foo))
+
+      assert result == "foo"
+      assert formatted =~ ~s[Atom.to_string(:foo) #=> "foo"]
+    end
+
+    test "with a multiline input" do
+      {result, formatted} =
+        dbg_format(
+          case 1 + 1 do
+            2 -> :two
+            _other -> :math_is_broken
+          end
+        )
+
+      assert result == :two
+
+      assert formatted =~ """
+             case 1 + 1 do
+               2 -> :two
+               _other -> :math_is_broken
+             end #=> :two
+             """
+    end
+
+    test "with a pipeline on a single line" do
+      {result, formatted} = dbg_format([:a, :b, :c] |> tl() |> tl |> Kernel.hd())
+      assert result == :c
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             \n[:a, :b, :c] #=> [:a, :b, :c]
+             |> tl() #=> [:b, :c]
+             |> tl #=> [:c]
+             |> Kernel.hd() #=> :c
+             """
+
+      # Regression for pipes sometimes erroneously ending with three newlines (one
+      # extra than needed).
+      assert formatted =~ ~r/[^\n]\n\n$/
+    end
+
+    test "with a pipeline on multiple lines" do
+      {result, formatted} =
+        dbg_format(
+          [:a, :b, :c]
+          |> tl()
+          |> tl
+          |> Kernel.hd()
+        )
+
+      assert result == :c
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             \n[:a, :b, :c] #=> [:a, :b, :c]
+             |> tl() #=> [:b, :c]
+             |> tl #=> [:c]
+             |> Kernel.hd() #=> :c
+             """
+
+      # Regression for pipes sometimes erroneously ending with three newlines (one
+      # extra than needed).
+      assert formatted =~ ~r/[^\n]\n\n$/
+    end
+
+    test "with \"syntax_colors: []\" it doesn't print any color sequences" do
+      {_result, formatted} = dbg_format("hello")
+      refute formatted =~ "\e["
+    end
+
+    test "with \"syntax_colors: [...]\" it forces color sequences" do
+      {_result, formatted} = dbg_format("hello", syntax_colors: [string: :cyan])
+      assert formatted =~ IO.iodata_to_binary(IO.ANSI.format([:cyan, ~s("hello")]))
+    end
+
+    test "forwards options to the underlying inspect calls" do
+      value = ~c"hello"
+      assert {^value, formatted} = dbg_format(value, syntax_colors: [], charlists: :as_lists)
+      assert formatted =~ "value #=> [104, 101, 108, 108, 111]\n"
+    end
+
+    test "with the :print_location option set to false, doesn't print any header" do
+      {result, formatted} = dbg_format("hello", print_location: false)
+      assert result == "hello"
+      refute formatted =~ Path.basename(__ENV__.file)
+    end
+  end
+
   describe "to_string/1" do
+    test "converts quoted to string" do
+      assert Macro.to_string(quote do: hello(world)) == "hello(world)"
+    end
+  end
+
+  describe "to_string/2" do
+    defp macro_to_string(var, fun \\ fn _ast, string -> string end) do
+      module = Macro
+      module.to_string(var, fun)
+    end
+
     test "variable" do
-      assert Macro.to_string(quote(do: foo)) == "foo"
+      assert macro_to_string(quote(do: foo)) == "foo"
     end
 
     test "local call" do
-      assert Macro.to_string(quote(do: foo(1, 2, 3))) == "foo(1, 2, 3)"
-      assert Macro.to_string(quote(do: foo([1, 2, 3]))) == "foo([1, 2, 3])"
+      assert macro_to_string(quote(do: foo(1, 2, 3))) == "foo(1, 2, 3)"
+      assert macro_to_string(quote(do: foo([1, 2, 3]))) == "foo([1, 2, 3])"
     end
 
     test "remote call" do
-      assert Macro.to_string(quote(do: foo.bar(1, 2, 3))) == "foo.bar(1, 2, 3)"
-      assert Macro.to_string(quote(do: foo.bar([1, 2, 3]))) == "foo.bar([1, 2, 3])"
+      assert macro_to_string(quote(do: foo.bar(1, 2, 3))) == "foo.bar(1, 2, 3)"
+      assert macro_to_string(quote(do: foo.bar([1, 2, 3]))) == "foo.bar([1, 2, 3])"
 
       quoted =
         quote do
@@ -282,63 +449,119 @@ defmodule MacroTest do
            end).bar([1, 2, 3])
         end
 
-      assert Macro.to_string(quoted) == "(foo() do\n  :ok\nend).bar([1, 2, 3])"
+      assert macro_to_string(quoted) == "(foo do\n  :ok\nend).bar([1, 2, 3])"
+    end
+
+    test "nullary remote call" do
+      assert macro_to_string(quote do: foo.bar) == "foo.bar"
+      assert macro_to_string(quote do: foo.bar()) == "foo.bar()"
     end
 
     test "atom remote call" do
-      assert Macro.to_string(quote(do: :foo.bar(1, 2, 3))) == ":foo.bar(1, 2, 3)"
+      assert macro_to_string(quote(do: :foo.bar(1, 2, 3))) == ":foo.bar(1, 2, 3)"
     end
 
     test "remote and fun call" do
-      assert Macro.to_string(quote(do: foo.bar.(1, 2, 3))) == "foo.bar().(1, 2, 3)"
-      assert Macro.to_string(quote(do: foo.bar.([1, 2, 3]))) == "foo.bar().([1, 2, 3])"
+      assert macro_to_string(quote(do: foo.bar().(1, 2, 3))) == "foo.bar().(1, 2, 3)"
+      assert macro_to_string(quote(do: foo.bar().([1, 2, 3]))) == "foo.bar().([1, 2, 3])"
     end
 
     test "unusual remote atom fun call" do
-      assert Macro.to_string(quote(do: Foo."42"())) == ~s/Foo."42"()/
-      assert Macro.to_string(quote(do: Foo."Bar"())) == ~s/Foo."Bar"()/
-      assert Macro.to_string(quote(do: Foo."bar baz"()."")) == ~s/Foo."bar baz"().""()/
-      assert Macro.to_string(quote(do: Foo."%{}"())) == ~s/Foo."%{}"()/
-      assert Macro.to_string(quote(do: Foo."..."())) == ~s/Foo."..."()/
+      assert macro_to_string(quote(do: Foo."42"())) == ~s/Foo."42"()/
+      assert macro_to_string(quote(do: Foo."Bar"())) == ~s/Foo."Bar"()/
+      assert macro_to_string(quote(do: Foo."bar baz"().""())) == ~s/Foo."bar baz"().""()/
+      assert macro_to_string(quote(do: Foo."%{}"())) == ~s/Foo."%{}"()/
+      assert macro_to_string(quote(do: Foo."..."())) == ~s/Foo."..."()/
     end
 
     test "atom fun call" do
-      assert Macro.to_string(quote(do: :foo.(1, 2, 3))) == ":foo.(1, 2, 3)"
+      assert macro_to_string(quote(do: :foo.(1, 2, 3))) == ":foo.(1, 2, 3)"
     end
 
     test "aliases call" do
-      assert Macro.to_string(quote(do: Foo.Bar.baz(1, 2, 3))) == "Foo.Bar.baz(1, 2, 3)"
-      assert Macro.to_string(quote(do: Foo.Bar.baz([1, 2, 3]))) == "Foo.Bar.baz([1, 2, 3])"
-      assert Macro.to_string(quote(do: Foo.bar(<<>>, []))) == "Foo.bar(<<>>, [])"
+      assert macro_to_string(quote(do: Elixir)) == "Elixir"
+      assert macro_to_string(quote(do: Foo)) == "Foo"
+      assert macro_to_string(quote(do: Foo.Bar.baz(1, 2, 3))) == "Foo.Bar.baz(1, 2, 3)"
+      assert macro_to_string(quote(do: Foo.Bar.baz([1, 2, 3]))) == "Foo.Bar.baz([1, 2, 3])"
+      assert macro_to_string(quote(do: Foo.bar(<<>>, []))) == "Foo.bar(<<>>, [])"
     end
 
     test "keyword call" do
-      assert Macro.to_string(quote(do: Foo.bar(foo: :bar))) == "Foo.bar(foo: :bar)"
-      assert Macro.to_string(quote(do: Foo.bar("Elixir.Foo": :bar))) == "Foo.bar([{Foo, :bar}])"
+      assert macro_to_string(quote(do: Foo.bar(foo: :bar))) == "Foo.bar(foo: :bar)"
+      assert macro_to_string(quote(do: Foo.bar("Elixir.Foo": :bar))) == "Foo.bar([{Foo, :bar}])"
     end
 
     test "sigil call" do
-      assert Macro.to_string(quote(do: ~r"123")) == ~s/~r"123"/
-      assert Macro.to_string(quote(do: ~r"123"u)) == ~s/~r"123"u/
-      assert Macro.to_string(quote(do: ~r"\n123")) == ~s/~r"\\\\n123"/
+      assert macro_to_string(quote(do: ~r"123")) == ~S/~r"123"/
+      assert macro_to_string(quote(do: ~r"\n123")) == ~S/~r"\n123"/
+      assert macro_to_string(quote(do: ~r"12\"3")) == ~S/~r"12\"3"/
+      assert macro_to_string(quote(do: ~r/12\/3/u)) == ~S"~r/12\/3/u"
+      assert macro_to_string(quote(do: ~r{\n123})) == ~S/~r{\n123}/
+      assert macro_to_string(quote(do: ~r((1\)(2\)3))) == ~S/~r((1\)(2\)3)/
+      assert macro_to_string(quote(do: ~r{\n1{1\}23})) == ~S/~r{\n1{1\}23}/
+      assert macro_to_string(quote(do: ~r|12\|3|)) == ~S"~r|12\|3|"
 
-      assert Macro.to_string(quote(do: ~r"1#{two}3")) == ~S/~r"1#{two}3"/
-      assert Macro.to_string(quote(do: ~r"1#{two}3"u)) == ~S/~r"1#{two}3"u/
+      assert macro_to_string(quote(do: ~r[1#{two}3])) == ~S/~r[1#{two}3]/
+      assert macro_to_string(quote(do: ~r[1[#{two}\]3])) == ~S/~r[1[#{two}\]3]/
+      assert macro_to_string(quote(do: ~r'1#{two}3'u)) == ~S/~r'1#{two}3'u/
 
-      assert Macro.to_string(quote(do: ~R"123")) == ~s/~R"123"/
-      assert Macro.to_string(quote(do: ~R"123"u)) == ~s/~R"123"u/
-      assert Macro.to_string(quote(do: ~R"\n123")) == ~s/~R"\\\\n123"/
+      assert macro_to_string(quote(do: ~R"123")) == ~S/~R"123"/
+      assert macro_to_string(quote(do: ~R"123"u)) == ~S/~R"123"u/
+      assert macro_to_string(quote(do: ~R"\n123")) == ~S/~R"\n123"/
+
+      assert macro_to_string(quote(do: ~S["'(123)'"])) == ~S/~S["'(123)'"]/
+      assert macro_to_string(quote(do: ~s"#{"foo"}")) == ~S/~s"#{"foo"}"/
+
+      assert macro_to_string(
+               quote do
+                 ~s"""
+                 "\""foo"\""
+                 """
+               end
+             ) == ~s[~s"""\n"\\""foo"\\""\n"""]
+
+      assert macro_to_string(
+               quote do
+                 ~s'''
+                 '\''foo'\''
+                 '''
+               end
+             ) == ~s[~s'''\n'\\''foo'\\''\n''']
+
+      assert macro_to_string(
+               quote do
+                 ~s"""
+                 "\"foo\""
+                 """
+               end
+             ) == ~s[~s"""\n"\\"foo\\""\n"""]
+
+      assert macro_to_string(
+               quote do
+                 ~s'''
+                 '\"foo\"'
+                 '''
+               end
+             ) == ~s[~s'''\n'\\"foo\\"'\n''']
+
+      assert macro_to_string(
+               quote do
+                 ~S"""
+                 "123"
+                 """
+               end
+             ) == ~s[~S"""\n"123"\n"""]
     end
 
     test "tuple call" do
-      assert Macro.to_string(quote(do: alias(Foo.{Bar, Baz, Bong}))) ==
+      assert macro_to_string(quote(do: alias(Foo.{Bar, Baz, Bong}))) ==
                "alias(Foo.{Bar, Baz, Bong})"
 
-      assert Macro.to_string(quote(do: foo(Foo.{}))) == "foo(Foo.{})"
+      assert macro_to_string(quote(do: foo(Foo.{}))) == "foo(Foo.{})"
     end
 
     test "arrow" do
-      assert Macro.to_string(quote(do: foo(1, (2 -> 3)))) == "foo(1, (2 -> 3))"
+      assert macro_to_string(quote(do: foo(1, (2 -> 3)))) == "foo(1, (2 -> 3))"
     end
 
     test "block" do
@@ -367,11 +590,11 @@ defmodule MacroTest do
       )
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
     end
 
     test "not in" do
-      assert Macro.to_string(quote(do: false not in [])) == "false not in []"
+      assert macro_to_string(quote(do: false not in [])) == "false not in []"
     end
 
     test "if else" do
@@ -383,7 +606,7 @@ defmodule MacroTest do
       end
       """
 
-      assert Macro.to_string(quote(do: if(foo, do: bar, else: baz))) <> "\n" == expected
+      assert macro_to_string(quote(do: if(foo, do: bar, else: baz))) <> "\n" == expected
     end
 
     test "case" do
@@ -409,12 +632,51 @@ defmodule MacroTest do
       end
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
+    end
+
+    test "try" do
+      quoted =
+        quote do
+          try do
+            foo
+          catch
+            _, _ ->
+              2
+          rescue
+            ArgumentError ->
+              1
+          after
+            4
+          else
+            _ ->
+              3
+          end
+        end
+
+      expected = """
+      try do
+        foo
+      rescue
+        ArgumentError ->
+          1
+      catch
+        _, _ ->
+          2
+      else
+        _ ->
+          3
+      after
+        4
+      end
+      """
+
+      assert macro_to_string(quoted) <> "\n" == expected
     end
 
     test "fn" do
-      assert Macro.to_string(quote(do: fn -> 1 + 2 end)) == "fn -> 1 + 2 end"
-      assert Macro.to_string(quote(do: fn x -> x + 1 end)) == "fn x -> x + 1 end"
+      assert macro_to_string(quote(do: fn -> 1 + 2 end)) == "fn -> 1 + 2 end"
+      assert macro_to_string(quote(do: fn x -> x + 1 end)) == "fn x -> x + 1 end"
 
       quoted =
         quote do
@@ -431,7 +693,7 @@ defmodule MacroTest do
       end
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
 
       quoted =
         quote do
@@ -455,9 +717,9 @@ defmodule MacroTest do
       end
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
 
-      assert Macro.to_string(quote(do: (fn x -> x end).(1))) == "(fn x -> x end).(1)"
+      assert macro_to_string(quote(do: (fn x -> x end).(1))) == "(fn x -> x end).(1)"
 
       quoted =
         quote do
@@ -476,19 +738,23 @@ defmodule MacroTest do
       end).(1)
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
     end
 
     test "range" do
-      assert Macro.to_string(quote(do: unquote(-1..+2))) == "-1..2"
-      assert Macro.to_string(quote(do: Foo.integer()..3)) == "Foo.integer()..3"
+      assert macro_to_string(quote(do: unquote(-1..+2))) == "-1..2"
+      assert macro_to_string(quote(do: Foo.integer()..3)) == "Foo.integer()..3"
+      assert macro_to_string(quote(do: unquote(-1..+2//-3))) == "-1..2//-3"
+
+      assert macro_to_string(quote(do: Foo.integer()..3//Bar.bat())) ==
+               "Foo.integer()..3//Bar.bat()"
     end
 
     test "when" do
-      assert Macro.to_string(quote(do: (() -> x))) == "(() -> x)"
-      assert Macro.to_string(quote(do: (x when y -> z))) == "(x when y -> z)"
-      assert Macro.to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
-      assert Macro.to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
+      assert macro_to_string(quote(do: (-> x))) == "(() -> x)"
+      assert macro_to_string(quote(do: (x when y -> z))) == "(x when y -> z)"
+      assert macro_to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
+      assert macro_to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
     end
 
     test "nested" do
@@ -509,124 +775,133 @@ defmodule MacroTest do
       end
       """
 
-      assert Macro.to_string(quoted) <> "\n" == expected
+      assert macro_to_string(quoted) <> "\n" == expected
     end
 
     test "operator precedence" do
-      assert Macro.to_string(quote(do: (1 + 2) * (3 - 4))) == "(1 + 2) * (3 - 4)"
-      assert Macro.to_string(quote(do: (1 + 2) * 3 - 4)) == "(1 + 2) * 3 - 4"
-      assert Macro.to_string(quote(do: 1 + 2 + 3 == "(1 + 2 + 3)"))
-      assert Macro.to_string(quote(do: 1 + 2 - 3 == "(1 + 2 - 3)"))
+      assert macro_to_string(quote(do: (1 + 2) * (3 - 4))) == "(1 + 2) * (3 - 4)"
+      assert macro_to_string(quote(do: (1 + 2) * 3 - 4)) == "(1 + 2) * 3 - 4"
+      assert macro_to_string(quote(do: 1 + 2 + 3)) == "1 + 2 + 3"
+      assert macro_to_string(quote(do: 1 + 2 - 3)) == "1 + 2 - 3"
     end
 
     test "capture operator" do
-      assert Macro.to_string(quote(do: &foo/0)) == "&foo/0"
-      assert Macro.to_string(quote(do: &Foo.foo/0)) == "&Foo.foo/0"
-      assert Macro.to_string(quote(do: &(&1 + &2))) == "&(&1 + &2)"
-      assert Macro.to_string(quote(do: & &1)) == "&(&1)"
-      assert Macro.to_string(quote(do: & &1.(:x))) == "&(&1.(:x))"
-      assert Macro.to_string(quote(do: (& &1).(:x))) == "(&(&1)).(:x)"
+      assert macro_to_string(quote(do: &foo/0)) == "&foo/0"
+      assert macro_to_string(quote(do: &Foo.foo/0)) == "&Foo.foo/0"
+      assert macro_to_string(quote(do: &(&1 + &2))) == "&(&1 + &2)"
+      assert macro_to_string(quote(do: & &1)) == "&(&1)"
+      assert macro_to_string(quote(do: & &1.(:x))) == "&(&1.(:x))"
+      assert macro_to_string(quote(do: (& &1).(:x))) == "(&(&1)).(:x)"
     end
 
     test "containers" do
-      assert Macro.to_string(quote(do: {})) == "{}"
-      assert Macro.to_string(quote(do: [])) == "[]"
-      assert Macro.to_string(quote(do: {1, 2, 3})) == "{1, 2, 3}"
-      assert Macro.to_string(quote(do: [1, 2, 3])) == "[1, 2, 3]"
-      assert Macro.to_string(quote(do: ["Elixir.Foo": :bar])) == "[{Foo, :bar}]"
-      assert Macro.to_string(quote(do: %{})) == "%{}"
-      assert Macro.to_string(quote(do: %{:foo => :bar})) == "%{foo: :bar}"
-      assert Macro.to_string(quote(do: %{:"Elixir.Foo" => :bar})) == "%{Foo => :bar}"
-      assert Macro.to_string(quote(do: %{{1, 2} => [1, 2, 3]})) == "%{{1, 2} => [1, 2, 3]}"
-      assert Macro.to_string(quote(do: %{map | "a" => "b"})) == "%{map | \"a\" => \"b\"}"
-      assert Macro.to_string(quote(do: [1, 2, 3])) == "[1, 2, 3]"
+      assert macro_to_string(quote(do: {})) == "{}"
+      assert macro_to_string(quote(do: [])) == "[]"
+      assert macro_to_string(quote(do: {1, 2, 3})) == "{1, 2, 3}"
+      assert macro_to_string(quote(do: [1, 2, 3])) == "[1, 2, 3]"
+      assert macro_to_string(quote(do: ["Elixir.Foo": :bar])) == "[{Foo, :bar}]"
+      assert macro_to_string(quote(do: %{})) == "%{}"
+      assert macro_to_string(quote(do: %{:foo => :bar})) == "%{foo: :bar}"
+      assert macro_to_string(quote(do: %{:"Elixir.Foo" => :bar})) == "%{Foo => :bar}"
+      assert macro_to_string(quote(do: %{{1, 2} => [1, 2, 3]})) == "%{{1, 2} => [1, 2, 3]}"
+      assert macro_to_string(quote(do: %{map | "a" => "b"})) == "%{map | \"a\" => \"b\"}"
+      assert macro_to_string(quote(do: [1, 2, 3])) == "[1, 2, 3]"
     end
 
     test "struct" do
-      assert Macro.to_string(quote(do: %Test{})) == "%Test{}"
-      assert Macro.to_string(quote(do: %Test{foo: 1, bar: 1})) == "%Test{foo: 1, bar: 1}"
-      assert Macro.to_string(quote(do: %Test{struct | foo: 2})) == "%Test{struct | foo: 2}"
-      assert Macro.to_string(quote(do: %Test{} + 1)) == "%Test{} + 1"
+      assert macro_to_string(quote(do: %Test{})) == "%Test{}"
+      assert macro_to_string(quote(do: %Test{foo: 1, bar: 1})) == "%Test{foo: 1, bar: 1}"
+      assert macro_to_string(quote(do: %Test{struct | foo: 2})) == "%Test{struct | foo: 2}"
+      assert macro_to_string(quote(do: %Test{} + 1)) == "%Test{} + 1"
+      assert macro_to_string(quote(do: %Test{foo(1)} + 2)) == "%Test{foo(1)} + 2"
     end
 
     test "binary operators" do
-      assert Macro.to_string(quote(do: 1 + 2)) == "1 + 2"
-      assert Macro.to_string(quote(do: [1, 2 | 3])) == "[1, 2 | 3]"
-      assert Macro.to_string(quote(do: [h | t] = [1, 2, 3])) == "[h | t] = [1, 2, 3]"
-      assert Macro.to_string(quote(do: (x ++ y) ++ z)) == "(x ++ y) ++ z"
+      assert macro_to_string(quote(do: 1 + 2)) == "1 + 2"
+      assert macro_to_string(quote(do: [1, 2 | 3])) == "[1, 2 | 3]"
+      assert macro_to_string(quote(do: [h | t] = [1, 2, 3])) == "[h | t] = [1, 2, 3]"
+      assert macro_to_string(quote(do: (x ++ y) ++ z)) == "(x ++ y) ++ z"
+      assert macro_to_string(quote(do: (x +++ y) +++ z)) == "(x +++ y) +++ z"
     end
 
     test "unary operators" do
-      assert Macro.to_string(quote(do: not 1)) == "not(1)"
-      assert Macro.to_string(quote(do: not foo)) == "not(foo)"
-      assert Macro.to_string(quote(do: -1)) == "-1"
-      assert Macro.to_string(quote(do: +(+1))) == "+(+1)"
-      assert Macro.to_string(quote(do: !(foo > bar))) == "!(foo > bar)"
-      assert Macro.to_string(quote(do: @foo(bar))) == "@foo(bar)"
-      assert Macro.to_string(quote(do: identity(&1))) == "identity(&1)"
+      assert macro_to_string(quote(do: not 1)) == "not(1)"
+      assert macro_to_string(quote(do: not foo)) == "not(foo)"
+      assert macro_to_string(quote(do: -1)) == "-1"
+      assert macro_to_string(quote(do: +(+1))) == "+(+1)"
+      assert macro_to_string(quote(do: !(foo > bar))) == "!(foo > bar)"
+      assert macro_to_string(quote(do: @foo(bar))) == "@foo(bar)"
+      assert macro_to_string(quote(do: identity(&1))) == "identity(&1)"
     end
 
     test "access" do
-      assert Macro.to_string(quote(do: a[b])) == "a[b]"
-      assert Macro.to_string(quote(do: a[1 + 2])) == "a[1 + 2]"
-      assert Macro.to_string(quote(do: (a || [a: 1])[:a])) == "(a || [a: 1])[:a]"
-      assert Macro.to_string(quote(do: Map.put(%{}, :a, 1)[:a])) == "Map.put(%{}, :a, 1)[:a]"
+      assert macro_to_string(quote(do: a[b])) == "a[b]"
+      assert macro_to_string(quote(do: a[1 + 2])) == "a[1 + 2]"
+      assert macro_to_string(quote(do: (a || [a: 1])[:a])) == "(a || [a: 1])[:a]"
+      assert macro_to_string(quote(do: Map.put(%{}, :a, 1)[:a])) == "Map.put(%{}, :a, 1)[:a]"
     end
 
     test "keyword list" do
-      assert Macro.to_string(quote(do: [a: a, b: b])) == "[a: a, b: b]"
-      assert Macro.to_string(quote(do: [a: 1, b: 1 + 2])) == "[a: 1, b: 1 + 2]"
-      assert Macro.to_string(quote(do: ["a.b": 1, c: 1 + 2])) == "[\"a.b\": 1, c: 1 + 2]"
+      assert macro_to_string(quote(do: [a: a, b: b])) == "[a: a, b: b]"
+      assert macro_to_string(quote(do: [a: 1, b: 1 + 2])) == "[a: 1, b: 1 + 2]"
+      assert macro_to_string(quote(do: ["a.b": 1, c: 1 + 2])) == "[\"a.b\": 1, c: 1 + 2]"
     end
 
     test "interpolation" do
-      assert Macro.to_string(quote(do: "foo#{bar}baz")) == ~S["foo#{bar}baz"]
+      assert macro_to_string(quote(do: "foo#{bar}baz")) == ~S["foo#{bar}baz"]
     end
 
     test "bit syntax" do
       ast = quote(do: <<1::8*4>>)
-      assert Macro.to_string(ast) == "<<1::8*4>>"
+      assert macro_to_string(ast) == "<<1::8*4>>"
 
       ast = quote(do: @type(foo :: <<_::8, _::_*4>>))
-      assert Macro.to_string(ast) == "@type(foo :: <<_::8, _::_*4>>)"
+      assert macro_to_string(ast) == "@type(foo :: <<_::8, _::_*4>>)"
 
       ast = quote(do: <<69 - 4::bits-size(8 - 4)-unit(1), 65>>)
-      assert Macro.to_string(ast) == "<<69 - 4::bits-size(8 - 4)-unit(1), 65>>"
+      assert macro_to_string(ast) == "<<69 - 4::bits-size(8 - 4)-unit(1), 65>>"
 
       ast = quote(do: <<(<<65>>), 65>>)
-      assert Macro.to_string(ast) == "<<(<<65>>), 65>>"
+      assert macro_to_string(ast) == "<<(<<65>>), 65>>"
 
       ast = quote(do: <<65, (<<65>>)>>)
-      assert Macro.to_string(ast) == "<<65, (<<65>>)>>"
+      assert macro_to_string(ast) == "<<65, (<<65>>)>>"
 
       ast = quote(do: for(<<(a::4 <- <<1, 2>>)>>, do: a))
-      assert Macro.to_string(ast) == "for(<<(a :: 4 <- <<1, 2>>)>>) do\n  a\nend"
+      assert macro_to_string(ast) == "for(<<(a :: 4 <- <<1, 2>>)>>) do\n  a\nend"
     end
 
     test "charlist" do
-      assert Macro.to_string(quote(do: [])) == "[]"
-      assert Macro.to_string(quote(do: 'abc')) == "'abc'"
+      assert macro_to_string(quote(do: [])) == "[]"
+      assert macro_to_string(quote(do: ~c"abc")) == ~S/~c"abc"/
+      assert macro_to_string(quote(do: [?a, ?b, ?c])) == ~S/~c"abc"/
+    end
+
+    test "string" do
+      assert macro_to_string(quote(do: "")) == ~S/""/
+      assert macro_to_string(quote(do: "abc")) == ~S/"abc"/
+      assert macro_to_string(quote(do: "#{"abc"}")) == ~S/"#{"abc"}"/
     end
 
     test "last arg keyword list" do
-      assert Macro.to_string(quote(do: foo([]))) == "foo([])"
-      assert Macro.to_string(quote(do: foo(x: y))) == "foo(x: y)"
-      assert Macro.to_string(quote(do: foo(x: 1 + 2))) == "foo(x: 1 + 2)"
-      assert Macro.to_string(quote(do: foo(x: y, p: q))) == "foo(x: y, p: q)"
-      assert Macro.to_string(quote(do: foo(a, x: y, p: q))) == "foo(a, x: y, p: q)"
+      assert macro_to_string(quote(do: foo([]))) == "foo([])"
+      assert macro_to_string(quote(do: foo(x: y))) == "foo(x: y)"
+      assert macro_to_string(quote(do: foo(x: 1 + 2))) == "foo(x: 1 + 2)"
+      assert macro_to_string(quote(do: foo(x: y, p: q))) == "foo(x: y, p: q)"
+      assert macro_to_string(quote(do: foo(a, x: y, p: q))) == "foo(a, x: y, p: q)"
 
-      assert Macro.to_string(quote(do: {[]})) == "{[]}"
-      assert Macro.to_string(quote(do: {[a: b]})) == "{[a: b]}"
-      assert Macro.to_string(quote(do: {x, a: b})) == "{x, [a: b]}"
-      assert Macro.to_string(quote(do: foo(else: a))) == "foo(else: a)"
-      assert Macro.to_string(quote(do: foo(catch: a))) == "foo(catch: a)"
+      assert macro_to_string(quote(do: {[]})) == "{[]}"
+      assert macro_to_string(quote(do: {[a: b]})) == "{[a: b]}"
+      assert macro_to_string(quote(do: {x, a: b})) == "{x, [a: b]}"
+      assert macro_to_string(quote(do: foo(else: a))) == "foo(else: a)"
+      assert macro_to_string(quote(do: foo(catch: a))) == "foo(catch: a)"
     end
 
     test "with fun" do
-      assert Macro.to_string(quote(do: foo(1, 2, 3)), fn _, string -> ":#{string}:" end) ==
+      assert macro_to_string(quote(do: foo(1, 2, 3)), fn _, string -> ":#{string}:" end) ==
                ":foo(:1:, :2:, :3:):"
 
-      assert Macro.to_string(quote(do: Bar.foo(1, 2, 3)), fn _, string -> ":#{string}:" end) ==
+      assert macro_to_string(quote(do: Bar.foo(1, 2, 3)), fn _, string -> ":#{string}:" end) ==
                "::Bar:.foo(:1:, :2:, :3:):"
     end
   end
@@ -665,37 +940,66 @@ defmodule MacroTest do
     assert Macro.decompose_call(quote(do: :foo.foo(1, 2, 3))) == {:foo, :foo, [1, 2, 3]}
     assert Macro.decompose_call(quote(do: 1.(1, 2, 3))) == :error
     assert Macro.decompose_call(quote(do: "some string")) == :error
+    assert Macro.decompose_call(quote(do: {:foo, :bar, :baz})) == :error
+    assert Macro.decompose_call(quote(do: {:foo, :bar, :baz, 42})) == :error
   end
 
   describe "env" do
+    doctest Macro.Env
+
+    test "inspect" do
+      assert inspect(__ENV__) =~ "#Macro.Env<"
+    end
+
+    test "prune_compile_info" do
+      assert %Macro.Env{lexical_tracker: nil, tracers: []} =
+               Macro.Env.prune_compile_info(%{__ENV__ | lexical_tracker: self(), tracers: [Foo]})
+    end
+
     test "stacktrace" do
       env = %{__ENV__ | file: "foo", line: 12}
 
       assert Macro.Env.stacktrace(env) ==
-               [{__MODULE__, :"test env stacktrace", 1, [file: 'foo', line: 12]}]
+               [{__MODULE__, :"test env stacktrace", 1, [file: ~c"foo", line: 12]}]
 
       env = %{env | function: nil}
-      assert Macro.Env.stacktrace(env) == [{__MODULE__, :__MODULE__, 0, [file: 'foo', line: 12]}]
+
+      assert Macro.Env.stacktrace(env) == [
+               {__MODULE__, :__MODULE__, 0, [file: ~c"foo", line: 12]}
+             ]
 
       env = %{env | module: nil}
 
       assert Macro.Env.stacktrace(env) ==
-               [{:elixir_compiler, :__FILE__, 1, [file: 'foo', line: 12]}]
+               [{:elixir_compiler, :__FILE__, 1, [file: ~c"foo", line: 12]}]
     end
 
     test "context modules" do
       defmodule Foo.Bar do
         assert __MODULE__ in __ENV__.context_modules
       end
+
+      assert Foo.Bar in __ENV__.context_modules
+
+      Code.compile_string("""
+      defmodule Foo.Bar.Compiled do
+        true = __MODULE__ in __ENV__.context_modules
+      end
+      """)
     end
 
     test "to_match/1" do
       quote = quote(do: x in [])
 
-      assert {{:., _, [{:__aliases__, _, [Elixir, :Enum]}, :member?]}, _, _} =
+      assert {:__block__, [], [{:=, [], [{:_, [], Kernel}, {:x, [], MacroTest}]}, false]} =
                Macro.expand_once(quote, __ENV__)
 
       assert Macro.expand_once(quote, Macro.Env.to_match(__ENV__)) == false
+    end
+
+    test "prepend_tracer" do
+      assert %Macro.Env{tracers: [MyCustomTracer | _]} =
+               Macro.Env.prepend_tracer(__ENV__, MyCustomTracer)
     end
   end
 
@@ -711,21 +1015,32 @@ defmodule MacroTest do
       Macro.pipe(1, 2, 0)
     end
 
-    assert_raise ArgumentError, ~r"cannot pipe 1 into {:ok}", fn ->
-      Macro.pipe(1, {:ok}, 0)
+    assert_raise ArgumentError, ~r"cannot pipe 1 into \{2, 3\}", fn ->
+      Macro.pipe(1, {2, 3}, 0)
     end
 
-    assert_raise ArgumentError, ~r"cannot pipe 1 into 1 \+ 1", fn ->
+    assert_raise ArgumentError, ~r"cannot pipe 1 into 1 \+ 1, the :\+ operator can", fn ->
       Macro.pipe(1, quote(do: 1 + 1), 0) == quote(do: foo(1))
     end
 
-    # TODO: restore this test when we drop unary operator support in pipes
-    # assert_raise ArgumentError, ~r"cannot pipe 1 into \+1", fn ->
-    #   Macro.pipe(1, quote(do: + 1), 0)
-    # end
+    assert_raise ArgumentError, ~r"cannot pipe 1 into <<1>>", fn ->
+      Macro.pipe(1, quote(do: <<1>>), 0)
+    end
+
+    assert_raise ArgumentError, ~r"cannot pipe 1 into the special form unquote/1", fn ->
+      Macro.pipe(1, quote(do: unquote()), 0)
+    end
+
+    assert_raise ArgumentError, ~r"piping into a unary operator is not supported", fn ->
+      Macro.pipe(1, quote(do: +1), 0)
+    end
 
     assert_raise ArgumentError, ~r"cannot pipe Macro into Env", fn ->
       Macro.pipe(Macro, quote(do: Env), 0)
+    end
+
+    assert_raise ArgumentError, ~r"cannot pipe 1 into 2 && 3", fn ->
+      Macro.pipe(1, quote(do: 2 && 3), 0)
     end
 
     message = ~r"cannot pipe :foo into an anonymous function without calling"
@@ -840,12 +1155,98 @@ defmodule MacroTest do
 
   test "generate_arguments/2" do
     assert Macro.generate_arguments(0, __MODULE__) == []
-    assert Macro.generate_arguments(1, __MODULE__) == [{:var1, [], __MODULE__}]
+    assert Macro.generate_arguments(1, __MODULE__) == [{:arg1, [], __MODULE__}]
     assert Macro.generate_arguments(4, __MODULE__) |> length == 4
   end
 
   defp postwalk(ast) do
     Macro.postwalk(ast, [], &{&1, [&1 | &2]}) |> elem(1) |> Enum.reverse()
+  end
+
+  test "struct!/2 expands structs multiple levels deep" do
+    defmodule StructBang do
+      defstruct [:a, :b]
+
+      assert Macro.struct!(StructBang, __ENV__) == %{__struct__: StructBang, a: nil, b: nil}
+
+      def within_function do
+        assert Macro.struct!(StructBang, __ENV__) == %{__struct__: StructBang, a: nil, b: nil}
+      end
+
+      defmodule Nested do
+        assert Macro.struct!(StructBang, __ENV__) == %{__struct__: StructBang, a: nil, b: nil}
+      end
+    end
+
+    assert Macro.struct!(StructBang, __ENV__) == %{__struct__: StructBang, a: nil, b: nil}
+  end
+
+  test "prewalker/1" do
+    ast = quote do: :mod.foo(bar({1, 2}), [3, 4, five])
+    map = Enum.map(Macro.prewalker(ast), & &1)
+
+    assert map == [
+             {{:., [], [:mod, :foo]}, [], [{:bar, [], [{1, 2}]}, [3, 4, {:five, [], MacroTest}]]},
+             {:., [], [:mod, :foo]},
+             :mod,
+             :foo,
+             {:bar, [], [{1, 2}]},
+             {1, 2},
+             1,
+             2,
+             [3, 4, {:five, [], MacroTest}],
+             3,
+             4,
+             {:five, [], MacroTest}
+           ]
+
+    assert map == ast |> Macro.prewalk([], &{&1, [&1 | &2]}) |> elem(1) |> Enum.reverse()
+    assert Enum.zip(Macro.prewalker(ast), []) == Enum.zip(map, [])
+
+    for i <- 0..(length(map) + 1) do
+      assert Enum.take(Macro.prewalker(ast), i) == Enum.take(map, i)
+    end
+  end
+
+  test "postwalker/1" do
+    ast = quote do: :mod.foo(bar({1, 2}), [3, 4, five])
+    map = Enum.map(Macro.postwalker(ast), & &1)
+
+    assert map == [
+             :mod,
+             :foo,
+             {:., [], [:mod, :foo]},
+             1,
+             2,
+             {1, 2},
+             {:bar, [], [{1, 2}]},
+             3,
+             4,
+             {:five, [], MacroTest},
+             [3, 4, {:five, [], MacroTest}],
+             {{:., [], [:mod, :foo]}, [], [{:bar, [], [{1, 2}]}, [3, 4, {:five, [], MacroTest}]]}
+           ]
+
+    assert map == ast |> Macro.postwalk([], &{&1, [&1 | &2]}) |> elem(1) |> Enum.reverse()
+    assert Enum.zip(Macro.postwalker(ast), []) == Enum.zip(map, [])
+
+    for i <- 0..(length(map) + 1) do
+      assert Enum.take(Macro.postwalker(ast), i) == Enum.take(map, i)
+    end
+  end
+
+  test "operator?/2" do
+    assert Macro.operator?(:+, 2)
+    assert Macro.operator?(:+, 1)
+    refute Macro.operator?(:+, 0)
+  end
+
+  test "quoted_literal?/1" do
+    assert Macro.quoted_literal?(quote(do: "foo"))
+    assert Macro.quoted_literal?(quote(do: {"foo", 1}))
+    assert Macro.quoted_literal?(quote(do: %{foo: "bar"}))
+    assert Macro.quoted_literal?(quote(do: %URI{path: "/"}))
+    refute Macro.quoted_literal?(quote(do: {"foo", var}))
   end
 
   test "underscore/1" do
@@ -858,8 +1259,10 @@ defmodule MacroTest do
     assert Macro.underscore("FOO_BAR") == "foo_bar"
     assert Macro.underscore("FoBaZa") == "fo_ba_za"
     assert Macro.underscore("Foo10") == "foo10"
+    assert Macro.underscore("FOO10") == "foo10"
     assert Macro.underscore("10Foo") == "10_foo"
     assert Macro.underscore("FooBar10") == "foo_bar10"
+    assert Macro.underscore("FooBAR10") == "foo_bar10"
     assert Macro.underscore("Foo10Bar") == "foo10_bar"
     assert Macro.underscore("Foo.Bar") == "foo/bar"
     assert Macro.underscore(Foo.Bar) == "foo/bar"
@@ -881,6 +1284,8 @@ defmodule MacroTest do
     assert Macro.camelize("foo__bar") == "FooBar"
     assert Macro.camelize("foo/bar") == "Foo.Bar"
     assert Macro.camelize("Foo.Bar") == "Foo.Bar"
+    assert Macro.camelize("foo1_0") == "Foo10"
+    assert Macro.camelize("foo_123_4_567") == "Foo1234567"
     assert Macro.camelize("FOO_BAR") == "FOO_BAR"
     assert Macro.camelize("FOO.BAR") == "FOO.BAR"
     assert Macro.camelize("") == ""

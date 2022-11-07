@@ -6,166 +6,85 @@ defmodule Kernel.LexicalTrackerTest do
   alias Kernel.LexicalTracker, as: D
 
   setup do
-    {:ok, pid} = D.start_link("dest")
+    {:ok, pid} = D.start_link()
     {:ok, [pid: pid]}
   end
 
-  test "gets the destination", config do
-    assert D.dest(config[:pid]) == "dest"
+  test "can add remote dispatch", config do
+    D.remote_dispatch(config[:pid], String, :runtime)
+    assert D.references(config[:pid]) == {[], [], [String], []}
+
+    D.remote_dispatch(config[:pid], String, :compile)
+    assert D.references(config[:pid]) == {[String], [], [], []}
+
+    D.remote_dispatch(config[:pid], String, :runtime)
+    assert D.references(config[:pid]) == {[String], [], [], []}
   end
 
-  test "can add remote references", config do
-    D.remote_reference(config[:pid], String, :runtime)
-    assert D.remote_references(config[:pid]) == {[], [], [String]}
+  test "can add requires", config do
+    D.add_export(config[:pid], URI)
+    assert D.references(config[:pid]) == {[], [URI], [], []}
 
-    D.remote_reference(config[:pid], String, :compile)
-    assert D.remote_references(config[:pid]) == {[String], [], []}
+    D.remote_dispatch(config[:pid], URI, :runtime)
+    assert D.references(config[:pid]) == {[], [URI], [URI], []}
 
-    D.remote_reference(config[:pid], String, :runtime)
-    assert D.remote_references(config[:pid]) == {[String], [], []}
-  end
-
-  test "can add remote structs", config do
-    D.remote_struct(config[:pid], URI, 3)
-    assert D.remote_references(config[:pid]) == {[], [URI], []}
-
-    D.remote_reference(config[:pid], URI, :runtime)
-    assert D.remote_references(config[:pid]) == {[], [URI], [URI]}
-
-    D.remote_reference(config[:pid], URI, :compile)
-    assert D.remote_references(config[:pid]) == {[URI], [URI], []}
-  end
-
-  test "can add remote dispatches with {function, arity} and line", config do
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
-    assert D.remote_dispatches(config[:pid]) == {%{}, %{String => %{{:upcase, 1} => [1]}}}
-    assert D.remote_references(config[:pid]) == {[], [], [String]}
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [1]}},
-               %{String => %{{:upcase, 1} => [1]}}
-             }
-
-    assert D.remote_references(config[:pid]) == {[String], [], []}
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [1]}},
-               %{String => %{{:upcase, 1} => [1]}}
-             }
-
-    assert D.remote_references(config[:pid]) == {[String], [], []}
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [1]}},
-               %{String => %{{:upcase, 1} => [2, 1]}}
-             }
-
-    assert D.remote_references(config[:pid]) == {[String], [], []}
-  end
-
-  test "can add remote dispatches for external files", config do
-    D.set_file(config[:pid], "lib/foo.ex")
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {%{}, %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}}
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}
-             }
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}}
-             }
-
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 2}, {"lib/foo.ex", 1}]}}
-             }
-
-    D.reset_file(config[:pid])
-    D.remote_dispatch(config[:pid], String, {:upcase, 1}, 2, :runtime)
-
-    assert D.remote_dispatches(config[:pid]) ==
-             {
-               %{String => %{{:upcase, 1} => [{"lib/foo.ex", 1}]}},
-               %{String => %{{:upcase, 1} => [2, {"lib/foo.ex", 2}, {"lib/foo.ex", 1}]}}
-             }
+    D.remote_dispatch(config[:pid], URI, :compile)
+    assert D.references(config[:pid]) == {[URI], [URI], [], []}
   end
 
   test "can add module imports", config do
+    D.add_export(config[:pid], String)
     D.add_import(config[:pid], String, [], 1, true)
-    D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-    assert D.remote_references(config[:pid]) == {[String], [], []}
-    assert D.remote_dispatches(config[:pid]) == {%{String => %{{:upcase, 1} => [1]}}, %{}}
 
-    D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :runtime)
-    assert D.remote_references(config[:pid]) == {[String], [], []}
+    D.import_dispatch(config[:pid], String, {:upcase, 1}, :runtime)
+    assert D.references(config[:pid]) == {[], [String], [String], []}
 
-    assert D.remote_dispatches(config[:pid]) ==
-             {%{String => %{{:upcase, 1} => [1]}}, %{String => %{{:upcase, 1} => [1]}}}
+    D.import_dispatch(config[:pid], String, {:upcase, 1}, :compile)
+    assert D.references(config[:pid]) == {[String], [String], [], []}
   end
 
   test "can add module with {function, arity} imports", config do
+    D.add_export(config[:pid], String)
     D.add_import(config[:pid], String, [upcase: 1], 1, true)
-    D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-    assert D.remote_references(config[:pid]) == {[String], [], []}
+
+    D.import_dispatch(config[:pid], String, {:upcase, 1}, :compile)
+    assert D.references(config[:pid]) == {[String], [String], [], []}
   end
 
   test "can add aliases", config do
     D.add_alias(config[:pid], String, 1, true)
     D.alias_dispatch(config[:pid], String)
-    assert D.remote_references(config[:pid]) == {[], [], []}
+    assert D.references(config[:pid]) == {[], [], [], []}
   end
 
   test "unused module imports", config do
     D.add_import(config[:pid], String, [], 1, true)
-    assert D.collect_unused_imports(config[:pid]) == [{String, 1}]
+    assert D.collect_unused_imports(config[:pid]) == [{String, %{String => 1}}]
   end
 
   test "used module imports are not unused", config do
     D.add_import(config[:pid], String, [], 1, true)
-    D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-    assert D.collect_unused_imports(config[:pid]) == []
+    D.import_dispatch(config[:pid], String, {:upcase, 1}, :compile)
+    assert D.collect_unused_imports(config[:pid]) == [{String, %{}}]
   end
 
   test "unused {module, function, arity} imports", config do
     D.add_import(config[:pid], String, [upcase: 1], 1, true)
-    assert D.collect_unused_imports(config[:pid]) == [{String, 1}, {{String, :upcase, 1}, 1}]
+    assert D.collect_unused_imports(config[:pid]) == [{String, %{String => 1, {:upcase, 1} => 1}}]
   end
 
   test "used {module, function, arity} imports are not unused", config do
     D.add_import(config[:pid], String, [upcase: 1], 1, true)
     D.add_import(config[:pid], String, [downcase: 1], 1, true)
-    D.import_dispatch(config[:pid], String, {:upcase, 1}, 1, :compile)
-    assert D.collect_unused_imports(config[:pid]) == [{{String, :downcase, 1}, 1}]
+    D.import_dispatch(config[:pid], String, {:upcase, 1}, :compile)
+    assert D.collect_unused_imports(config[:pid]) == [{String, %{{:downcase, 1} => 1}}]
   end
 
   test "overwriting {module, function, arity} import with module import", config do
     D.add_import(config[:pid], String, [upcase: 1], 1, true)
     D.add_import(config[:pid], String, [], 1, true)
-    D.import_dispatch(config[:pid], String, {:downcase, 1}, 1, :compile)
-    assert D.collect_unused_imports(config[:pid]) == []
+    D.import_dispatch(config[:pid], String, {:downcase, 1}, :compile)
+    assert D.collect_unused_imports(config[:pid]) == [{String, %{}}]
   end
 
   test "imports with no warn are not unused", config do
@@ -189,138 +108,324 @@ defmodule Kernel.LexicalTrackerTest do
     assert D.collect_unused_aliases(config[:pid]) == []
   end
 
-  test "does not tag aliases nor types" do
-    {{{compile, _structs, runtime}, {compile_dispatches, runtime_dispatches}}, _binding} =
+  describe "references" do
+    test "typespecs do not tag aliases nor types" do
       Code.eval_string("""
-      defmodule Kernel.LexicalTrackerTest.Typespecs do
+      defmodule Kernel.LexicalTrackerTest.AliasTypespecs do
         alias Foo.Bar, as: Bar, warn: false
-        @type bar :: Foo.Bar.t
+        @type bar :: Foo.Bar | Foo.Bar.t
         @opaque bar2 :: Foo.Bar.t
         @typep bar3 :: Foo.Bar.t
         @callback foo :: Foo.Bar.t
         @macrocallback foo2(Foo.Bar.t) :: Foo.Bar.t
         @spec foo(bar3) :: Foo.Bar.t
-        def foo(_), do: :bar
-        refs = Kernel.LexicalTracker.remote_references(__ENV__.module)
-        dispatches = Kernel.LexicalTracker.remote_dispatches(__ENV__.module)
-        {refs, dispatches}
-      end |> elem(3)
-      """)
+        def foo(_), do: :ok
 
-    refute Elixir.Bar in runtime
-    refute Map.has_key?(runtime_dispatches, Elixir.Bar)
-    refute Elixir.Bar in compile
-    refute Map.has_key?(compile_dispatches, Elixir.Bar)
-
-    refute Foo.Bar in runtime
-    refute Map.has_key?(runtime_dispatches, Foo.Bar)
-    refute Foo.Bar in compile
-    refute Map.has_key?(compile_dispatches, Foo.Bar)
-  end
-
-  test "remote dispatches" do
-    {{compile_remote_calls, runtime_remote_calls}, []} =
-      Code.eval_string("""
-      defmodule Kernel.LexicalTrackerTest.RemoteDispatches do
-        import Record
-        require Integer
-        alias Remote, as: R
-
-        def a do
-          _ = extract(1, 2)
-          _ = is_record(1)
-          _ = Integer.is_even(2)
-
-          NotAModule
-          Remote.func()
-          R.func()
-          &extract/2
-          &is_record/1
-          &R.func/0
-          &Remote.func/0
-          &Integer.is_even/1
-          %Macro.Env{}
+        # References from specs are processed only late
+        @after_compile __MODULE__
+        def __after_compile__(env, _) do
+          send(self(), {:references, Kernel.LexicalTracker.references(env.lexical_tracker)})
         end
-
-        &extract/2
-        &is_record/1
-        &R.func/0
-        &Remote.func/0
-        &Integer.is_even/1
-
-        &is_record/1; def b(a), do: is_record(a)
-
-        %Macro.Env{}
-
-        Kernel.LexicalTracker.remote_dispatches(__ENV__.module)
-      end |> elem(3)
+      end
       """)
 
-    compile_remote_calls = unroll_dispatches(compile_remote_calls)
-    assert {6, Kernel, :def, 2} in compile_remote_calls
-    assert {8, Record, :is_record, 1} in compile_remote_calls
-    assert {9, Integer, :is_even, 1} in compile_remote_calls
-    assert {15, Record, :is_record, 1} in compile_remote_calls
-    assert {18, Integer, :is_even, 1} in compile_remote_calls
-    assert {19, Macro.Env, :__struct__, 1} in compile_remote_calls
-    assert {22, Record, :extract, 2} in compile_remote_calls
-    assert {23, Record, :is_record, 1} in compile_remote_calls
-    assert {24, Remote, :func, 0} in compile_remote_calls
-    assert {25, Remote, :func, 0} in compile_remote_calls
-    assert {26, Integer, :is_even, 1} in compile_remote_calls
-    assert {28, Kernel, :def, 2} in compile_remote_calls
-    assert {28, Record, :is_record, 1} in compile_remote_calls
-    assert {30, Macro.Env, :__struct__, 1} in compile_remote_calls
-    assert {32, Kernel.LexicalTracker, :remote_dispatches, 1} in compile_remote_calls
+      assert_received {:references, {compile, _exports, runtime, _}}
 
-    runtime_remote_calls = unroll_dispatches(runtime_remote_calls)
-    assert {7, Record, :extract, 2} in runtime_remote_calls
-    assert {8, :erlang, :is_tuple, 1} in runtime_remote_calls
-    assert {12, Remote, :func, 0} in runtime_remote_calls
-    assert {13, Remote, :func, 0} in runtime_remote_calls
-    assert {14, Record, :extract, 2} in runtime_remote_calls
-    assert {15, :erlang, :is_tuple, 1} in runtime_remote_calls
-    assert {16, Remote, :func, 0} in runtime_remote_calls
-    assert {17, Remote, :func, 0} in runtime_remote_calls
-    assert {18, :erlang, :==, 2} in runtime_remote_calls
-    assert {28, :erlang, :is_tuple, 1} in runtime_remote_calls
-  end
+      refute Elixir.Bar in runtime
+      refute Elixir.Bar in compile
 
-  test "remote dispatches with external source" do
-    {{compile_remote_calls, runtime_remote_calls}, []} =
-      Code.eval_string(
-        """
-        defmodule Kernel.LexicalTrackerTest.RemoteDispatchesWithExternalSource do
-          def foo do
-            String.upcase("foo")
-          end
+      refute Foo.Bar in runtime
+      refute Foo.Bar in compile
+    end
 
-          @file "lib/bar.ex"
-          def bar do
-            String.upcase("bar")
-          end
+    test "typespecs track structs as exports" do
+      Code.eval_string("""
+      defmodule Kernel.LexicalTrackerTest.StructTypespecs do
+        @type uri :: %URI{}
 
-          String.upcase("foo")
+        # References from specs are processed only late
+        @after_compile __MODULE__
+        def __after_compile__(env, _) do
+          send(self(), {:references, Kernel.LexicalTracker.references(env.lexical_tracker)})
+        end
+      end
+      """)
 
-          Kernel.LexicalTracker.remote_dispatches(__ENV__.module)
+      assert_received {:references, {compile, exports, runtime, _}}
+
+      assert URI in runtime
+      assert URI in exports
+      refute URI in compile
+    end
+
+    test "attributes adds dependency based on expansion" do
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute1 do
+          @example [String, Enum, 3 + 10]
+          def foo(atom) when atom in @example, do: atom
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
         end |> elem(3)
-        """,
-        [],
-        file: "lib/remote_dispatches.ex"
-      )
+        """)
 
-    runtime_remote_calls = unroll_dispatches(runtime_remote_calls)
-    assert {3, String, :upcase, 1} in runtime_remote_calls
-    assert {{"lib/bar.ex", 8}, String, :upcase, 1} in runtime_remote_calls
+      refute String in compile
+      refute Enum in compile
 
-    compile_remote_calls = unroll_dispatches(compile_remote_calls)
-    assert {11, String, :upcase, 1} in compile_remote_calls
-  end
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute2 do
+          @example [String, Enum]
+          def foo(atom) when atom in @example, do: atom
+          _ = @example
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
 
-  defp unroll_dispatches(dispatches) do
-    for {module, fals} <- dispatches,
-        {{func, arity}, lines} <- fals,
-        line <- lines,
-        do: {line, module, func, arity}
+      assert String in compile
+      assert Enum in compile
+
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute3 do
+          @example [String, Enum]
+          _ = Module.get_attribute(__MODULE__, :example)
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert String in compile
+      assert Enum in compile
+
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute4 do
+          Module.register_attribute(__MODULE__, :example, accumulate: true)
+          @example String
+          def foo(atom) when atom in @example, do: atom
+          @example Enum
+          def bar(atom) when atom in @example, do: atom
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute String in compile
+      refute Enum in compile
+
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute5 do
+          Module.register_attribute(__MODULE__, :example, accumulate: true)
+          @example String
+          def foo(atom) when atom in @example, do: atom
+          @example Enum
+          def bar(atom) when atom in @example, do: atom
+          _ = Module.get_attribute(__MODULE__, :example)
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert String in compile
+      assert Enum in compile
+
+      {{compile, _, _, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Attribute6 do
+          @example %{foo: Application.compile_env(:elixir, Enum, String)}
+          def foo(atom) when atom == @example.foo, do: atom
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute String in compile
+      refute Enum in compile
+    end
+
+    test "@compile adds a runtime dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Compile do
+          @compile {:no_warn_undefined, String}
+          @compile {:no_warn_undefined, {Enum, :concat, 1}}
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute String in compile
+      refute String in exports
+      assert String in runtime
+
+      refute Enum in compile
+      refute Enum in exports
+      assert Enum in runtime
+    end
+
+    def __before_compile__(_), do: :ok
+    def __after_compile__(_, _), do: :ok
+    def __on_definition__(_, _, _, _, _, _), do: :ok
+
+    test "module callbacks add a compile dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.BeforeCompile do
+          @before_compile Kernel.LexicalTrackerTest
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert Kernel.LexicalTrackerTest in compile
+      refute Kernel.LexicalTrackerTest in exports
+      refute Kernel.LexicalTrackerTest in runtime
+
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.AfterCompile do
+          @after_compile Kernel.LexicalTrackerTest
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert Kernel.LexicalTrackerTest in compile
+      refute Kernel.LexicalTrackerTest in exports
+      refute Kernel.LexicalTrackerTest in runtime
+
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.OnDefinition do
+          @on_definition Kernel.LexicalTrackerTest
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert Kernel.LexicalTrackerTest in compile
+      refute Kernel.LexicalTrackerTest in exports
+      refute Kernel.LexicalTrackerTest in runtime
+    end
+
+    test "defdelegate with literal adds runtime dependency" do
+      {{compile, _exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Defdelegate do
+          defdelegate decode_query(query), to: URI
+
+          opts = [to: Enum]
+          defdelegate concat(enum), opts
+
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute URI in compile
+      assert Enum in compile
+      assert URI in runtime
+    end
+
+    test "imports adds an export dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Imports do
+          import String, warn: false
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute String in compile
+      assert String in exports
+      refute String in runtime
+    end
+
+    test "structs are exports or compile time" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.StructRuntime do
+          def expand, do: %URI{}
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute URI in compile
+      assert URI in exports
+      assert URI in runtime
+
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.StructCompile do
+          _ = %URI{}
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert URI in compile
+      assert URI in exports
+      refute URI in runtime
+    end
+
+    test "Macro.struct! adds an export dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.MacroStruct do
+          # We do not use the alias because it would be a compile time
+          # dependency. The alias may happen in practice, which is the
+          # mechanism to make this expansion become a compile-time one.
+          # However, in some cases, such as typespecs, we don't necessarily
+          # want the compile-time dependency to happen.
+          Macro.struct!(:"Elixir.URI", __ENV__)
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute URI in compile
+      assert URI in exports
+      refute URI in runtime
+    end
+
+    test "compile_env! does not add a compile dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.CompileEnvStruct do
+          require Application
+          Application.compile_env(:elixir, URI)
+          Application.compile_env(:elixir, [:foo, URI, :bar])
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute URI in compile
+      refute URI in exports
+      assert URI in runtime
+    end
+
+    test "defmodule does not add a compile dependency" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Defmodule do
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      refute Kernel.LexicalTrackerTest.Defmodule in compile
+      refute Kernel.LexicalTrackerTest.Defmodule in exports
+      refute Kernel.LexicalTrackerTest.Defmodule in runtime
+    end
+
+    test "defmacro adds a compile-time dependency for local calls" do
+      {{compile, exports, runtime, _}, _binding} =
+        Code.eval_string("""
+        defmodule Kernel.LexicalTrackerTest.Defmacro do
+          defmacro uri() do
+            Macro.escape(URI.parse("/hello"))
+          end
+
+          def fun() do
+            uri()
+          end
+
+          Kernel.LexicalTracker.references(__ENV__.lexical_tracker)
+        end |> elem(3)
+        """)
+
+      assert URI in compile
+      refute URI in exports
+      refute URI in runtime
+    end
   end
 end

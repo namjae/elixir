@@ -73,6 +73,29 @@ defmodule Kernel.WithTest do
     assert state == 1
   end
 
+  test "with shadowing" do
+    assert with(
+             a <-
+               (
+                 b = 1
+                 _ = b
+                 1
+               ),
+             b <- 2,
+             do: a + b
+           ) == 3
+  end
+
+  test "with extra guards" do
+    var =
+      with %_{} = a <- struct(URI),
+           %_{} <- a do
+        :ok
+      end
+
+    assert var == :ok
+  end
+
   test "errors in with" do
     assert_raise RuntimeError, fn ->
       with({:ok, res} <- oops(), do: res)

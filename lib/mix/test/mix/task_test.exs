@@ -13,11 +13,12 @@ defmodule Mix.TaskTest do
     assert Mix.Task.run("hello") == "Hello, World!"
     assert Mix.Task.run("hello") == :noop
 
-    assert_raise Mix.NoTaskError, "The task \"unknown\" could not be found", fn ->
-      Mix.Task.run("unknown")
-    end
+    assert_raise Mix.NoTaskError,
+                 "The task \"unknown\" could not be found\nNote no mix.exs was found in the current directory",
+                 fn -> Mix.Task.run("unknown") end
 
-    message = "The task \"helli\" could not be found. Did you mean \"hello\"?"
+    message =
+      "The task \"helli\" could not be found. Did you mean \"hello\"?\nNote no mix.exs was found in the current directory"
 
     assert_raise Mix.NoTaskError, message, fn ->
       Mix.Task.run("helli")
@@ -58,44 +59,71 @@ defmodule Mix.TaskTest do
     Mix.shell(Mix.Shell.IO)
     Mix.debug(true)
 
-    assert ExUnit.CaptureIO.capture_io(fn -> Mix.Task.run("hello") end) =~ "** Running mix hello"
+    assert ExUnit.CaptureIO.capture_io(fn -> Mix.Task.run("hello") end) =~
+             ~r"-> Running mix hello\n<- Ran mix hello in \d+ms"
   after
     Mix.shell(Mix.Shell.Process)
     Mix.debug(false)
   end
 
-  test "run/2 tries to load deps if task is missing", context do
-    in_tmp context.test, fn ->
-      Mix.Project.push(SampleProject, "sample")
+  defmodule DepsApp do
+    def project do
+      [
+        app: :raw_sample,
+        version: "0.1.0",
+        deps: [
+          {:raw_repo, "0.1.0", path: "custom/raw_repo"}
+        ]
+      ]
+    end
+  end
 
-      {:module, _, bin, _} =
-        defmodule Elixir.Mix.Tasks.TaskHello do
-          use Mix.Task
-          def run(_), do: "Hello, World"
-        end
-
-      :code.purge(Mix.Tasks.TaskHello)
-      :code.delete(Mix.Tasks.TaskHello)
+  test "run/2 tries to load deps if task is missing" do
+    in_fixture("deps_status", fn ->
+      Mix.Project.push(DepsApp)
 
       assert_raise Mix.NoTaskError, fn ->
         Mix.Task.run("task_hello")
       end
 
-      # Clean up the tasks and copy it into deps
-      Mix.TasksServer.clear()
-      File.mkdir_p!("_build/dev/lib/sample/ebin")
-      File.write!("_build/dev/lib/sample/ebin/Elixir.Mix.Tasks.TaskHello.beam", bin)
+      File.write!("custom/raw_repo/lib/task_hello.ex", """
+      defmodule Mix.Tasks.TaskHello do
+        use Mix.Task
+        def run(_), do: "Hello World v1"
+      end
+      """)
+
+      # Clean up the tasks and update task
+      Mix.Task.clear()
 
       # Task was found from deps loadpaths
-      assert Mix.Task.run("task_hello") == "Hello, World"
+      assert Mix.Task.run("task_hello") == "Hello World v1"
 
       # The compile task should not have run yet
-      assert Mix.TasksServer.run({:task, "compile", Mix.Project.get()})
-    end
+      assert Mix.Task.run("compile") != :noop
+
+      # Clean up the tasks and update task
+      Mix.Task.clear()
+
+      File.write!("custom/raw_repo/lib/task_hello.ex", """
+      defmodule Mix.Tasks.TaskHello do
+        use Mix.Task
+        def run(_), do: "Hello World v2"
+      end
+      """)
+
+      # Simulate starting a new invocation
+      purge([Mix.Tasks.TaskHello])
+      Code.delete_path("_build/dev/lib/raw_repo/ebin")
+      ensure_touched("custom/raw_repo/lib/task_hello.ex")
+
+      # Task is recompiled to v2
+      assert Mix.Task.run("task_hello") == "Hello World v2"
+    end)
   end
 
   test "run/2 tries to compile if task is missing", context do
-    in_tmp context.test, fn ->
+    in_tmp(context.test, fn ->
       Mix.Project.push(SampleProject, "sample")
 
       assert_raise Mix.NoTaskError, fn ->
@@ -104,7 +132,7 @@ defmodule Mix.TaskTest do
 
       # Check if compile task have run
       refute Mix.TasksServer.run({:task, "compile", Mix.Project.get()})
-    end
+    end)
   end
 
   test "clear/0" do
@@ -120,26 +148,40 @@ defmodule Mix.TaskTest do
   end
 
   test "reenable/1 for recursive inside umbrella" do
-    in_fixture "umbrella_dep/deps/umbrella", fn ->
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
       Mix.Project.in_project(:umbrella, ".", fn _ ->
         assert [:ok, :ok] = Mix.Task.run("clean")
-        assert :noop = Mix.Task.run("clean")
+        assert [:noop, :noop] = Mix.Task.run("clean")
 
         Mix.Task.reenable("clean")
         assert [:ok, :ok] = Mix.Task.run("clean")
-        assert :noop = Mix.Task.run("clean")
+        assert [:noop, :noop] = Mix.Task.run("clean")
       end)
-    end
+    end)
+  end
+
+  test "reenable/1 for recursive inside umbrella child" do
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
+      Mix.Project.in_project(:umbrella, ".", fn _ ->
+        assert [:ok, :ok] = Mix.Task.run("cmd", ["echo", "hello"])
+        assert [:ok, :ok] = Mix.Task.run("cmd", ["echo", "world"])
+
+        assert_received {:mix_shell, :run, ["hello" <> _]}
+        assert_received {:mix_shell, :run, ["world" <> _]}
+        assert_received {:mix_shell, :run, ["hello" <> _]}
+        assert_received {:mix_shell, :run, ["world" <> _]}
+      end)
+    end)
   end
 
   test "reenable/1 for non-recursive inside umbrella" do
-    in_fixture "umbrella_dep/deps/umbrella", fn ->
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
       Mix.Project.in_project(:umbrella, ".", fn _ ->
         assert [:ok, :ok] = Mix.Task.run("clean")
         # loadpaths is not recursive
         assert :ok = Mix.Task.run("loadpaths")
       end)
-    end
+    end)
   end
 
   test "rerun/1" do
@@ -148,16 +190,17 @@ defmodule Mix.TaskTest do
   end
 
   test "rerun/1 for umbrella" do
-    in_fixture "umbrella_dep/deps/umbrella", fn ->
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
       Mix.Project.in_project(:umbrella, ".", fn _ ->
         assert [:ok, :ok] = Mix.Task.run("clean")
-        assert :noop = Mix.Task.run("clean")
+        assert [:noop, :noop] = Mix.Task.run("clean")
         assert [:ok, :ok] = Mix.Task.rerun("clean")
       end)
-    end
+    end)
   end
 
   test "get!" do
+    Mix.Project.push(MixTest.Case.Sample)
     assert Mix.Task.get!("hello") == Mix.Tasks.Hello
 
     assert_raise Mix.NoTaskError, "The task \"unknown\" could not be found", fn ->
@@ -193,19 +236,37 @@ defmodule Mix.TaskTest do
     assert Mix.Task.moduledoc(Mix.Tasks.Hello) == "A test task.\n"
   end
 
-  test "preferred_cli_env/1 returns nil for missing task" do
-    assert Mix.Task.preferred_cli_env(:no_task) == nil
-  end
-
-  test "preferred_cli_env/1 returns nil when task does not have `preferred_cli_env` attribute" do
-    assert Mix.Task.preferred_cli_env(:deps) == nil
-  end
-
-  test "preferred_cli_env/1 returns specified `preferred_cli_env` attribute" do
-    assert Mix.Task.preferred_cli_env(:test) == :test
-  end
-
   test "shortdoc/1" do
     assert Mix.Task.shortdoc(Mix.Tasks.Hello) == "This is short documentation, see"
+  end
+
+  defmodule Elixir.Mix.Tasks.WithRequirement do
+    use Mix.Task
+    @shortdoc "This is short documentation, see"
+    @requirements "help \"compile\""
+
+    @moduledoc """
+    A test task.
+    """
+
+    def run(_args) do
+      "Task with requirements"
+    end
+  end
+
+  test "requirements/1" do
+    assert Mix.Task.requirements(Mix.Tasks.WithRequirement) == ["help \"compile\""]
+  end
+
+  test "@requirements are running during task execution" do
+    assert ExUnit.CaptureIO.capture_io(fn ->
+             assert Mix.Task.run("with_requirement") == "Task with requirements"
+           end) =~ "mix compile"
+
+    Mix.Task.reenable("help")
+
+    assert ExUnit.CaptureIO.capture_io(fn ->
+             assert Mix.Task.run("with_requirement") == :noop
+           end) == ""
   end
 end

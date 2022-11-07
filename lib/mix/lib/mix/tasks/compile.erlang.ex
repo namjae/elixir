@@ -1,25 +1,18 @@
 defmodule Mix.Tasks.Compile.Erlang do
   use Mix.Task.Compiler
-  import Mix.Compilers.Erlang
+  alias Mix.Compilers.Erlang
 
   @recursive true
-  @manifest ".compile.erlang"
+  @manifest "compile.erlang"
   @switches [force: :boolean, all_warnings: :boolean]
 
   @moduledoc """
   Compiles Erlang source files.
 
   When this task runs, it will first check the modification times of
-  all files to be compiled and if they haven't been
-  changed since the last compilation, it will not compile
-  them. If any of them have changed, it compiles
-  everything.
-
-  For this reason, the task touches your `:compile_path`
-  directory and sets the modification time to the current
-  time and date at the end of each compilation. You can
-  force compilation regardless of modification times by passing
-  the `--force` option.
+  all files to be compiled and if they haven't been changed since the
+  last compilation, it will not compile them. If any of them have changed,
+  it compiles everything.
 
   ## Command line options
 
@@ -41,20 +34,17 @@ defmodule Mix.Tasks.Compile.Erlang do
       Defaults to `"include"`.
 
     * `:erlc_options` - compilation options that apply to Erlang's
-      compiler. Defaults to `[:debug_info]`.
+      compiler. Defaults to `[]`.
 
       For a complete list of options, see `:compile.file/2`.
+      The option `:debug_info` is always added to the end of it.
+      You can disable that using:
 
-  For example, to configure the `erlc_options` for your Erlang project you
-  may run:
-
-      erlc_options: [:debug_info, {:i, 'path/to/include'}]
+          erlc_options: [debug_info: false]
 
   """
 
-  @doc """
-  Runs this task.
-  """
+  @impl true
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
     project = Mix.Project.config()
@@ -64,47 +54,47 @@ defmodule Mix.Tasks.Compile.Erlang do
     do_run(files, opts, project, source_paths)
   end
 
-  defp do_run([], _, _, _), do: :noop
+  defp do_run([], _, _, _), do: {:noop, []}
 
   defp do_run(files, opts, project, source_paths) do
-    include_path = to_erl_file(project[:erlc_include_path])
-    compile_path = to_erl_file(Mix.Project.compile_path(project))
-
+    include_path = Erlang.to_erl_file(project[:erlc_include_path])
+    compile_path = Erlang.to_erl_file(Mix.Project.compile_path(project))
     erlc_options = project[:erlc_options] || []
 
     unless is_list(erlc_options) do
       Mix.raise(":erlc_options should be a list of options, got: #{inspect(erlc_options)}")
     end
 
-    erlc_options = erlc_options ++ [:return, :report, outdir: compile_path, i: include_path]
+    erlc_options =
+      erlc_options ++ [:debug_info, :return, :report, outdir: compile_path, i: include_path]
 
     erlc_options =
       Enum.map(erlc_options, fn
-        {kind, dir} when kind in [:i, :outdir] -> {kind, to_erl_file(dir)}
+        {kind, dir} when kind in [:i, :outdir] -> {kind, Erlang.to_erl_file(dir)}
         opt -> opt
       end)
 
     compile_path = Path.relative_to(compile_path, File.cwd!())
 
-    tuples =
-      files
-      |> scan_sources(include_path, source_paths)
-      |> sort_dependencies()
-      |> Enum.map(&annotate_target(&1, compile_path, opts[:force]))
+    {erls, tuples} =
+      Enum.unzip(scan_sources(files, include_path, source_paths, compile_path, opts))
 
-    Mix.Compilers.Erlang.compile(manifest(), tuples, opts, fn input, _output ->
-      # We're purging the module because a previous compiler (e.g. Phoenix)
+    opts = [parallel: MapSet.new(find_parallel(erls))] ++ opts
+
+    Erlang.compile(manifest(), tuples, opts, fn input, _output ->
+      # We're purging the module because a previous compiler (for example, Phoenix)
       # might have already loaded the previous version of it.
       module = input |> Path.basename(".erl") |> String.to_atom()
       :code.purge(module)
       :code.delete(module)
 
-      file = to_erl_file(Path.rootname(input, ".erl"))
+      path = Path.rootname(input, ".erl")
+      file = Erlang.to_erl_file(path)
 
       case :compile.file(file, erlc_options) do
-        {:error, :badarg} ->
+        :error ->
           message =
-            "Compiling Erlang #{inspect(file)} failed with ArgumentError, probably because of invalid :erlc_options"
+            "Compiling Erlang file #{inspect(path)} failed, probably because of invalid :erlc_options"
 
           Mix.raise(message)
 
@@ -114,27 +104,42 @@ defmodule Mix.Tasks.Compile.Erlang do
     end)
   end
 
-  @doc """
-  Returns Erlang manifests.
-  """
+  @impl true
   def manifests, do: [manifest()]
   defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
-  @doc """
-  Cleans up compilation artifacts.
-  """
+  @impl true
   def clean do
     Mix.Compilers.Erlang.clean(manifest())
   end
 
-  ## Internal helpers
-
-  defp scan_sources(files, include_path, source_paths) do
-    include_paths = [include_path | source_paths]
-    Enum.reduce(files, [], &scan_source(&2, &1, include_paths)) |> Enum.reverse()
+  @doc false
+  def modules do
+    for output <- Mix.Compilers.Erlang.outputs(manifest()) do
+      output
+      |> Path.basename()
+      |> Path.rootname()
+      |> String.to_atom()
+    end
   end
 
-  defp scan_source(acc, file, include_paths) do
+  ## Internal helpers
+
+  defp scan_sources(files, include_path, source_paths, compile_path, opts) do
+    include_paths = [include_path | source_paths]
+
+    files
+    |> Task.async_stream(&scan_source(&1, include_paths, compile_path, opts),
+      timeout: :infinity,
+      ordered: false
+    )
+    |> Enum.flat_map(fn
+      {:ok, {:ok, erl_file, target_tuple}} -> [{erl_file, target_tuple}]
+      {:ok, :error} -> []
+    end)
+  end
+
+  defp scan_source(file, include_paths, compile_path, opts) do
     erl_file = %{
       file: file,
       module: module_from_artifact(file),
@@ -144,12 +149,14 @@ defmodule Mix.Tasks.Compile.Erlang do
       invalid: false
     }
 
-    case :epp.parse_file(to_erl_file(file), include_paths, []) do
+    case :epp.parse_file(Erlang.to_erl_file(file), include_paths, []) do
       {:ok, forms} ->
-        [List.foldl(tl(forms), erl_file, &do_form(file, &1, &2)) | acc]
+        erl_file = List.foldl(tl(forms), erl_file, &do_form(file, &1, &2))
+        target_tuple = annotate_target(erl_file, compile_path, opts[:force])
+        {:ok, erl_file, target_tuple}
 
       {:error, _error} ->
-        acc
+        :error
     end
   end
 
@@ -165,6 +172,9 @@ defmodule Mix.Tasks.Compile.Erlang do
       {:attribute, _, :behaviour, behaviour} ->
         %{erl | behaviours: [behaviour | erl.behaviours]}
 
+      {:attribute, _, :behavior, behaviour} ->
+        %{erl | behaviours: [behaviour | erl.behaviours]}
+
       {:attribute, _, :compile, value} when is_list(value) ->
         %{erl | compile: value ++ erl.compile}
 
@@ -176,40 +186,24 @@ defmodule Mix.Tasks.Compile.Erlang do
     end
   end
 
-  defp sort_dependencies(erls) do
-    graph = :digraph.new()
+  defp find_parallel(erls) do
+    serial = MapSet.new(find_dependencies(erls))
 
-    _ =
-      for erl <- erls do
-        :digraph.add_vertex(graph, erl.module, erl)
-      end
+    erls
+    |> Enum.reject(&(&1.module in serial))
+    |> Enum.map(& &1.file)
+  end
 
-    _ =
-      for erl <- erls do
-        _ = for b <- erl.behaviours, do: :digraph.add_edge(graph, b, erl.module)
+  defp find_dependencies(erls) do
+    Enum.flat_map(erls, fn erl ->
+      transforms =
+        Enum.flat_map(erl.compile, fn
+          {:parse_transform, transform} -> [transform]
+          _ -> []
+        end)
 
-        _ =
-          for c <- erl.compile do
-            case c do
-              {:parse_transform, transform} -> :digraph.add_edge(graph, transform, erl.module)
-              _ -> :ok
-            end
-          end
-
-        :ok
-      end
-
-    result =
-      case :digraph_utils.topsort(graph) do
-        false ->
-          erls
-
-        mods ->
-          for m <- mods, do: elem(:digraph.vertex(graph, m), 1)
-      end
-
-    :digraph.delete(graph)
-    result
+      transforms ++ erl.behaviours
+    end)
   end
 
   defp annotate_target(erl, compile_path, force) do

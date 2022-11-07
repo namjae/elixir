@@ -3,6 +3,12 @@ Code.require_file("../test_helper.exs", __DIR__)
 defmodule Kernel.QuoteTest do
   use ExUnit.Case, async: true
 
+  @some_fun &List.flatten/1
+
+  test "fun" do
+    assert is_function(@some_fun)
+  end
+
   test "list" do
     assert quote(do: [1, 2, 3]) == [1, 2, 3]
   end
@@ -12,19 +18,51 @@ defmodule Kernel.QuoteTest do
   end
 
   test "keep line" do
-    # DO NOT MOVE THIS LINE
+    line = __ENV__.line + 2
+
     assert quote(location: :keep, do: bar(1, 2, 3)) ==
-             {:bar, [keep: {Path.relative_to_cwd(__ENV__.file), 16}], [1, 2, 3]}
+             {:bar, [keep: {Path.relative_to_cwd(__ENV__.file), line}], [1, 2, 3]}
   end
 
   test "fixed line" do
     assert quote(line: 3, do: bar(1, 2, 3)) == {:bar, [line: 3], [1, 2, 3]}
+    assert quote(line: false, do: bar(1, 2, 3)) == {:bar, [], [1, 2, 3]}
+    assert quote(line: true, do: bar(1, 2, 3)) == {:bar, [line: __ENV__.line], [1, 2, 3]}
   end
 
   test "quote line var" do
-    # DO NOT MOVE THIS LINE
     line = __ENV__.line
-    assert quote(line: line, do: bar(1, 2, 3)) == {:bar, [line: 26], [1, 2, 3]}
+    assert quote(line: line, do: bar(1, 2, 3)) == {:bar, [line: line], [1, 2, 3]}
+
+    assert_raise ArgumentError, fn ->
+      line = "oops"
+      quote(line: line, do: bar(1, 2, 3))
+    end
+
+    assert_raise ArgumentError, fn ->
+      line = true
+      quote(line: line, do: bar(1, 2, 3))
+    end
+  end
+
+  test "quote context var" do
+    context = :dynamic
+    assert quote(context: context, do: bar) == {:bar, [], :dynamic}
+
+    assert_raise ArgumentError, fn ->
+      context = "oops"
+      quote(context: context, do: bar)
+    end
+
+    assert_raise ArgumentError, fn ->
+      context = nil
+      quote(context: context, do: bar)
+    end
+  end
+
+  test "operator precedence" do
+    assert {:+, _, [{:+, _, [1, _]}, 1]} = quote(do: 1 + Foo.l() + 1)
+    assert {:+, _, [1, {_, _, [{:+, _, [1]}]}]} = quote(do: 1 + Foo.l(+1))
   end
 
   test "generated" do
@@ -47,6 +85,7 @@ defmodule Kernel.QuoteTest do
               end)
 
     assert quote(do: foo.unquote(:bar)) == quote(do: foo.bar)
+    assert quote(do: foo.unquote(:bar)()) == quote(do: foo.bar())
     assert quote(do: foo.unquote(:bar)(1)) == quote(do: foo.bar(1))
 
     assert (quote do
@@ -61,6 +100,7 @@ defmodule Kernel.QuoteTest do
               end)
 
     assert quote(do: foo.unquote({:bar, [], nil})) == quote(do: foo.bar)
+    assert quote(do: foo.unquote({:bar, [], nil})()) == quote(do: foo.bar())
     assert quote(do: foo.unquote({:bar, [], [1, 2]})) == quote(do: foo.bar(1, 2))
 
     assert Code.eval_quoted(quote(do: Foo.unquote(Bar))) == {Elixir.Foo.Bar, []}
@@ -69,6 +109,11 @@ defmodule Kernel.QuoteTest do
     assert_raise ArgumentError, fn ->
       quote(do: foo.unquote(1))
     end
+  end
+
+  test "unquote call with dynamic line" do
+    assert quote(line: String.to_integer("123"), do: Foo.unquote(:bar)()) ==
+             quote(line: 123, do: Foo.bar())
   end
 
   test "nested quote" do
@@ -91,16 +136,24 @@ defmodule Kernel.QuoteTest do
     assert nested_quote_in_macro() == 1
   end
 
-  Enum.each([foo: 1, bar: 2, baz: 3], fn {k, v} ->
-    def unquote(k)(arg) do
-      unquote(v) + arg
+  defmodule Dyn do
+    for {k, v} <- [foo: 1, bar: 2, baz: 3] do
+      # Local call unquote
+      def unquote(k)(), do: unquote(v)
+
+      # Remote call unquote
+      def unquote(k)(arg), do: __MODULE__.unquote(k)() + arg
     end
-  end)
+  end
 
   test "dynamic definition with unquote" do
-    assert foo(1) == 2
-    assert bar(2) == 4
-    assert baz(3) == 6
+    assert Dyn.foo() == 1
+    assert Dyn.bar() == 2
+    assert Dyn.baz() == 3
+
+    assert Dyn.foo(1) == 2
+    assert Dyn.bar(2) == 4
+    assert Dyn.baz(3) == 6
   end
 
   test "splice on root" do
@@ -150,10 +203,18 @@ defmodule Kernel.QuoteTest do
 
     map = %{foo: :default}
     assert %{map | unquote_splicing(foo: :bar)} == %{foo: :bar}
+
+    assert Code.eval_string("quote do: %{unquote_splicing foo: :bar}") ==
+             {{:%{}, [], [foo: :bar]}, []}
+
+    assert Code.eval_string("quote do: %{:baz => :bat, unquote_splicing foo: :bar}") ==
+             {{:%{}, [], [{:baz, :bat}, {:foo, :bar}]}, []}
+
+    assert Code.eval_string("quote do: %{foo bar | baz}") ==
+             {{:%{}, [], [{:foo, [], [{:|, [], [{:bar, [], Elixir}, {:baz, [], Elixir}]}]}]}, []}
   end
 
   test "when" do
-    assert [{:->, _, [[{:when, _, [1, 2, 3, 4]}], 5]}] = quote(do: (1, 2, 3 when 4 -> 5))
     assert [{:->, _, [[{:when, _, [1, 2, 3, 4]}], 5]}] = quote(do: (1, 2, 3 when 4 -> 5))
 
     assert [{:->, _, [[{:when, _, [1, 2, 3, {:when, _, [4, 5]}]}], 6]}] =
@@ -166,16 +227,25 @@ defmodule Kernel.QuoteTest do
                 () -> 1
               end)
 
-    assert [{:->, _, [[], 1]}] = quote(do: (() -> 1))
+    assert [{:->, _, [[], 1]}] = quote(do: (-> 1))
+  end
+
+  test "empty block" do
+    # Since ; is allowed by itself, it must also be allowed inside ()
+    # The exception to this rule is an empty (). While empty expressions
+    # are allowed, an empty () is ambiguous. We also can't use quote here,
+    # since the formatter will rewrite (;) to something else.
+    assert {:ok, {:__block__, [line: 1], []}} = Code.string_to_quoted("(;)")
   end
 
   test "bind quoted" do
     args = [
-      {:=, [], [{:foo, [], Kernel.QuoteTest}, 3]},
+      {:=, [], [{:foo, [line: __ENV__.line + 4], Kernel.QuoteTest}, 3]},
       {:foo, [], Kernel.QuoteTest}
     ]
 
-    assert quote(bind_quoted: [foo: 1 + 2], do: foo) == {:__block__, [], args}
+    quoted = quote(bind_quoted: [foo: 1 + 2], do: foo)
+    assert quoted == {:__block__, [], args}
   end
 
   test "literals" do
@@ -205,11 +275,6 @@ defmodule Kernel.QuoteTest do
     assert quote(do: &1.foo) == quote(do: &1.foo)
   end
 
-  test "operators slash arity" do
-    assert {:/, _, [{:+, _, _}, 2]} = quote(do: + / 2)
-    assert {:/, _, [{:&&, _, _}, 3]} = quote(do: && / 3)
-  end
-
   test "pipe precedence" do
     assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
              quote(do: foo |> bar |> baz)
@@ -226,7 +291,7 @@ defmodule Kernel.QuoteTest do
              (quote do
                 foo
                 |> bar do
-                   end
+                end
                 |> baz
               end)
 
@@ -235,7 +300,7 @@ defmodule Kernel.QuoteTest do
                 foo
                 |> bar
                 |> baz do
-                   end
+                end
               end)
 
     assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
@@ -244,7 +309,7 @@ defmodule Kernel.QuoteTest do
                 end
                 |> bar
                 |> baz do
-                   end
+                end
               end)
 
     assert {:|>, _, [{:|>, _, [{:foo, _, _}, {:bar, _, _}]}, {:baz, _, _}]} =
@@ -252,15 +317,22 @@ defmodule Kernel.QuoteTest do
                 foo do
                 end
                 |> bar do
-                   end
+                end
                 |> baz do
-                   end
+                end
               end)
+  end
+
+  test "capture" do
+    assert Code.string_to_quoted!("&1[:foo]") == Code.string_to_quoted!("(&1)[:foo]")
+    assert Code.string_to_quoted!("&1 [:foo]") == Code.string_to_quoted!("(&1)[:foo]")
+    assert Code.string_to_quoted!("& 1[:foo]") == Code.string_to_quoted!("&(1[:foo])")
   end
 end
 
-# DO NOT MOVE THIS LINE
 defmodule Kernel.QuoteTest.Errors do
+  def line, do: __ENV__.line + 4
+
   defmacro defraise do
     quote location: :keep do
       def will_raise(_a, _b), do: raise("oops")
@@ -279,24 +351,32 @@ defmodule Kernel.QuoteTest.ErrorsTest do
   # Defines the add function
   defraise()
 
+  @line line()
   test "inside function error" do
-    assert_raise RuntimeError, fn ->
+    try do
       will_raise(:a, :b)
+    rescue
+      RuntimeError ->
+        mod = Kernel.QuoteTest.ErrorsTest
+        file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
+        assert [{^mod, :will_raise, 2, [file: ^file, line: @line] ++ _} | _] = __STACKTRACE__
+    else
+      _ -> flunk("expected failure")
     end
-
-    mod = Kernel.QuoteTest.ErrorsTest
-    file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
-    assert [{^mod, :will_raise, 2, [file: ^file, line: 266]} | _] = System.stacktrace()
   end
 
+  @line __ENV__.line + 3
   test "outside function error" do
-    assert_raise RuntimeError, fn ->
+    try do
       will_raise()
+    rescue
+      RuntimeError ->
+        mod = Kernel.QuoteTest.ErrorsTest
+        file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
+        assert [{^mod, _, _, [file: ^file, line: @line] ++ _} | _] = __STACKTRACE__
+    else
+      _ -> flunk("expected failure")
     end
-
-    mod = Kernel.QuoteTest.ErrorsTest
-    file = __ENV__.file |> Path.relative_to_cwd() |> String.to_charlist()
-    assert [{^mod, _, _, [file: ^file, line: 294]} | _] = System.stacktrace()
   end
 end
 
@@ -368,7 +448,11 @@ defmodule Kernel.QuoteTest.VarHygieneTest do
     read_interference()
   end
 
-  test "nested" do
+  test "hat" do
+    assert hat() == 1
+  end
+
+  test "nested macro" do
     assert (nested 1 do
               nested 2 do
                 _ = :ok
@@ -376,8 +460,48 @@ defmodule Kernel.QuoteTest.VarHygieneTest do
             end) == 1
   end
 
-  test "hat" do
-    assert hat() == 1
+  test "nested quoted" do
+    defmodule NestedQuote do
+      defmacro __using__(_) do
+        quote unquote: false do
+          arg = quote(do: arg)
+
+          def test(arg) do
+            unquote(arg)
+          end
+        end
+      end
+    end
+
+    defmodule UseNestedQuote do
+      use NestedQuote
+    end
+
+    assert UseNestedQuote.test("foo") == "foo"
+  end
+
+  test "nested bind quoted" do
+    defmodule NestedBindQuoted do
+      defmacrop macro(arg) do
+        quote bind_quoted: [arg: arg] do
+          quote bind_quoted: [arg: arg], do: String.duplicate(arg, 2)
+        end
+      end
+
+      defmacro __using__(_) do
+        quote do
+          def test do
+            unquote(macro("foo"))
+          end
+        end
+      end
+    end
+
+    defmodule UseNestedBindQuoted do
+      use NestedBindQuoted
+    end
+
+    assert UseNestedBindQuoted.test() == "foofoo"
   end
 end
 
@@ -402,6 +526,9 @@ defmodule Kernel.QuoteTest.AliasHygieneTest do
     assert {:__aliases__, [alias: false], [:Foo, :Bar]} = quote(do: Foo.Bar)
     assert {:__aliases__, [alias: false], [:Dict, :Bar]} = quote(do: Dict.Bar)
     assert {:__aliases__, [alias: Dict.Bar], [:SuperDict, :Bar]} = quote(do: SuperDict.Bar)
+
+    # Edge-case
+    assert {:__aliases__, _, [Elixir]} = quote(do: Elixir)
   end
 
   test "expand aliases" do
@@ -440,25 +567,32 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
 
   defmacrop get_list_length do
     quote do
-      length('hello')
+      length(~c"hello")
+    end
+  end
+
+  defmacrop get_list_length_with_pipe do
+    quote do
+      ~c"hello" |> length()
     end
   end
 
   defmacrop get_list_length_with_partial do
     quote do
-      (&length(&1)).('hello')
+      (&length(&1)).(~c"hello")
     end
   end
 
   defmacrop get_list_length_with_function do
     quote do
-      (&length/1).('hello')
+      (&length/1).(~c"hello")
     end
   end
 
   test "expand imports" do
     import Kernel, except: [length: 1]
     assert get_list_length() == 5
+    assert get_list_length_with_pipe() == 5
     assert get_list_length_with_partial() == 5
     assert get_list_length_with_function() == 5
   end
@@ -479,7 +613,7 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
 
   test "lazy expand imports no conflicts" do
     import Kernel, except: [length: 1]
-    import String, only: [length: 1]
+    import String, only: [length: 1], warn: false
 
     assert get_list_length() == 5
     assert get_list_length_with_partial() == 5
@@ -490,7 +624,7 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
     quote do
       import Kernel, except: [length: 1]
       import String, only: [length: 1]
-      length('hello')
+      length(~c"hello")
     end
   end
 
@@ -509,6 +643,6 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
   test "checks the context also for variables to zero-arity functions" do
     import BinaryUtils
     {:int32, meta, __MODULE__} = quote(do: int32)
-    assert meta[:import] == BinaryUtils
+    assert meta[:imports] == [{0, BinaryUtils}]
   end
 end

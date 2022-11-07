@@ -1,39 +1,55 @@
 # Returns config for Elixir docs
+
+canonical = System.fetch_env!("CANONICAL")
+
 [
-  extras: Path.wildcard("lib/elixir/pages/*.md"),
+  extras: Path.wildcard("lib/elixir/pages/*.md") ++ ["CHANGELOG.md"],
+  deps: [
+    eex: "https://hexdocs.pm/eex/#{canonical}",
+    ex_unit: "https://hexdocs.pm/ex_unit/#{canonical}",
+    iex: "https://hexdocs.pm/iex/#{canonical}",
+    logger: "https://hexdocs.pm/logger/#{canonical}",
+    mix: "https://hexdocs.pm/mix/#{canonical}"
+  ],
+  groups_for_functions: [
+    Guards: &(&1[:guard] == true)
+  ],
+  skip_undefined_reference_warnings_on: ["lib/elixir/pages/compatibility-and-deprecations.md"],
   groups_for_modules: [
     # [Kernel, Kernel.SpecialForms],
 
-    "Data & Behaviours": [
-      Access,
+    "Basic Types": [
       Atom,
       Base,
       Bitwise,
-      Calendar,
-      Calendar.ISO,
       Date,
-      Date.Range,
       DateTime,
-      Enum,
       Exception,
       Float,
+      Function,
       Integer,
-      Keyword,
-      List,
-      Map,
-      MapSet,
+      Module,
       NaiveDateTime,
-      Range,
       Record,
       Regex,
-      Stream,
       String,
       Time,
       Tuple,
       URI,
       Version,
+      Version.Requirement
     ],
-
+    "Collections & Enumerables": [
+      Access,
+      Date.Range,
+      Enum,
+      Keyword,
+      List,
+      Map,
+      MapSet,
+      Range,
+      Stream
+    ],
     "IO & System": [
       File,
       File.Stat,
@@ -45,31 +61,31 @@
       Path,
       Port,
       StringIO,
-      System,
+      System
     ],
-
-    "Modules & Code": [
-      Code,
-      Kernel.ParallelCompiler,
-      Macro,
-      Macro.Env,
-      Module,
+    Calendar: [
+      Calendar,
+      Calendar.ISO,
+      Calendar.TimeZoneDatabase,
+      Calendar.UTCOnlyTimeZoneDatabase
     ],
-
     "Processes & Applications": [
       Agent,
       Application,
+      Config,
+      Config.Provider,
+      Config.Reader,
       DynamicSupervisor,
       GenServer,
       Node,
+      PartitionSupervisor,
       Process,
       Registry,
       Supervisor,
       Task,
-      Task.Supervisor,
+      Task.Supervisor
     ],
-
-    "Protocols": [
+    Protocols: [
       Collectable,
       Enumerable,
       Inspect,
@@ -77,17 +93,26 @@
       Inspect.Opts,
       List.Chars,
       Protocol,
-      String.Chars,
+      String.Chars
     ],
+    "Code & Macros": [
+      Code,
+      Code.Fragment,
+      Kernel.ParallelCompiler,
+      Macro,
+      Macro.Env
+    ]
 
-    "Deprecated": [
-      Behaviour,
-      Dict,
-      GenEvent,
-      HashDict,
-      HashSet,
-      Set,
-      Supervisor.Spec
-    ],
+    ## Automatically detected groups
+
+    # Deprecated: [
+    #   Behaviour,
+    #   Dict,
+    #   GenEvent,
+    #   HashDict,
+    #   HashSet,
+    #   Set,
+    #   Supervisor.Spec
+    # ]
   ]
 ]

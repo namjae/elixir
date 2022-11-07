@@ -59,6 +59,23 @@ defmodule MapSetTest do
     assert MapSet.equal?(result, MapSet.new([1, 101]))
   end
 
+  test "symmetric_difference/2" do
+    result = MapSet.symmetric_difference(MapSet.new(1..5), MapSet.new(3..8))
+    assert MapSet.equal?(result, MapSet.new([1, 2, 6, 7, 8]))
+
+    result = MapSet.symmetric_difference(MapSet.new(), MapSet.new())
+    assert MapSet.equal?(result, MapSet.new())
+
+    result = MapSet.symmetric_difference(MapSet.new(1..5), MapSet.new(1..5))
+    assert MapSet.equal?(result, MapSet.new())
+
+    result = MapSet.symmetric_difference(MapSet.new([1, 2, 3]), MapSet.new())
+    assert MapSet.equal?(result, MapSet.new([1, 2, 3]))
+
+    result = MapSet.symmetric_difference(MapSet.new(), MapSet.new([1, 2, 3]))
+    assert MapSet.equal?(result, MapSet.new([1, 2, 3]))
+  end
+
   test "disjoint?/2" do
     assert MapSet.disjoint?(MapSet.new(), MapSet.new())
     assert MapSet.disjoint?(MapSet.new(1..6), MapSet.new(8..20))
@@ -109,37 +126,40 @@ defmodule MapSetTest do
     assert Enum.sort(list) == Enum.to_list(5..120)
   end
 
-  test "MapSet v1 compatibility" do
-    result = 1..5 |> map_set_v1() |> MapSet.new()
-    assert MapSet.equal?(result, MapSet.new(1..5))
+  test "filter/2" do
+    result = MapSet.filter(MapSet.new([1, nil, 2, false]), & &1)
+    assert MapSet.equal?(result, MapSet.new(1..2))
 
-    result = MapSet.put(map_set_v1(1..5), 6)
-    assert MapSet.equal?(result, MapSet.new(1..6))
+    result = MapSet.filter(MapSet.new(1..10), &(&1 < 2 or &1 > 9))
+    assert MapSet.equal?(result, MapSet.new([1, 10]))
 
-    result = MapSet.union(map_set_v1(1..5), MapSet.new(6..10))
-    assert MapSet.equal?(result, MapSet.new(1..10))
-
-    result = MapSet.intersection(map_set_v1(1..10), MapSet.new(6..15))
-    assert MapSet.equal?(result, MapSet.new(6..10))
-
-    result = MapSet.difference(map_set_v1(1..10), MapSet.new(6..50))
-    assert MapSet.equal?(result, MapSet.new(1..5))
-
-    result = MapSet.delete(map_set_v1(1..10), 1)
-    assert MapSet.equal?(result, MapSet.new(2..10))
-
-    assert MapSet.size(map_set_v1(1..5)) == 5
-    assert MapSet.to_list(map_set_v1(1..5)) == Enum.to_list(1..5)
-
-    assert MapSet.disjoint?(map_set_v1(1..5), MapSet.new(10..15))
-    refute MapSet.disjoint?(map_set_v1(1..5), MapSet.new(5..10))
-
-    assert MapSet.subset?(map_set_v1(3..7), MapSet.new(1..10))
-    refute MapSet.subset?(map_set_v1(7..12), MapSet.new(1..10))
+    result = MapSet.filter(MapSet.new(~w(A a B b)), fn x -> String.downcase(x) == x end)
+    assert MapSet.equal?(result, MapSet.new(~w(a b)))
   end
 
-  defp map_set_v1(enumerable) do
-    map = Map.new(enumerable, &{&1, true})
-    %{__struct__: MapSet, map: map}
+  test "reject/2" do
+    result = MapSet.reject(MapSet.new(1..10), &(&1 < 8))
+    assert MapSet.equal?(result, MapSet.new(8..10))
+
+    result = MapSet.reject(MapSet.new(["a", :b, 1, 1.0]), &is_integer/1)
+    assert MapSet.equal?(result, MapSet.new(["a", :b, 1.0]))
+
+    result = MapSet.reject(MapSet.new(1..3), fn x -> rem(x, 2) == 0 end)
+    assert MapSet.equal?(result, MapSet.new([1, 3]))
+  end
+
+  test "split_with" do
+    assert MapSet.split_with(MapSet.new(), fn v -> rem(v, 2) == 0 end) ==
+             {MapSet.new(), MapSet.new()}
+
+    assert MapSet.split_with(MapSet.new([1, 2, 3]), fn v -> rem(v, 2) == 0 end) ==
+             {MapSet.new([2]), MapSet.new([1, 3])}
+
+    assert MapSet.split_with(MapSet.new([2, 4, 6]), fn v -> rem(v, 2) == 0 end) ==
+             {MapSet.new([2, 4, 6]), MapSet.new([])}
+  end
+
+  test "inspect" do
+    assert inspect(MapSet.new([?a])) == "MapSet.new([97])"
   end
 end

@@ -7,6 +7,20 @@ defmodule Code.Formatter.GeneralTest do
 
   @short_length [line_length: 10]
 
+  test "does not emit warnings" do
+    assert_format "fn -> end", "fn -> nil end"
+  end
+
+  describe "unicode normalization" do
+    test "with nfc normalizations" do
+      assert_format "ç", "ç"
+    end
+
+    test "with custom normalizations" do
+      assert_format "µs", "μs"
+    end
+  end
+
   describe "aliases" do
     test "with atom-only parts" do
       assert_same "Elixir"
@@ -20,8 +34,8 @@ defmodule Code.Formatter.GeneralTest do
 
     test "starting with expression" do
       assert_same "__MODULE__.Foo.Bar"
-      # Syntatically valid, semantically invalid
-      assert_same "'Foo'.Bar.Baz"
+      # Syntactically valid, semantically invalid
+      assert_same ~S[~c"Foo".Bar.Baz]
     end
 
     test "wraps the head in parens if it has an operator" do
@@ -75,17 +89,10 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with interpolation on line limit" do
-      bad = ~S"""
-      ~s(one #{"two"} three)
-      """
-
-      good = ~S"""
-      ~s(one #{
-        "two"
-      } three)
-      """
-
-      assert_format bad, good, @short_length
+      assert_same ~S"""
+                  ~s(one #{"two"} three)
+                  """,
+                  @short_length
     end
 
     test "with heredoc syntax" do
@@ -115,21 +122,99 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredoc syntax and interpolation on line limit" do
-      bad = ~S"""
-      ~s'''
-      one #{"two two"} three
+      assert_same ~S"""
+                  ~s'''
+                  one #{"two two"} three
+                  '''
+                  """,
+                  @short_length
+    end
+
+    test "with custom formatting" do
+      bad = """
+      ~W/foo  bar  baz/
+      """
+
+      good = """
+      ~W/foo bar baz/
+      """
+
+      formatter = fn content, opts ->
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: [], opening_delimiter: "/"]
+        content |> String.split(~r/ +/) |> Enum.join(" ")
+      end
+
+      assert_format bad, good, sigils: [W: formatter]
+
+      bad = """
+      var = ~W<foo  bar  baz>abc
+      """
+
+      good = """
+      var = ~W<foo bar baz>abc
+      """
+
+      formatter = fn content, opts ->
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: ~c"abc", opening_delimiter: "<"]
+        content |> String.split(~r/ +/) |> Enum.intersperse(" ")
+      end
+
+      assert_format bad, good, sigils: [W: formatter]
+    end
+
+    test "with custom formatting on heredocs" do
+      bad = """
+      ~W'''
+      foo  bar  baz
       '''
       """
 
-      good = ~S"""
-      ~s'''
-      one #{
-        "two two"
-      } three
+      good = """
+      ~W'''
+      foo bar baz
       '''
       """
 
-      assert_format bad, good, @short_length
+      formatter = fn content, opts ->
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: [], opening_delimiter: "'''"]
+        content |> String.split(~r/ +/) |> Enum.join(" ")
+      end
+
+      assert_format bad, good, sigils: [W: formatter]
+
+      bad = ~S'''
+      if true do
+        ~W"""
+        foo
+        bar
+        baz
+        """abc
+      end
+      '''
+
+      good = ~S'''
+      if true do
+        ~W"""
+        foo
+        bar
+        baz
+        """abc
+      end
+      '''
+
+      formatter = fn content, opts ->
+        assert opts == [
+                 file: nil,
+                 line: 2,
+                 sigil: :W,
+                 modifiers: ~c"abc",
+                 opening_delimiter: ~S/"""/
+               ]
+
+        content |> String.split(~r/ +/) |> Enum.join("\n")
+      end
+
+      assert_format bad, good, sigils: [W: formatter]
     end
   end
 
@@ -185,6 +270,22 @@ defmodule Code.Formatter.GeneralTest do
       """
 
       assert_same code, @short_length
+    end
+
+    test "with a single clause, followed by a newline, and can fit in one line" do
+      assert_same """
+      fn
+        hello -> world
+      end
+      """
+    end
+
+    test "with a single clause, followed by a newline, and can not fit in one line" do
+      assert_same """
+      SomeModule.long_function_name_that_approaches_max_columns(argument, acc, fn
+        %SomeStruct{key: key}, acc -> more_code(key, acc)
+      end)
+      """
     end
 
     test "with multiple clauses" do
@@ -243,19 +344,19 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredocs" do
-      assert_same """
+      assert_same ~S'''
       fn
         arg1 ->
-          '''
+          """
           foo
-          '''
+          """
 
         arg2 ->
-          '''
+          """
           bar
-          '''
+          """
       end
-      """
+      '''
     end
 
     test "with multiple empty clauses" do
@@ -329,12 +430,54 @@ defmodule Code.Formatter.GeneralTest do
       end
       """
     end
+
+    test "with -> on line limit" do
+      bad = """
+      fn ab, cd ->
+        ab + cd
+      end
+      """
+
+      good = """
+      fn ab,
+         cd ->
+        ab + cd
+      end
+      """
+
+      assert_format bad, good, @short_length
+
+      bad = """
+      fn
+        ab, cd ->
+          1
+        xy, zw ->
+          2
+      end
+      """
+
+      good = """
+      fn
+        ab,
+        cd ->
+          1
+
+        xy,
+        zw ->
+          2
+      end
+      """
+
+      assert_format bad, good, @short_length
+    end
   end
 
   describe "anonymous functions types" do
     test "with a single clause and no arguments" do
-      assert_format "(->:ok)", "(() -> :ok)"
-      assert_same "(() -> :really_long_atom)", @short_length
+      assert_same "(-> :ok)"
+      assert_format "(->:ok)", "(-> :ok)"
+      assert_format "( -> :ok)", "(-> :ok)"
+      assert_format "(() -> :really_long_atom)", "(-> :really_long_atom)", @short_length
       assert_same "(() when node() == :nonode@nohost -> true)"
     end
 
@@ -418,19 +561,19 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredocs" do
-      assert_same """
+      assert_same ~S'''
       (
         arg1 ->
-          '''
+          """
           foo
-          '''
+          """
 
         arg2 ->
-          '''
+          """
           bar
-          '''
+          """
       )
-      """
+      '''
     end
 
     test "with multiple empty clauses" do
@@ -469,6 +612,13 @@ defmodule Code.Formatter.GeneralTest do
   end
 
   describe "blocks" do
+    test "empty" do
+      assert_format "(;)", ""
+      assert_format "quote do: (;)", "quote do: nil"
+      assert_format "quote do end", "quote do\nend"
+      assert_format "quote do ; end", "quote do\nend"
+    end
+
     test "with multiple lines" do
       assert_same """
       foo = bar
@@ -563,17 +713,17 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredoc" do
-      assert_same """
+      assert_same ~S'''
       block do
-        '''
+        """
         a
 
         b
 
         c
-        '''
+        """
       end
-      """
+      '''
     end
 
     test "keeps user newlines" do
@@ -682,14 +832,14 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with module attributes" do
-      assert_same """
+      assert_same ~S'''
       defmodule Foo do
         @constant 1
         @constant 2
 
-        @doc '''
+        @doc """
         foo
-        '''
+        """
         def foo do
           :ok
         end
@@ -703,9 +853,9 @@ defmodule Code.Formatter.GeneralTest do
         @other_constant 3
 
         @spec baz :: 4
-        @doc '''
+        @doc """
         baz
-        '''
+        """
         def baz do
           :ok
         end
@@ -713,15 +863,15 @@ defmodule Code.Formatter.GeneralTest do
         @another_constant 5
         @another_constant 5
 
-        @doc '''
+        @doc """
         baz
-        '''
+        """
         @spec baz :: 6
         def baz do
           :ok
         end
       end
-      """
+      '''
     end
 
     test "as function arguments" do
@@ -742,33 +892,6 @@ defmodule Code.Formatter.GeneralTest do
             bar
           )
       """
-    end
-  end
-
-  describe "renames deprecated calls" do
-    test "without deprecation option" do
-      assert_same "Enum.partition(foo, bar)"
-      assert_same "&Enum.partition/2"
-    end
-
-    test "with matching deprecation option" do
-      assert_format "Enum.partition(foo, bar)", "Enum.split_with(foo, bar)",
-        rename_deprecated_at: "1.4.0"
-
-      assert_format "Enum.partition(foo, bar)", "Enum.split_with(foo, bar)",
-        rename_deprecated_at: "1.4.0"
-    end
-
-    test "without matching deprecation option" do
-      assert_same "Enum.partition(foo, bar)", rename_deprecated_at: "1.3.0"
-
-      assert_same "Enum.partition(foo, bar)", rename_deprecated_at: "1.3.0"
-    end
-
-    test "raises on invalid version" do
-      assert_raise ArgumentError, ~r"invalid version", fn ->
-        assert_same "Enum.partition(foo, bar)", rename_deprecated_at: "1.3"
-      end
     end
   end
 end

@@ -3,19 +3,21 @@ defmodule Mix.Rebar do
 
   @doc """
   Returns the path supposed to host the local copy of `rebar`.
+
+  The rebar3 installation is specific to the Elixir version,
+  in order to force updates when new Elixir versions come out.
   """
-  def local_rebar_path(manager) do
-    Path.join(Mix.Utils.mix_home(), Atom.to_string(manager))
+  def local_rebar_path(:rebar3) do
+    [major, minor | _] = String.split(System.version(), ".")
+    Path.join([Mix.Utils.mix_home(), "elixir", "#{major}-#{minor}", "rebar3"])
   end
 
   @doc """
-  Returns the path to the global copy of `rebar`, defined by the
-  environment variables `MIX_REBAR` or `MIX_REBAR3`.
+  Returns the path to the global copy of `rebar` defined by the
+  environment variable `MIX_REBAR3`.
   """
-  def global_rebar_cmd(manager) do
-    env = manager_to_env(manager)
-
-    if cmd = System.get_env(env) do
+  def global_rebar_cmd(:rebar3) do
+    if cmd = System.get_env("MIX_REBAR3") do
       wrap_cmd(cmd)
     end
   end
@@ -34,6 +36,12 @@ defmodule Mix.Rebar do
   @doc """
   Returns the path to the available `rebar` command.
   """
+  # TODO: Remove on Elixir v1.18 because phx_new and other installers rely on it.
+  def rebar_cmd(:rebar) do
+    Mix.shell().error("[warning] :rebar is no longer supported in Mix, falling back to :rebar3")
+    rebar_cmd(:rebar3)
+  end
+
   def rebar_cmd(manager) do
     global_rebar_cmd(manager) || local_rebar_cmd(manager)
   end
@@ -75,16 +83,17 @@ defmodule Mix.Rebar do
 
   @doc """
   Updates Rebar configuration to be more suitable for dependencies.
-
-  Drops `warnings_as_errors` from `erl_opts`.
   """
   def dependency_config(config) do
-    Enum.map(config, fn
+    Enum.flat_map(config, fn
       {:erl_opts, opts} ->
-        {:erl_opts, List.delete(opts, :warnings_as_errors)}
+        [{:erl_opts, List.delete(opts, :warnings_as_errors)}]
+
+      {:project_plugins, _} ->
+        []
 
       other ->
-        other
+        [other]
     end)
   end
 
@@ -92,7 +101,7 @@ defmodule Mix.Rebar do
   Parses the dependencies in given `rebar.config` to Mix's dependency format.
   """
   def deps(config) do
-    # We don't have to handle rebar3 profiles because dependencies
+    # We don't have to handle Rebar3 profiles because dependencies
     # are always in the default profile which cannot be customized
     if deps = config[:deps] do
       Enum.map(deps, &parse_dep/1)
@@ -101,32 +110,14 @@ defmodule Mix.Rebar do
     end
   end
 
-  @doc """
-  Runs `fun` for the given config and for each `sub_dirs` in the
-  given Rebar config.
-
-  `sub_dirs` is only supported in Rebar 2. In Rebar 3, the equivalent
-  to umbrella apps cannot be used as dependencies, so we don't need
-  to worry about such cases in Mix.
-  """
-  def recur(config, fun) do
-    subs =
-      (config[:sub_dirs] || [])
-      |> Enum.flat_map(&Path.wildcard(&1))
-      |> Enum.filter(&File.dir?(&1))
-      |> Enum.flat_map(&recur(load_config(&1), fun))
-
-    [fun.(config) | subs]
-  end
-
-  # Translate a rebar dependency declaration to a mix declaration
+  # Translate a Rebar dependency declaration to a Mix declaration
   # From http://www.rebar3.org/docs/dependencies#section-declaring-dependencies
   defp parse_dep(app) when is_atom(app) do
-    {app, ">= 0.0.0"}
+    {app, override: true}
   end
 
   defp parse_dep({app, req}) when is_list(req) do
-    {app, List.to_string(req)}
+    {app, List.to_string(req), override: true}
   end
 
   defp parse_dep({app, source}) when is_tuple(source) do
@@ -139,10 +130,14 @@ defmodule Mix.Rebar do
 
   defp parse_dep({app, req, source, opts}) do
     source = parse_source(source)
-
     compile = if :proplists.get_value(:raw, opts, false), do: [compile: false], else: []
+    opts = [override: true] ++ source ++ compile
 
-    {app, compile_req(req), source ++ compile}
+    if req do
+      {app, compile_req(req), opts}
+    else
+      {app, opts}
+    end
   end
 
   defp parse_source({:pkg, pkg}) do
@@ -151,6 +146,12 @@ defmodule Mix.Rebar do
 
   defp parse_source(source) do
     [scm, url | source] = Tuple.to_list(source)
+
+    {scm, additional_opts} =
+      case {scm, source} do
+        {:git_subdir, [_, sparse_dir | _]} -> {:git, [sparse: sparse_dir]}
+        {_, _} -> {:git, []}
+      end
 
     ref =
       case source do
@@ -162,11 +163,7 @@ defmodule Mix.Rebar do
         _ -> []
       end
 
-    [{scm, to_string(url)}] ++ ref
-  end
-
-  defp compile_req(nil) do
-    ">= 0.0.0"
+    [{scm, to_string(url)}] ++ ref ++ additional_opts
   end
 
   defp compile_req(req) do
@@ -182,13 +179,10 @@ defmodule Mix.Rebar do
             re
 
           {:error, reason} ->
-            Mix.raise("Unable to compile version regex: #{inspect(req)}, #{reason}")
+            Mix.raise("Unable to compile version regular expression: #{inspect(req)}, #{reason}")
         end
     end
   end
-
-  defp manager_to_env(:rebar), do: "MIX_REBAR"
-  defp manager_to_env(:rebar3), do: "MIX_REBAR3"
 
   defp eval_script(script_path, config) do
     script = String.to_charlist(Path.basename(script_path))

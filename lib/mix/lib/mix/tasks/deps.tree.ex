@@ -7,7 +7,7 @@ defmodule Mix.Tasks.Deps.Tree do
   @moduledoc """
   Prints the dependency tree.
 
-      mix deps.tree
+      $ mix deps.tree
 
   If no dependency is given, it uses the tree defined in the `mix.exs` file.
 
@@ -15,14 +15,16 @@ defmodule Mix.Tasks.Deps.Tree do
 
     * `--only` - the environment to show dependencies for
 
+    * `--target` - the target to show dependencies for
+
     * `--exclude` - exclude dependencies which you do not want to see printed.
 
     * `--format` - Can be set to one of either:
 
-      * `pretty` - uses Unicode codepoints for formatting the tree.
+      * `pretty` - uses Unicode code points for formatting the tree.
         This is the default except on Windows.
 
-      * `plain` - does not use Unicode codepoints for formatting the tree.
+      * `plain` - does not use Unicode code points for formatting the tree.
         This is the default on Windows.
 
       * `dot` - produces a DOT graph description of the dependency tree
@@ -30,14 +32,19 @@ defmodule Mix.Tasks.Deps.Tree do
         Warning: this will override any previously generated file.
 
   """
-  @switches [only: :string, exclude: :keep, format: :string]
+  @switches [only: :string, target: :string, exclude: :keep, format: :string]
 
+  @impl true
   def run(args) do
     Mix.Project.get!()
     {opts, args, _} = OptionParser.parse(args, switches: @switches)
 
-    deps_opts = if only = opts[:only], do: [env: :"#{only}"], else: []
-    deps = Mix.Dep.loaded(deps_opts)
+    deps_opts =
+      for {switch, key} <- [only: :env, target: :target],
+          value = opts[switch],
+          do: {key, :"#{value}"}
+
+    deps = Mix.Dep.load_on_environment(deps_opts)
 
     root =
       case args do
@@ -84,15 +91,17 @@ defmodule Mix.Tasks.Deps.Tree do
             find_dep(deps, app).deps
           end
 
-        {formatter.(dep), exclude(deps, excluded)}
+        {formatter.(dep), exclude_and_sort(deps, excluded)}
 
       app ->
-        {{Atom.to_string(app), nil}, exclude(top_level, excluded)}
+        {{Atom.to_string(app), nil}, exclude_and_sort(top_level, excluded)}
     end
   end
 
-  defp exclude(deps, excluded) do
-    Enum.reject(deps, &(&1.app in excluded))
+  defp exclude_and_sort(deps, excluded) do
+    deps
+    |> Enum.reject(&(&1.app in excluded))
+    |> Enum.sort_by(& &1.app)
   end
 
   defp format_dot(%{app: app, requirement: requirement, opts: opts}) do

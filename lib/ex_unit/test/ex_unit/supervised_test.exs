@@ -71,15 +71,44 @@ defmodule ExUnit.SupervisedTest do
     refute Process.whereis(MyAgent)
   end
 
-  test "starts a supervised process with id checks" do
+  test "starts a supervised process with ID checks" do
     {:ok, pid} = start_supervised({MyAgent, 0})
-    assert {:error, {:already_started, ^pid}} = start_supervised({MyAgent, 0})
+
+    assert {:error, {:duplicate_child_name, ExUnit.SupervisedTest.MyAgent}} =
+             start_supervised({MyAgent, 0})
+
     assert {:error, {{:already_started, ^pid}, _}} = start_supervised({MyAgent, 0}, id: :another)
+
+    assert_raise RuntimeError, ~r"Reason: bad child specification", fn ->
+      start_supervised!(%{id: 1, start: :oops})
+    end
+
+    assert_raise RuntimeError, ~r"Reason: already started", fn ->
+      start_supervised!({MyAgent, 0}, id: :another)
+    end
   end
 
   test "stops a supervised process" do
     {:ok, pid} = start_supervised({MyAgent, 0})
     assert stop_supervised(MyAgent) == :ok
+    refute Process.alive?(pid)
+  end
+
+  test "stops a linked supervised process" do
+    pid = start_link_supervised!({MyAgent, 0})
+    assert stop_supervised(MyAgent) == :ok
+    refute Process.alive?(pid)
+  end
+
+  test "stops a temporary supervised process" do
+    {:ok, pid} = start_supervised({MyAgent, 0}, restart: :temporary)
+    assert stop_supervised(MyAgent) == :ok
+    refute Process.alive?(pid)
+  end
+
+  test "stops! a supervised process" do
+    {:ok, pid} = start_supervised({MyAgent, 0})
+    assert stop_supervised!(MyAgent) == :ok
     refute Process.alive?(pid)
   end
 

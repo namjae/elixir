@@ -1,11 +1,14 @@
 defmodule Mix.Utils do
   @moduledoc false
 
+  # For bootstrapping purposes
+  @compile {:no_warn_undefined, Logger}
+
   @doc """
   Gets the Mix home.
 
-  It defaults to `~/.mix` unless the `MIX_HOME`
-  environment variable is set.
+  It uses the the locations `MIX_HOME`, `XDG_DATA_HOME/mix`,
+  `~/.mix` with decreasing priority.
 
   Developers should only store entries in the
   `MIX_HOME` directory which are guaranteed to
@@ -15,27 +18,51 @@ defmodule Mix.Utils do
   stored there.
   """
   def mix_home do
-    System.get_env("MIX_HOME") || Path.expand("~/.mix")
+    mix_home_xdg_lookup(:user_data)
   end
 
   @doc """
-  Gets all paths defined in the MIX_PATH env variable.
+  Gets possible location of global Mix configuration.
 
-  `MIX_PATH` may contain multiple paths. If on Windows, those
-  paths should be separated by `;`, if on Unix systems, use `:`.
+  Possible locations:
+
+     * `MIX_HOME`
+     * `XDG_CONFIG_HOME/mix` (if `MIX_XDG` is set)
+     * `~/.mix`
+
   """
-  def mix_paths do
-    if path = System.get_env("MIX_PATH") do
-      String.split(path, path_separator())
+  def mix_config do
+    mix_home_xdg_lookup(:user_config)
+  end
+
+  @doc """
+  Gets possible location of Mix cache.
+
+  Possible locations:
+
+   * `XDG_CACHE_HOME/mix` (if `MIX_XDG` is set)
+   * `:filename.basedir(:user_cache, "mix")`
+
+  """
+  def mix_cache do
+    if System.get_env("MIX_XDG") in ["1", "true"] do
+      # XDG lookups are only done for linux OS
+      :filename.basedir(:user_cache, "mix", %{os: :linux})
     else
-      []
+      :filename.basedir(:user_cache, "mix")
     end
   end
 
-  defp path_separator do
-    case :os.type() do
-      {:win32, _} -> ";"
-      {:unix, _} -> ":"
+  defp mix_home_xdg_lookup(xdg) do
+    cond do
+      dir = System.get_env("MIX_HOME") ->
+        dir
+
+      System.get_env("MIX_XDG") in ["1", "true"] ->
+        :filename.basedir(xdg, "mix", %{os: :linux})
+
+      true ->
+        Path.expand("~/.mix")
     end
   end
 
@@ -63,6 +90,7 @@ defmodule Mix.Utils do
       :error
       iex> Mix.Utils.parse_mfa("Foo.bar/2/2")
       :error
+
   """
   def parse_mfa(mfa) do
     with {:ok, quoted} <- Code.string_to_quoted(mfa),
@@ -138,6 +166,10 @@ defmodule Mix.Utils do
     stale_stream(sources, targets) |> Enum.to_list()
   end
 
+  defp stale_stream(sources, []) do
+    sources
+  end
+
   defp stale_stream(sources, targets) do
     modified_target = targets |> Enum.map(&last_modified/1) |> Enum.min()
 
@@ -147,14 +179,14 @@ defmodule Mix.Utils do
   end
 
   @doc """
-  Returns the date the given path was last modified.
+  Returns the date the given path was last modified in posix time.
 
   If the path does not exist, it returns the Unix epoch
   (1970-01-01 00:00:00).
   """
   def last_modified(path)
 
-  def last_modified({{_, _, _}, {_, _, _}} = timestamp) do
+  def last_modified(timestamp) when is_integer(timestamp) do
     timestamp
   end
 
@@ -163,25 +195,30 @@ defmodule Mix.Utils do
     mtime
   end
 
-  @doc false
-  def last_modified_and_size(path) do
-    now = :calendar.universal_time()
+  @doc """
+  Returns the date the given path was last modified in posix time
+  and the size.
 
-    case :elixir_utils.read_mtime_and_size(path) do
+  If the path does not exist, it returns the Unix epoch
+  (1970-01-01 00:00:00).
+  """
+  def last_modified_and_size(path) do
+    now = System.os_time(:second)
+
+    case :elixir_utils.read_posix_mtime_and_size(path) do
       {:ok, mtime, size} when mtime > now ->
         message =
-          "warning: mtime (modified time) for \"#{path}\" was set to the future, resetting to now"
+          "warning: mtime (modified time) for #{inspect(path)} was set to the future, resetting to now"
 
         Mix.shell().error(message)
-
-        File.touch!(path, now)
+        File.touch(path, now)
         {mtime, size}
 
       {:ok, mtime, size} ->
         {mtime, size}
 
       {:error, _} ->
-        {{{1970, 1, 1}, {0, 0, 0}}, 0}
+        {0, 0}
     end
   end
 
@@ -219,7 +256,7 @@ defmodule Mix.Utils do
     |> Enum.uniq()
   end
 
-  @type tree_node :: {name :: String.Chars.t(), edge_info :: String.Chars.t()}
+  @type formatted_node :: {name :: String.Chars.t(), edge_info :: String.Chars.t()}
 
   @doc """
   Prints the given tree according to the callback.
@@ -227,7 +264,7 @@ defmodule Mix.Utils do
   The callback will be invoked for each node and it
   must return a `{printed, children}` tuple.
   """
-  @spec print_tree([tree_node], (tree_node -> {tree_node, [tree_node]}), keyword) :: :ok
+  @spec print_tree([node], (node -> {formatted_node, [node]}), keyword) :: :ok when node: term()
   def print_tree(nodes, callback, opts \\ []) do
     pretty? =
       case Keyword.get(opts, :format) do
@@ -236,36 +273,38 @@ defmodule Mix.Utils do
         _other -> elem(:os.type(), 0) != :win32
       end
 
-    print_tree(nodes, _depth = [], _parent = nil, _seen = MapSet.new(), pretty?, callback)
+    print_tree(nodes, _depth = [], _seen = %{}, pretty?, callback)
     :ok
   end
 
-  defp print_tree(_nodes = [], _depth, _parent, seen, _pretty, _callback) do
+  defp print_tree(nodes, depth, seen, pretty?, callback) do
+    # We perform a breadth first traversal so we always show a dependency
+    # a node with its children as high as possible in tree. This helps avoid
+    # very deep trees.
+    {nodes, seen} =
+      Enum.flat_map_reduce(nodes, seen, fn node, seen ->
+        {{name, info}, children} = callback.(node)
+
+        if Map.has_key?(seen, name) do
+          {[{name, info, []}], seen}
+        else
+          {[{name, info, children}], Map.put(seen, name, true)}
+        end
+      end)
+
+    print_each_node(nodes, depth, seen, pretty?, callback)
+  end
+
+  defp print_each_node([], _depth, seen, _pretty?, _callback) do
     seen
   end
 
-  defp print_tree([node | nodes], depth, parent, seen, pretty?, callback) do
-    {{name, info}, children} = callback.(node)
-    key = {parent, name}
+  defp print_each_node([{name, info, children} | nodes], depth, seen, pretty?, callback) do
+    info = if(info, do: " #{info}", else: "")
+    Mix.shell().info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
 
-    if MapSet.member?(seen, key) do
-      seen
-    else
-      info = if(info, do: " #{info}", else: "")
-      Mix.shell().info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
-
-      seen =
-        print_tree(
-          children,
-          [nodes != [] | depth],
-          name,
-          MapSet.put(seen, key),
-          pretty?,
-          callback
-        )
-
-      print_tree(nodes, depth, parent, seen, pretty?, callback)
-    end
+    seen = print_tree(children, [nodes != [] | depth], seen, pretty?, callback)
+    print_each_node(nodes, depth, seen, pretty?, callback)
   end
 
   defp depth(_pretty?, []), do: ""
@@ -292,10 +331,11 @@ defmodule Mix.Utils do
   @spec write_dot_graph!(
           Path.t(),
           String.t(),
-          [tree_node],
-          (tree_node -> {tree_node, [tree_node]}),
+          [node],
+          (node -> {formatted_node, [node]}),
           keyword
         ) :: :ok
+        when node: term()
   def write_dot_graph!(path, title, nodes, callback, _opts \\ []) do
     {dot, _} = build_dot_graph(make_ref(), nodes, MapSet.new(), callback)
     File.write!(path, ["digraph ", quoted(title), " {\n", dot, "}\n"])
@@ -339,14 +379,14 @@ defmodule Mix.Utils do
   defp quoted(data), do: [?", to_string(data), ?"]
 
   @doc false
+  @deprecated "Use Macro.underscore/1 instead"
   def underscore(value) do
-    IO.warn("Mix.Utils.underscore/1 is deprecated, use Macro.underscore/1 instead")
     Macro.underscore(value)
   end
 
   @doc false
+  @deprecated "Use Macro.camelize/1 instead"
   def camelize(value) do
-    IO.warn("Mix.Utils.camelize/1 is deprecated, use Macro.camelize/1 instead")
     Macro.camelize(value)
   end
 
@@ -396,8 +436,26 @@ defmodule Mix.Utils do
   end
 
   @doc """
+  Symlinks or copy with the option to force a hard copy.
+  See `symlink_or_copy/2`.
+  """
+  def symlink_or_copy(hard_copy?, source, target) do
+    if hard_copy? do
+      if File.exists?(source) do
+        File.rm_rf!(target)
+        File.cp_r!(source, target)
+      end
+    else
+      symlink_or_copy(source, target)
+    end
+  end
+
+  @doc """
   Symlinks directory `source` to `target` or copies it recursively
   in case symlink fails.
+
+  In case of conflicts, it copies files only if they have been
+  recently touched.
 
   Expects source and target to be absolute paths as it generates
   a relative symlink.
@@ -410,14 +468,32 @@ defmodule Mix.Utils do
           {:win32, _} -> source
           _ -> make_relative_path(source, target)
         end
-        |> String.to_charlist()
 
-      case :file.read_link(target) do
+      case File.read_link(target) do
         {:ok, ^link} ->
           :ok
 
         {:ok, _} ->
-          File.rm!(target)
+          case File.rm(target) do
+            :ok ->
+              :ok
+
+            {:error, reason} ->
+              reason = IO.iodata_to_binary(:file.format_error(reason))
+
+              Mix.raise("""
+              Cannot remove symlink #{inspect(target)} due to reason: #{reason}"
+
+                * Make sure you have permission to access the _build directory
+                  (you may have the wrong permission if you change users or ran as admin)
+
+                * If you are using Windows, avoid using substitute drives,
+                  as they don't play well with symlinks
+
+                * In case the issue continues, consider removing the _build directory
+              """)
+          end
+
           do_symlink_or_copy(source, target, link)
 
         {:error, :enoent} ->
@@ -436,17 +512,21 @@ defmodule Mix.Utils do
   end
 
   defp do_symlink_or_copy(source, target, link) do
-    case :file.make_symlink(link, target) do
+    case File.ln_s(link, target) do
       :ok ->
         :ok
 
       {:error, _} ->
-        file =
-          File.cp_r!(source, target, fn orig, dest ->
-            File.stat!(orig).mtime > File.stat!(dest).mtime
-          end)
+        files =
+          File.cp_r!(source, target,
+            on_conflict: fn orig, dest ->
+              {orig_mtime, orig_size} = last_modified_and_size(orig)
+              {dest_mtime, dest_size} = last_modified_and_size(dest)
+              orig_mtime > dest_mtime or orig_size != dest_size
+            end
+          )
 
-        {:ok, file}
+        {:ok, files}
     end
   end
 
@@ -466,7 +546,7 @@ defmodule Mix.Utils do
   end
 
   @doc """
-  Opens and reads content from either a URL or a local filesystem path.
+  Opens and reads content from either a URL or a local file system path.
 
   Returns the contents as a `{:ok, binary}`, `:badpath` for invalid
   paths or `{:local, message}` for local errors and `{:remote, message}`
@@ -475,7 +555,14 @@ defmodule Mix.Utils do
   ## Options
 
     * `:sha512` - checks against the given SHA-512 checksum. Returns
-      `{:checksum, message}` in case it fails
+      `{:checksum, message}` in case it fails. This option is required
+      for URLs unless the `:unsafe_uri` is given (WHICH IS NOT RECOMMENDED
+      unless another security mechanism is in place, such as private keys)
+
+    * `:timeout` - times out the request after the given milliseconds.
+      Returns `{:remote, timeout_message}` if it fails. Defaults to 60
+      seconds
+
   """
   @spec read_path(String.t(), keyword) ::
           {:ok, binary}
@@ -486,10 +573,25 @@ defmodule Mix.Utils do
   def read_path(path, opts \\ []) do
     cond do
       url?(path) ->
-        read_httpc(path) |> checksum(opts)
+        task =
+          Task.async(fn ->
+            with :ok <- require_checksum(opts),
+                 {:ok, binary} <- read_httpc(path) do
+              checksum(binary, opts)
+            end
+          end)
+
+        timeout = Keyword.get(opts, :timeout, 60_000)
+
+        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+          {:ok, result} -> result
+          _ -> {:remote, "request timed out after #{timeout}ms"}
+        end
 
       file?(path) ->
-        read_file(path) |> checksum(opts)
+        with {:ok, binary} <- read_file(path) do
+          checksum(binary, opts)
+        end
 
       true ->
         :badpath
@@ -498,8 +600,21 @@ defmodule Mix.Utils do
 
   @checksums [:sha512]
 
-  defp checksum({:ok, binary} = return, opts) do
-    Enum.find_value(@checksums, return, fn hash ->
+  defp require_checksum(opts) do
+    cond do
+      Keyword.take(opts, @checksums) != [] ->
+        :ok
+
+      Keyword.get(opts, :unsafe_uri) ->
+        :ok
+
+      true ->
+        {:checksum, "fetching from URIs require a checksum to be given"}
+    end
+  end
+
+  defp checksum(binary, opts) do
+    Enum.find_value(@checksums, {:ok, binary}, fn hash ->
       with expected when expected != nil <- opts[hash],
            actual when actual != expected <- hexhash(binary, hash) do
         message = """
@@ -516,25 +631,8 @@ defmodule Mix.Utils do
     end)
   end
 
-  defp checksum({_, _} = error, _opts) do
-    error
-  end
-
   defp hexhash(binary, hash) do
     Base.encode16(:crypto.hash(hash, binary), case: :lower)
-  end
-
-  @doc """
-  Prompts the user to overwrite the file if it exists. Returns
-  the user input.
-  """
-  def can_write?(path) do
-    if File.exists?(path) do
-      full = Path.expand(path)
-      Mix.shell().yes?(Path.relative_to_cwd(full) <> " already exists, overwrite?")
-    else
-      true
-    end
   end
 
   defp read_file(path) do
@@ -551,9 +649,9 @@ defmodule Mix.Utils do
 
     # Starting an HTTP client profile allows us to scope
     # the effects of using an HTTP proxy to this function
-    {:ok, _pid} = :inets.start(:httpc, [{:profile, :mix}])
+    {:ok, _pid} = :inets.start(:httpc, profile: :mix)
 
-    headers = [{'user-agent', 'Mix/#{System.version()}'}]
+    headers = [{~c"user-agent", ~c"Mix/#{System.version()}"}]
     request = {:binary.bin_to_list(path), headers}
 
     # We are using relaxed: true because some servers is returning a Location
@@ -564,7 +662,36 @@ defmodule Mix.Utils do
     # If a proxy environment variable was supplied add a proxy to httpc.
     http_options = [relaxed: true] ++ proxy_config(path)
 
-    case :httpc.request(:get, request, http_options, [body_format: :binary], :mix) do
+    # Silence the warning from OTP as we verify the contents
+    level = Logger.level()
+    Logger.configure(level: :error)
+
+    try do
+      case httpc_request(request, http_options) do
+        {:error, {:failed_connect, [{:to_address, _}, {inet, _, reason}]}}
+        when inet in [:inet, :inet6] and
+               reason in [:ehostunreach, :enetunreach, :eprotonosupport, :nxdomain] ->
+          :httpc.set_options([ipfamily: fallback(inet)], :mix)
+          request |> httpc_request(http_options) |> httpc_response()
+
+        response ->
+          httpc_response(response)
+      end
+    after
+      Logger.configure(level: level)
+      :inets.stop(:httpc, :mix)
+    end
+  end
+
+  defp fallback(:inet), do: :inet6
+  defp fallback(:inet6), do: :inet
+
+  defp httpc_request(request, http_options) do
+    :httpc.request(:get, request, http_options, [body_format: :binary], :mix)
+  end
+
+  defp httpc_response(response) do
+    case response do
       {:ok, {{_, status, _}, _, body}} when status in 200..299 ->
         {:ok, body}
 
@@ -574,8 +701,6 @@ defmodule Mix.Utils do
       {:error, reason} ->
         {:remote, "httpc request failed with: #{inspect(reason)}"}
     end
-  after
-    :inets.stop(:httpc, :mix)
   end
 
   defp file?(path) do

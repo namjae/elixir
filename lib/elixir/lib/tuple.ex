@@ -2,49 +2,47 @@ defmodule Tuple do
   @moduledoc """
   Functions for working with tuples.
 
-  Tuples are ordered collections of elements; tuples can contain elements of any
-  type, and a tuple can contain elements of different types. Curly braces can be
-  used to create tuples:
+  Please note the following functions for tuples are found in `Kernel`:
+
+    * `elem/2` - accesses a tuple by index
+    * `put_elem/3` - inserts a value into a tuple by index
+    * `tuple_size/1` - gets the number of elements in a tuple
+
+  Tuples are intended as fixed-size containers for multiple elements.
+  To manipulate a collection of elements, use a list instead. `Enum`
+  functions do not work on tuples.
+
+  Tuples are denoted with curly braces:
 
       iex> {}
       {}
       iex> {1, :two, "three"}
       {1, :two, "three"}
 
-  Tuples store elements contiguously in memory; this means that accessing a
-  tuple element by index (which can be done through the `Kernel.elem/2`
-  function) is a constant-time operation:
+  A tuple may contain elements of different types, which are stored
+  contiguously in memory. Accessing any element takes constant time,
+  but modifying a tuple, which produces a shallow copy, takes linear time.
+  Tuples are good for reading data while lists are better for traversals.
 
-      iex> tuple = {1, :two, "three"}
-      iex> elem(tuple, 0)
-      1
-      iex> elem(tuple, 2)
-      "three"
+  Tuples are typically used either when a function has multiple return values
+  or for error handling. `File.read/1` returns `{:ok, contents}` if reading
+  the given file is successful, or else `{:error, reason}` such as when
+  the file does not exist.
 
-  Same goes for getting the tuple size (via `Kernel.tuple_size/1`):
+  The functions in this module that add and remove elements from tuples are
+  rarely used in practice, as they typically imply tuples are being used as
+  collections. To append to a tuple, it is preferable to extract the elements
+  from the old tuple with pattern matching, and then create a new tuple:
 
-      iex> tuple_size({})
-      0
-      iex> tuple_size({1, 2, 3})
-      3
+      tuple = {:ok, :example}
 
-  Tuples being stored contiguously in memory also means that updating a tuple
-  (for example replacing an element with `Kernel.put_elem/3`) will make a copy
-  of the whole tuple.
+      # Avoid
+      result = Tuple.insert_at(tuple, 2, %{})
 
-  Tuples are not meant to be used as a "collection" type (which is also
-  suggested by the absence of an implementation of the `Enumerable` protocol for
-  tuples): they're mostly meant to be used as a fixed-size container for
-  multiple elements. For example, tuples are often used to have functions return
-  "enriched" values: a common pattern is for functions to return `{:ok, value}`
-  for successful cases and `{:error, reason}` for unsuccessful cases. For
-  example, this is exactly what `File.read/1` does: it returns `{:ok, contents}`
-  if reading the given file is successful, or `{:error, reason}` otherwise
-  (e.g., `{:error, :enoent}` if the file doesn't exist).
+      # Prefer
+      {:ok, atom} = tuple
+      result = {:ok, atom, %{}}
 
-  This module provides functions to work with tuples; some more functions to
-  work with tuples can be found in `Kernel` (`Kernel.tuple_size/1`,
-  `Kernel.elem/2`, `Kernel.put_elem/3`, and others).
   """
 
   @doc """
@@ -62,7 +60,7 @@ defmodule Tuple do
 
   """
   @spec duplicate(term, non_neg_integer) :: tuple
-  def duplicate(data, size) do
+  def duplicate(data, size) when is_integer(size) and size >= 0 do
     :erlang.make_tuple(size, data)
   end
 
@@ -85,7 +83,7 @@ defmodule Tuple do
 
   """
   @spec insert_at(tuple, non_neg_integer, term) :: tuple
-  def insert_at(tuple, index, value) do
+  def insert_at(tuple, index, value) when is_integer(index) and index >= 0 do
     :erlang.insert_element(index + 1, tuple, value)
   end
 
@@ -126,9 +124,47 @@ defmodule Tuple do
 
   """
   @spec delete_at(tuple, non_neg_integer) :: tuple
-  def delete_at(tuple, index) do
+  def delete_at(tuple, index) when is_integer(index) and index >= 0 do
     :erlang.delete_element(index + 1, tuple)
   end
+
+  @doc """
+  Computes a sum of tuple elements.
+
+  ## Examples
+
+      iex> Tuple.sum({255, 255})
+      510
+      iex> Tuple.sum({255, 0.0})
+      255.0
+      iex> Tuple.sum({})
+      0
+  """
+  @doc since: "1.12.0"
+  @spec sum(tuple) :: number()
+  def sum(tuple), do: sum(tuple, tuple_size(tuple))
+
+  defp sum(_tuple, 0), do: 0
+  defp sum(tuple, index), do: :erlang.element(index, tuple) + sum(tuple, index - 1)
+
+  @doc """
+  Computes a product of tuple elements.
+
+  ## Examples
+
+      iex> Tuple.product({255, 255})
+      65025
+      iex> Tuple.product({255, 1.0})
+      255.0
+      iex> Tuple.product({})
+      1
+  """
+  @doc since: "1.12.0"
+  @spec product(tuple) :: number()
+  def product(tuple), do: product(tuple, tuple_size(tuple))
+
+  defp product(_tuple, 0), do: 1
+  defp product(tuple, index), do: :erlang.element(index, tuple) * product(tuple, index - 1)
 
   @doc """
   Converts a tuple to a list.

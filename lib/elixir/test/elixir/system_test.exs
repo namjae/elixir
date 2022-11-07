@@ -20,24 +20,7 @@ defmodule SystemTest do
     version_file = Path.join([__DIR__, "../../../..", "VERSION"]) |> Path.expand()
     {:ok, version} = File.read(version_file)
     assert build_info[:version] == String.trim(version)
-    assert build_info[:build] =~ "compiled with OTP"
-  end
-
-  test "cwd/0" do
-    assert is_binary(System.cwd())
-    assert is_binary(System.cwd!())
-  end
-
-  if :file.native_name_encoding() == :utf8 do
-    test "cwd/0 with UTF-8" do
-      File.mkdir_p(tmp_path("héllò"))
-
-      File.cd!(tmp_path("héllò"), fn ->
-        assert Path.basename(System.cwd!()) == "héllò"
-      end)
-    after
-      File.rm_rf(tmp_path("héllò"))
-    end
+    assert build_info[:build] =~ "compiled with Erlang/OTP"
   end
 
   test "user_home/0" do
@@ -55,29 +38,50 @@ defmodule SystemTest do
     assert System.endianness() == System.compiled_endianness()
   end
 
+  test "pid/0" do
+    assert is_binary(System.pid())
+  end
+
   test "argv/0" do
-    list = elixir('-e "IO.inspect System.argv" -- -o opt arg1 arg2 --long-opt 10')
+    list = elixir(~c"-e \"IO.inspect System.argv()\" -- -o opt arg1 arg2 --long-opt 10")
     {args, _} = Code.eval_string(list, [])
     assert args == ["-o", "opt", "arg1", "arg2", "--long-opt", "10"]
   end
 
   @test_var "SYSTEM_ELIXIR_ENV_TEST_VAR"
 
-  test "*_env/*" do
+  test "get_env/put_env/delete_env" do
     assert System.get_env(@test_var) == nil
+    assert System.get_env(@test_var, "SAMPLE") == "SAMPLE"
+    assert System.fetch_env(@test_var) == :error
+
+    message = "could not fetch environment variable #{inspect(@test_var)} because it is not set"
+    assert_raise System.EnvError, message, fn -> System.fetch_env!(@test_var) end
+
     System.put_env(@test_var, "SAMPLE")
+
     assert System.get_env(@test_var) == "SAMPLE"
     assert System.get_env()[@test_var] == "SAMPLE"
+    assert System.fetch_env(@test_var) == {:ok, "SAMPLE"}
+    assert System.fetch_env!(@test_var) == "SAMPLE"
 
     System.delete_env(@test_var)
     assert System.get_env(@test_var) == nil
 
-    System.put_env(%{@test_var => "OTHER_SAMPLE"})
-    assert System.get_env(@test_var) == "OTHER_SAMPLE"
-
     assert_raise ArgumentError, ~r[cannot execute System.put_env/2 for key with \"=\"], fn ->
       System.put_env("FOO=BAR", "BAZ")
     end
+  end
+
+  test "put_env/2" do
+    System.put_env(%{@test_var => "MAP_STRING"})
+    assert System.get_env(@test_var) == "MAP_STRING"
+
+    System.put_env([{String.to_atom(@test_var), "KW_ATOM"}])
+    assert System.get_env(@test_var) == "KW_ATOM"
+
+    System.put_env([{String.to_atom(@test_var), nil}])
+    assert System.get_env(@test_var) == nil
   end
 
   test "cmd/2 raises for null bytes" do
@@ -88,33 +92,34 @@ defmodule SystemTest do
 
   test "cmd/3 raises with non-binary arguments" do
     assert_raise ArgumentError, ~r"all arguments for System.cmd/3 must be binaries", fn ->
-      System.cmd("ls", ['/usr'])
+      System.cmd("ls", [~c"/usr"])
     end
   end
 
-  if windows?() do
-    test "cmd/2 win" do
+  describe "Windows" do
+    @describetag :windows
+
+    test "cmd/2" do
       assert {"hello\r\n", 0} = System.cmd("cmd", ~w[/c echo hello])
     end
 
-    test "cmd/3 (with options) win" do
-      assert {["hello\r\n"], 0} =
-               System.cmd(
-                 "cmd",
-                 ~w[/c echo hello],
-                 into: [],
-                 cd: System.cwd!(),
-                 env: %{"foo" => "bar", "baz" => nil},
-                 arg0: "echo",
-                 stderr_to_stdout: true,
-                 parallelism: true
-               )
+    test "cmd/3 (with options)" do
+      opts = [
+        into: [],
+        cd: File.cwd!(),
+        env: %{"foo" => "bar", "baz" => nil},
+        arg0: "echo",
+        stderr_to_stdout: true,
+        parallelism: true
+      ]
+
+      assert {["hello\r\n"], 0} = System.cmd("cmd", ~w[/c echo hello], opts)
     end
 
     @echo "echo-elixir-test"
-
-    test "cmd/2 with absolute and relative Windows paths" do
-      echo = tmp_path(@echo)
+    @tag :tmp_dir
+    test "cmd/3 with absolute and relative paths", config do
+      echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
       File.cp!(System.find_executable("cmd"), echo)
 
@@ -127,20 +132,38 @@ defmodule SystemTest do
         end
 
         assert {"hello\r\n", 0} =
-                 System.cmd(Path.join(System.cwd!(), @echo), ~w[/c echo hello], [{:arg0, "echo"}])
+                 System.cmd(Path.join(File.cwd!(), @echo), ~w[/c echo hello], [{:arg0, "echo"}])
       end)
-    after
-      File.rm_rf!(Path.dirname(tmp_path(@echo)))
     end
-  else
-    test "cmd/2 unix" do
+
+    test "shell/1" do
+      assert {"hello\r\n", 0} = System.shell("echo hello")
+    end
+
+    test "shell/2 (with options)" do
+      opts = [
+        into: [],
+        cd: File.cwd!(),
+        env: %{"foo" => "bar", "baz" => nil},
+        stderr_to_stdout: true,
+        parallelism: true
+      ]
+
+      assert {["bar\r\n"], 0} = System.shell("echo %foo%", opts)
+    end
+  end
+
+  describe "Unix" do
+    @describetag :unix
+
+    test "cmd/2" do
       assert {"hello\n", 0} = System.cmd("echo", ["hello"])
     end
 
-    test "cmd/3 (with options) unix" do
+    test "cmd/3 (with options)" do
       opts = [
         into: [],
-        cd: System.cwd!(),
+        cd: File.cwd!(),
         env: %{"foo" => "bar", "baz" => nil},
         arg0: "echo",
         stderr_to_stdout: true,
@@ -151,9 +174,9 @@ defmodule SystemTest do
     end
 
     @echo "echo-elixir-test"
-
-    test "cmd/2 with absolute and relative Unix paths" do
-      echo = tmp_path(@echo)
+    @tag :tmp_dir
+    test "cmd/3 with absolute and relative paths", config do
+      echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
       File.cp!(System.find_executable("echo"), echo)
 
@@ -166,11 +189,70 @@ defmodule SystemTest do
         end
 
         assert {"hello\n", 0} =
-                 System.cmd(Path.join(System.cwd!(), @echo), ["hello"], [{:arg0, "echo"}])
+                 System.cmd(Path.join(File.cwd!(), @echo), ["hello"], [{:arg0, "echo"}])
       end)
-    after
-      File.rm_rf!(tmp_path(@echo))
     end
+
+    test "shell/1" do
+      assert {"hello\n", 0} = System.shell("echo hello")
+    end
+
+    test "shell/1 with interpolation" do
+      assert {"1\n2\n", 0} = System.shell("x=1; echo $x; echo '2'")
+    end
+
+    @tag timeout: 1_000
+    test "shell/1 returns when command awaits input" do
+      assert {"", 0} = System.shell("cat", close_stdin: true)
+    end
+
+    test "shell/1 with comment" do
+      assert {"1\n", 0} = System.shell("echo '1' # comment")
+    end
+
+    test "shell/2 (with options)" do
+      opts = [
+        into: [],
+        cd: File.cwd!(),
+        env: %{"foo" => "bar", "baz" => nil},
+        stderr_to_stdout: true
+      ]
+
+      assert {["bar\n"], 0} = System.shell("echo $foo", opts)
+    end
+  end
+
+  @tag :unix
+  test "vm signals" do
+    assert System.trap_signal(:sigquit, :example, fn -> :ok end) == {:ok, :example}
+    assert System.trap_signal(:sigquit, :example, fn -> :ok end) == {:error, :already_registered}
+    assert {:ok, ref} = System.trap_signal(:sigquit, fn -> :ok end)
+
+    assert System.untrap_signal(:sigquit, :example) == :ok
+    assert System.trap_signal(:sigquit, :example, fn -> :ok end) == {:ok, :example}
+    assert System.trap_signal(:sigquit, ref, fn -> :ok end) == {:error, :already_registered}
+
+    assert System.untrap_signal(:sigusr1, :example) == {:error, :not_found}
+    assert System.untrap_signal(:sigquit, :example) == :ok
+    assert System.untrap_signal(:sigquit, :example) == {:error, :not_found}
+    assert System.untrap_signal(:sigquit, ref) == :ok
+    assert System.untrap_signal(:sigquit, ref) == {:error, :not_found}
+  end
+
+  @tag :unix
+  test "os signals" do
+    parent = self()
+
+    assert System.trap_signal(:sighup, :example, fn ->
+             send(parent, :sighup_called)
+             :ok
+           end) == {:ok, :example}
+
+    {"", 0} = System.cmd("kill", ["-s", "hup", System.pid()])
+
+    assert_receive :sighup_called
+  after
+    System.untrap_signal(:sighup, :example)
   end
 
   test "find_executable/1" do

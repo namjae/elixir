@@ -5,60 +5,45 @@
 defmodule Mix.Dep.Lock do
   @moduledoc false
 
-  @manifest ".compile.lock"
-
-  @doc """
-  Returns the manifest file for dependencies.
-
-  The manifest is used to check if the lockfile
-  itself is up to date.
-  """
-  def manifest(path \\ Mix.Project.manifest_path()) do
-    Path.join(path, @manifest)
-  end
-
-  @doc """
-  Touches the manifest file to force recompilation.
-  """
-  def touch_manifest do
-    path = Mix.Project.manifest_path()
-    File.mkdir_p!(path)
-    File.touch!(manifest(path))
-  end
-
   @doc """
   Reads the lockfile, returns a map containing
   each app name and its current lock information.
   """
-  @spec read() :: map
-  def read() do
-    case File.read(lockfile()) do
-      {:ok, info} ->
-        assert_no_merge_conflicts_in_lockfile(lockfile(), info)
+  @spec read(Path.t()) :: map()
+  def read(lockfile \\ lockfile()) do
+    opts = [file: lockfile, warn_on_unnecessary_quotes: false]
 
-        case Code.eval_string(info, [], file: lockfile()) do
-          {lock, _binding} when is_map(lock) -> lock
-          {_, _binding} -> %{}
-        end
-
-      {:error, _} ->
-        %{}
+    with {:ok, contents} <- File.read(lockfile),
+         assert_no_merge_conflicts_in_lockfile(lockfile, contents),
+         {:ok, quoted} <- Code.string_to_quoted(contents, opts),
+         {%{} = lock, _binding} <- Code.eval_quoted(quoted, [], opts) do
+      lock
+    else
+      _ -> %{}
     end
   end
 
   @doc """
   Receives a map and writes it as the latest lock.
   """
-  @spec write(map) :: :ok
-  def write(map) do
+  @spec write(map(), keyword) :: :ok
+  def write(map, opts \\ []) do
+    lockfile = opts[:file] || lockfile()
+
     unless map == read() do
+      if Keyword.get(opts, :check_locked, false) do
+        Mix.raise(
+          "Your #{lockfile} is out of date and must be updated without the --check-locked flag"
+        )
+      end
+
       lines =
         for {app, rev} <- Enum.sort(map), rev != nil do
           ~s(  "#{app}": #{inspect(rev, limit: :infinity)},\n)
         end
 
-      File.write!(lockfile(), ["%{\n", lines, "}\n"])
-      touch_manifest()
+      File.write!(lockfile, ["%{\n", lines, "}\n"])
+      Mix.Task.run("will_recompile")
     end
 
     :ok

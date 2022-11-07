@@ -1,28 +1,27 @@
 -module(elixir_aliases).
 -export([inspect/1, last/1, concat/1, safe_concat/1, format_error/1,
-         ensure_loaded/3, expand/4, store/7]).
+         ensure_loaded/3, expand/2, expand_or_concat/2, store/5]).
 -include("elixir.hrl").
 
 inspect(Atom) when is_atom(Atom) ->
-  case elixir_config:get(bootstrap) of
-    true  -> atom_to_binary(Atom, utf8);
-    false -> 'Elixir.Code.Identifier':inspect_as_atom(Atom)
+  case elixir_config:is_bootstrap() of
+    true  -> atom_to_binary(Atom);
+    false -> 'Elixir.Macro':inspect_atom(literal, Atom)
   end.
 
 %% Store an alias in the given scope
-store(Meta, New, New, _TOpts, Aliases, MacroAliases, _Lexical) ->
+store(Meta, New, New, _TOpts, #{aliases := Aliases, macro_aliases := MacroAliases}) ->
   {remove_alias(New, Aliases), remove_macro_alias(Meta, New, MacroAliases)};
-store(Meta, New, Old, TOpts, Aliases, MacroAliases, Lexical) ->
-  record_warn(Meta, New, TOpts, Lexical),
-  {store_alias(New, Old, Aliases),
-    store_macro_alias(Meta, New, Old, MacroAliases)}.
+store(Meta, New, Old, TOpts, #{aliases := Aliases, macro_aliases := MacroAliases} = E) ->
+  elixir_env:trace({alias, Meta, Old, New, TOpts}, E),
+  {store_alias(New, Old, Aliases), store_macro_alias(Meta, New, Old, MacroAliases)}.
 
 store_alias(New, Old, Aliases) ->
   lists:keystore(New, 1, Aliases, {New, Old}).
 
 store_macro_alias(Meta, New, Old, Aliases) ->
   case lists:keyfind(counter, 1, Meta) of
-    {counter, Counter} when is_integer(Counter) ->
+    {counter, Counter} ->
       lists:keystore(New, 1, Aliases, {New, {Counter, Old}});
     false ->
       Aliases
@@ -33,80 +32,101 @@ remove_alias(Atom, Aliases) ->
 
 remove_macro_alias(Meta, Atom, Aliases) ->
   case lists:keyfind(counter, 1, Meta) of
-    {counter, Counter} when is_integer(Counter) ->
+    {counter, _Counter} ->
       lists:keydelete(Atom, 1, Aliases);
     false ->
       Aliases
   end.
 
-record_warn(Meta, Ref, Opts, Lexical) ->
-  Warn =
-    case lists:keyfind(warn, 1, Opts) of
-      {warn, false} -> false;
-      {warn, true} -> true;
-      false -> not lists:keymember(context, 1, Meta)
-    end,
-  elixir_lexical:record_alias(Ref, ?line(Meta), Warn, Lexical).
-
 %% Expand an alias. It returns an atom (meaning that there
 %% was an expansion) or a list of atoms.
 
-expand({'__aliases__', _Meta, ['Elixir' | _] = List}, _Aliases, _MacroAliases, _LexicalTracker) ->
+expand({'__aliases__', _Meta, ['Elixir' | _] = List}, _E) ->
   concat(List);
 
-expand({'__aliases__', Meta, _} = Alias, Aliases, MacroAliases, LexicalTracker) ->
+expand({'__aliases__', Meta, _} = Alias, #{aliases := Aliases, macro_aliases := MacroAliases} = E) ->
   case lists:keyfind(alias, 1, Meta) of
     {alias, false} ->
-      expand(Alias, MacroAliases, LexicalTracker);
+      expand(Alias, MacroAliases, E);
     {alias, Atom} when is_atom(Atom) ->
       Atom;
     false ->
-      expand(Alias, Aliases, LexicalTracker)
+      expand(Alias, Aliases, E)
   end.
 
-expand({'__aliases__', Meta, [H | T]}, Aliases, LexicalTracker) when is_atom(H) ->
+expand({'__aliases__', Meta, [H | T]}, Aliases, E) when is_atom(H) ->
   Lookup  = list_to_atom("Elixir." ++ atom_to_list(H)),
+
   Counter = case lists:keyfind(counter, 1, Meta) of
     {counter, C} -> C;
     _ -> nil
   end,
+
   case lookup(Lookup, Aliases, Counter) of
     Lookup -> [H | T];
     Atom ->
-      elixir_lexical:record_alias(Lookup, LexicalTracker),
+      elixir_env:trace({alias_expansion, Meta, Lookup, Atom}, E),
       case T of
         [] -> Atom;
         _  -> concat([Atom | T])
       end
   end;
 
-expand({'__aliases__', _Meta, List}, _Aliases, _LexicalTracker) ->
+expand({'__aliases__', _Meta, List}, _Aliases, _E) ->
   List.
+
+%% Expands or concat if possible.
+
+expand_or_concat(Aliases, E) ->
+  case expand(Aliases, E) of
+    [H | T] when is_atom(H) -> concat([H | T]);
+    AtomOrList -> AtomOrList
+  end.
 
 %% Ensure a module is loaded before its usage.
 
-ensure_loaded(_Meta, 'Elixir.Kernel', _E) -> ok;
-ensure_loaded(Meta, Ref, E) ->
-  try
-    Ref:module_info(module)
-  catch
-    error:undef ->
-      Kind = case lists:member(Ref, ?key(E, context_modules)) of
-        true  ->
-          case ?key(E, module) of
-            Ref -> circular_module;
-            _ -> scheduled_module
-          end;
-        false -> unloaded_module
-      end,
-      elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {Kind, Ref})
+%% Skip Kernel verification for bootstrap purposes.
+ensure_loaded(_Meta, 'Elixir.Kernel', _E) ->
+  ok;
+ensure_loaded(Meta, Module, #{module := Module} = E) ->
+  elixir_errors:form_error(Meta, E, ?MODULE, {circular_module, Module});
+ensure_loaded(Meta, Module, E) ->
+  case code:ensure_loaded(Module) of
+    {module, Module} ->
+      ok;
+
+    _ ->
+      case wait_for_module(Module) of
+        found ->
+          ok;
+
+        Wait ->
+          Kind = case lists:member(Module, ?key(E, context_modules)) of
+            true -> scheduled_module;
+            false when Wait == deadlock -> deadlock_module;
+            false -> unloaded_module
+          end,
+
+          elixir_errors:form_error(Meta, E, ?MODULE, {Kind, Module})
+      end
+  end.
+
+wait_for_module(Module) ->
+  case erlang:get(elixir_compiler_info) of
+    undefined -> not_found;
+    _ -> 'Elixir.Kernel.ErrorHandler':ensure_compiled(Module, module, hard)
   end.
 
 %% Receives an atom and returns the last bit as an alias.
 
 last(Atom) ->
-  Last = last(lists:reverse(atom_to_list(Atom)), []),
-  list_to_atom("Elixir." ++ Last).
+  case atom_to_list(Atom) of
+    ("Elixir." ++ [FirstLetter | _]) = List when FirstLetter >= $A, FirstLetter =< $Z ->
+      Last = last(lists:reverse(List), []),
+      {ok, list_to_atom("Elixir." ++ Last)};
+    _ ->
+      error
+  end.
 
 last([$. | _], Acc) -> Acc;
 last([H | T], Acc)  -> last(T, [H | Acc]);
@@ -119,7 +139,7 @@ concat(Args)      -> binary_to_atom(do_concat(Args), utf8).
 safe_concat(Args) -> binary_to_existing_atom(do_concat(Args), utf8).
 
 do_concat([H | T]) when is_atom(H), H /= nil ->
-  do_concat([atom_to_binary(H, utf8) | T]);
+  do_concat([atom_to_binary(H) | T]);
 do_concat([<<"Elixir.", _/binary>>=H | T]) ->
   do_concat(T, H);
 do_concat([<<"Elixir">>=H | T]) ->
@@ -130,7 +150,7 @@ do_concat(T) ->
 do_concat([nil | T], Acc) ->
   do_concat(T, Acc);
 do_concat([H | T], Acc) when is_atom(H) ->
-  do_concat(T, <<Acc/binary, $., (to_partial(atom_to_binary(H, utf8)))/binary>>);
+  do_concat(T, <<Acc/binary, $., (to_partial(atom_to_binary(H)))/binary>>);
 do_concat([H | T], Acc) when is_binary(H) ->
   do_concat(T, <<Acc/binary, $., (to_partial(H))/binary>>);
 do_concat([], Acc) ->
@@ -153,6 +173,12 @@ lookup(Else, Dict, Counter) ->
 
 format_error({unloaded_module, Module}) ->
   io_lib:format("module ~ts is not loaded and could not be found", [inspect(Module)]);
+
+format_error({deadlock_module, Module}) ->
+  io_lib:format("module ~ts is not loaded and could not be found. "
+                "This may be happening because the module you are trying to load "
+                "directly or indirectly depends on the current module",
+                [inspect(Module)]);
 
 format_error({scheduled_module, Module}) ->
   io_lib:format(
@@ -181,7 +207,7 @@ format_error({scheduled_module, Module}) ->
 
 format_error({circular_module, Module}) ->
   io_lib:format(
-    "you are trying to use the module ~ts which is currently being defined.\n"
+    "you are trying to use/import/require the module ~ts which is currently being defined.\n"
     "\n"
     "This may happen if you accidentally override the module you want to use. For example:\n"
     "\n"

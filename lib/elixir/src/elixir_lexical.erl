@@ -1,92 +1,123 @@
 %% Module responsible for tracking lexical information.
 -module(elixir_lexical).
--export([run/3, dest/1,
-  record_alias/4, record_alias/2,
-  record_import/6, record_import/5,
-  record_remote/3, record_remote/6,
-  set_file/2, reset_file/1,
-  record_struct/3, format_error/1
-]).
+-export([run/3, with_file/3, trace/2, format_error/1]).
 -include("elixir.hrl").
 
 -define(tracker, 'Elixir.Kernel.LexicalTracker').
 
-run(File, Dest, Callback) ->
-  case elixir_config:get(bootstrap) of
+run(#{tracers := Tracers} = E, ExecutionCallback, AfterExecutionCallback) ->
+  case elixir_config:is_bootstrap() of
     false ->
-      {ok, Pid} = ?tracker:start_link(Dest),
-      try Callback(Pid) of
+      {ok, Pid} = ?tracker:start_link(),
+      LexEnv = E#{lexical_tracker := Pid, tracers := [?MODULE | Tracers]},
+      elixir_env:trace(start, LexEnv),
+
+      try ExecutionCallback(LexEnv) of
         Res ->
-          warn_unused_aliases(File, Pid),
-          warn_unused_imports(File, Pid),
+          warn_unused_aliases(Pid, LexEnv),
+          warn_unused_imports(Pid, LexEnv),
+          AfterExecutionCallback(LexEnv),
           Res
       after
+        elixir_env:trace(stop, LexEnv),
         unlink(Pid),
         ?tracker:stop(Pid)
       end;
+
     true ->
-      Callback(nil)
+      ExecutionCallback(E),
+      AfterExecutionCallback(E)
   end.
 
-dest(nil) -> nil;
-dest(Pid) -> ?tracker:dest(Pid).
+trace({import, Meta, Module, Opts}, #{lexical_tracker := Pid}) ->
+  {imported, Imported} = lists:keyfind(imported, 1, Meta),
 
-%% RECORD
+  Only =
+    case lists:keyfind(only, 1, Opts) of
+      {only, List} when is_list(List) -> List;
+      _ -> []
+    end,
 
-record_alias(Module, Line, Warn, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:add_alias(Pid, Module, Line, Warn), ok end).
+  ?tracker:add_import(Pid, Module, Only, ?line(Meta), Imported and should_warn(Meta, Opts)),
+  ok;
+trace({alias, Meta, _Old, New, Opts}, #{lexical_tracker := Pid}) ->
+  ?tracker:add_alias(Pid, New, ?line(Meta), should_warn(Meta, Opts)),
+  ok;
+trace({alias_expansion, _Meta, Lookup, _Result}, #{lexical_tracker := Pid}) ->
+  ?tracker:alias_dispatch(Pid, Lookup),
+  ok;
+trace({require, Meta, Module, _Opts}, #{lexical_tracker := Pid}) ->
+  case lists:keyfind(from_macro, 1, Meta) of
+    {from_macro, true} -> ?tracker:remote_dispatch(Pid, Module, compile);
+    _ -> ?tracker:add_export(Pid, Module)
+  end,
+  ok;
+trace({struct_expansion, _Meta, Module, _Keys}, #{lexical_tracker := Pid}) ->
+  ?tracker:add_export(Pid, Module),
+  ok;
+trace({alias_reference, _Meta, Module}, #{lexical_tracker := Pid} = E) ->
+  ?tracker:remote_dispatch(Pid, Module, mode(E)),
+  ok;
+trace({remote_function, _Meta, Module, _Function, _Arity}, #{lexical_tracker := Pid} = E) ->
+  ?tracker:remote_dispatch(Pid, Module, mode(E)),
+  ok;
+trace({remote_macro, _Meta, Module, _Function, _Arity}, #{lexical_tracker := Pid}) ->
+  ?tracker:remote_dispatch(Pid, Module, compile),
+  ok;
+trace({imported_function, _Meta, Module, Function, Arity}, #{lexical_tracker := Pid} = E) ->
+  ?tracker:import_dispatch(Pid, Module, {Function, Arity}, mode(E)),
+  ok;
+trace({imported_macro, _Meta, Module, Function, Arity}, #{lexical_tracker := Pid}) ->
+  ?tracker:import_dispatch(Pid, Module, {Function, Arity}, compile),
+  ok;
+trace({imported_quoted, _Meta, Module, Function, Arities}, #{lexical_tracker := Pid}) ->
+  ?tracker:import_quoted(Pid, Module, Function, Arities),
+  ok;
+trace({compile_env, App, Path, Return}, #{lexical_tracker := Pid}) ->
+  ?tracker:add_compile_env(Pid, App, Path, Return),
+  ok;
+trace(_, _) ->
+  ok.
 
-record_import(Module, FAs, Line, Warn, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:add_import(Pid, Module, FAs, Line, Warn), ok end).
+mode(#{function := nil}) -> compile;
+mode(#{}) -> runtime.
 
-record_alias(Module, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:alias_dispatch(Pid, Module), ok end).
-
-record_import(Module, Function, Arity, EnvFunction, Line, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:import_dispatch(Pid, Module, {Function, Arity}, Line, mode(EnvFunction)), ok end).
-
-record_remote(Module, EnvFunction, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:remote_reference(Pid, Module, mode(EnvFunction)), ok end).
-
-record_remote(Module, Function, Arity, EnvFunction, Line, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:remote_dispatch(Pid, Module, {Function, Arity}, Line, mode(EnvFunction)), ok end).
-
-record_struct(Module, Line, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:remote_struct(Pid, Module, Line), ok end).
+should_warn(Meta, Opts) ->
+  case lists:keyfind(warn, 1, Opts) of
+    {warn, false} -> false;
+    {warn, true} -> true;
+    false -> not lists:keymember(context, 1, Meta)
+  end.
 
 %% EXTERNAL SOURCES
 
-set_file(File, Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:set_file(Pid, File), ok end).
-
-reset_file(Ref) ->
-  if_tracker(Ref, fun(Pid) -> ?tracker:reset_file(Pid), ok end).
-
-%% HELPERS
-
-mode(nil) -> compile;
-mode({_, _}) -> runtime.
-
-if_tracker(nil, _Callback) -> ok;
-if_tracker(Pid, Callback) when is_pid(Pid) -> Callback(Pid).
+with_file(File, #{lexical_tracker := nil} = E, Callback) ->
+  Callback(E#{file := File});
+with_file(File, #{lexical_tracker := Pid} = E, Callback) ->
+  try
+    ?tracker:set_file(Pid, File),
+    Callback(E#{file := File})
+  after
+    ?tracker:reset_file(Pid)
+  end.
 
 %% ERROR HANDLING
 
-warn_unused_imports(File, Pid) ->
-  {ModuleImports, MFAImports} =
-    lists:partition(fun({M, _}) -> is_atom(M) end, ?tracker:collect_unused_imports(Pid)),
-  Modules = [M || {M, _L} <- ModuleImports],
-  MFAImportsFiltered = [T || {{M, _, _}, _} = T <- MFAImports, not lists:member(M, Modules)],
-
-  [begin
-    elixir_errors:form_warn([{line, L}], File, ?MODULE, {unused_import, M})
-   end || {M, L} <- ModuleImports ++ MFAImportsFiltered],
+warn_unused_imports(Pid, E) ->
+  [elixir_errors:form_warn([{line, Line}], ?key(E, file), ?MODULE, {unused_import, ModOrMFA})
+   || {Module, Imports} <- ?tracker:collect_unused_imports(Pid),
+      {ModOrMFA, Line} <- unused_imports_for_module(Module, Imports)],
   ok.
 
-warn_unused_aliases(File, Pid) ->
-  [begin
-    elixir_errors:form_warn([{line, L}], File, ?MODULE, {unused_alias, M})
-   end || {M, L} <- ?tracker:collect_unused_aliases(Pid)],
+unused_imports_for_module(Module, Imports) ->
+  case Imports of
+    #{Module := Line} -> [{Module, Line}];
+    #{} -> [{{Module, Fun, Arity}, Line} || {{Fun, Arity}, Line} <- maps:to_list(Imports)]
+  end.
+
+warn_unused_aliases(Pid, E) ->
+  [elixir_errors:form_warn([{line, Line}], ?key(E, file), ?MODULE, {unused_alias, Module})
+   || {Module, Line} <- ?tracker:collect_unused_aliases(Pid)],
   ok.
 
 format_error({unused_alias, Module}) ->

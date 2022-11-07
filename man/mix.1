@@ -50,9 +50,9 @@ task, you can get both the full list of local/built-in tasks and the information
 .Pp
 An
 .Em archive ,
-in terms of Erlang, is the ZIP file with the
+in terms of Erlang/OTP, is the ZIP file with the
 .Em .ez
-extension which contains a precompiled Erlang application with all its dependencies[1].
+extension which contains a precompiled OTP application with all its dependencies[1].
 .Pp
 An
 .Em application
@@ -77,6 +77,10 @@ Sometimes you have to use a particular set of configuration parameter values or 
 The
 .Nm
 environments allow grouping values of configuration parameters and steps to switch between them by specifying the necessary environment via MIX_ENV.
+.It Ev MIX_TARGET
+Allows specifying which target should be used. The
+.Em host
+target is used by default if none other has been specified.
 .It Ev MIX_EXS
 Allows changing the full path to the
 .Em mix.exs
@@ -90,30 +94,22 @@ environments
 .Pq see above
 are not enough to solve the problem.
 .It Ev MIX_HOME
-Stores configuration files and scripts shared by multiple
-.Nm
-implementations.
-.Pp
-See the
-.Sy Mix.Utils.mix_home/0
-function.
+path to Mix's home directory, stores configuration files and scripts used by Mix
+.It MIX_INSTALL_DIR
+Specifies directory where Mix.install/2 keeps installs cache
+.It MIX_INSTALL_FORCE
+Runs Mix.install/2 with empty install cache
 .It Ev MIX_PATH
 Allows expanding the code path. If the MIX_PATH environment variable has a value which consists of multiple paths, they must be colon-separated
 .Pq for Unix-like operating systems
 or semicolon-separated
 .Pq for Windows .
 .Pp
-As has already been mentioned above, there are two types of tasks: local and built-in. These tasks are always visible for
+As mentioned above, there are two types of tasks: local and built-in. These tasks are always visible for
 .Nm
 because the directories, in which they are located, are a part of code path. If a task belongs to neither the one type nor the other, MIX_PATH helps you say to
 .Nm
 where it should search the task.
-.Pp
-Use the
-.Sy :code.get_path/0
-function to get the list of paths which are a part of the code path by default and the
-.Sy Mix.Utils.mix_paths/0
-function to get the list of paths specified in the MIX_PATH value.
 .It Ev MIX_QUIET
 When set, does not print information messages to the terminal.
 .El
@@ -131,17 +127,22 @@ Allows locking down the project dependencies with a proper version range before 
 .El
 .Sh REFERENCES
 .Bl -tag -width Ds
-.It [1] http://www.erlang.org/doc/man/code.html#id103620
-.It [2] http://www.erlang.org/doc/design_principles/applications.html
+.It [1] https://www.erlang.org/doc/man/code.html#id103620
+.It [2] https://www.erlang.org/doc/design_principles/applications.html
 .El
 .Sh SEE ALSO
 .Xr elixir 1 ,
 .Xr elixirc 1 ,
 .Xr iex 1
 .Sh AUTHOR
-This manual page contributed by Evgeny Golyshev.
+.Bl -tag -width Ds
+.It Elixir is maintained by The Elixir Team.
+.It This manual page was contributed by Evgeny Golyshev.
+.It Copyright (c) 2012 Plataformatec.
+.It Copyright (c) 2021 The Elixir Team.
+.El
 .Sh INTERNET RESOURCES
 .Bl -tag -width Ds
-.It Main website: http://elixir-lang.org
-.It Documentation: http://elixir-lang.org/docs.html
+.It Main website: https://elixir-lang.org
+.It Documentation: https://elixir-lang.org/docs.html
 .El

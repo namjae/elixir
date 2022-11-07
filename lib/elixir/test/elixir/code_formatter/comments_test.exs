@@ -19,7 +19,8 @@ defmodule Code.Formatter.CommentsTest do
     end
 
     test "recognizes hashbangs" do
-      assert_format "#!/usr/bin/env elixir", "#! /usr/bin/env elixir"
+      assert_format "#! /usr/bin/env elixir", "#! /usr/bin/env elixir"
+      assert_format "#!/usr/bin/env elixir", "#!/usr/bin/env elixir"
       assert_same "#!"
     end
 
@@ -57,35 +58,18 @@ defmodule Code.Formatter.CommentsTest do
       assert_format bad, good
 
       bad = """
-      foo    # this is foo
-      |> bar # this is bar
-      |> baz # this is baz
-      """
-
-      good = """
-      # this is foo
-      # this is bar
-      # this is baz
-      foo
-      |> bar
-      |> baz
-      """
-
-      assert_format bad, good, @short_length
-
-      bad = """
       foo   # this is foo
-      | bar # this is bar
-      | baz # this is baz
+      ++ bar # this is bar
+      ++ baz # this is baz
       """
 
       good = """
       # this is foo
       # this is bar
       # this is baz
-      foo
-      | bar
-      | baz
+      foo ++
+        bar ++
+        baz
       """
 
       assert_format bad, good, @short_length
@@ -115,6 +99,108 @@ defmodule Code.Formatter.CommentsTest do
 
       # after comment
       # second line
+      """
+    end
+  end
+
+  describe "modules attributes" do
+    test "with comments around" do
+      assert_same """
+      defmodule Sample do
+        # Comment 0
+        @moduledoc false
+        # Comment 1
+
+        # Comment 2
+        @attr1 1
+        # Comment 3
+
+        # Comment 4
+        @doc "Doc"
+        # Comment 5
+        @attr2 2
+        # Comment 6
+        def sample, do: :sample
+      end
+      """
+    end
+
+    test "with comments only after" do
+      assert_same """
+      @moduledoc false
+      # Comment 1
+
+      @attr 1
+      """
+    end
+
+    test "with too many new lines" do
+      bad = """
+      defmodule Sample do
+
+        # Comment 0
+
+
+        @moduledoc false
+
+
+        # Comment 1
+
+
+        # Comment 2
+
+
+        @attr1 1
+
+
+        # Comment 3
+
+
+        # Comment 4
+
+
+        @doc "Doc"
+
+
+        # Comment 5
+
+
+        @attr2 2
+
+
+        # Comment 6
+
+
+        def sample, do: :sample
+      end
+      """
+
+      assert_format bad, """
+      defmodule Sample do
+        # Comment 0
+
+        @moduledoc false
+
+        # Comment 1
+
+        # Comment 2
+
+        @attr1 1
+
+        # Comment 3
+
+        # Comment 4
+
+        @doc "Doc"
+
+        # Comment 5
+
+        @attr2 2
+
+        # Comment 6
+
+        def sample, do: :sample
+      end
       """
     end
   end
@@ -156,7 +242,7 @@ defmodule Code.Formatter.CommentsTest do
     end
 
     test "with comment inside before and after" do
-      assert_same ~S"""
+      bad = ~S"""
       IO.puts(
         "Hello #{
           # comment
@@ -165,7 +251,16 @@ defmodule Code.Formatter.CommentsTest do
       )
       """
 
-      assert_same ~S"""
+      good = ~S"""
+      IO.puts(
+        # comment
+        "Hello #{world}"
+      )
+      """
+
+      assert_format bad, good
+
+      bad = ~S"""
       IO.puts(
         "Hello #{
           world
@@ -173,6 +268,29 @@ defmodule Code.Formatter.CommentsTest do
         }"
       )
       """
+
+      good = ~S"""
+      IO.puts(
+        "Hello #{world}"
+        # comment
+      )
+      """
+
+      assert_format bad, good
+
+      bad = ~S"""
+      IO.puts("Hello #{hello
+      world}")
+      """
+
+      good = ~S"""
+      IO.puts(
+        "Hello #{hello
+        world}"
+      )
+      """
+
+      assert_format bad, good
     end
   end
 
@@ -246,6 +364,30 @@ defmodule Code.Formatter.CommentsTest do
                world
                # comment
              )
+      """
+    end
+  end
+
+  describe "access" do
+    test "before and after single arg" do
+      assert_same ~S"""
+      foo[
+        # bar
+        baz
+        # bat
+      ]
+      """
+    end
+
+    test "before and after keywords" do
+      assert_same ~S"""
+      foo[
+        # bar
+        one: :two,
+        # baz
+        three: :four
+        # bat
+      ]
       """
     end
   end
@@ -466,14 +608,15 @@ defmodule Code.Formatter.CommentsTest do
 
       assert_format bad, ~S"""
       # fn
-      # before head
-      # middle head
-      # after head
-      fn hello ->
-        # before body
-        # middle body
-        world
-        # after body
+      fn
+        # before head
+        # middle head
+        hello ->
+          # after head
+          # before body
+          # middle body
+          world
+          # after body
       end
       """
     end
@@ -670,6 +813,42 @@ defmodule Code.Formatter.CommentsTest do
       """
     end
 
+    test "with one-line clauses" do
+      bad = ~S"""
+      assert do # do
+        # before
+        one -> two
+      end
+      """
+
+      assert_format bad, ~S"""
+      # do
+      assert do
+        # before
+        one -> two
+      end
+      """
+
+      bad = ~S"""
+      assert do # do
+        # before
+        one -> two
+        # after
+        three -> four
+      end
+      """
+
+      assert_format bad, ~S"""
+      # do
+      assert do
+        # before
+        one -> two
+        # after
+        three -> four
+      end
+      """
+    end
+
     test "with multiple clauses and args" do
       bad = ~S"""
       assert do # do
@@ -721,6 +900,118 @@ defmodule Code.Formatter.CommentsTest do
     end
   end
 
+  describe "operators" do
+    test "with comment before, during and after uniform pipelines" do
+      assert_same """
+      foo
+      # |> bar
+      # |> baz
+      |> bat
+      """
+
+      bad = """
+      # before
+      foo    # this is foo
+      |> bar # this is bar
+      |> baz # this is baz
+      # after
+      """
+
+      good = """
+      # before
+      # this is foo
+      foo
+      # this is bar
+      |> bar
+      # this is baz
+      |> baz
+
+      # after
+      """
+
+      assert_format bad, good, @short_length
+    end
+
+    test "with comment before, during and after mixed pipelines" do
+      assert_same """
+      foo
+      # |> bar
+      # |> baz
+      ~> bat
+      """
+
+      bad = """
+      # before
+      foo    # this is foo
+      ~> bar # this is bar
+      <~> baz # this is baz
+      # after
+      """
+
+      good = """
+      # before
+      # this is foo
+      foo
+      # this is bar
+      ~> bar
+      # this is baz
+      <~> baz
+
+      # after
+      """
+
+      assert_format bad, good, @short_length
+    end
+
+    test "with comment before, during and after uniform right" do
+      assert_same """
+      foo
+      # | bar
+      # | baz
+      | bat
+      """
+
+      bad = """
+      # before
+      foo    # this is foo
+      | bar # this is bar
+      | baz # this is baz
+      # after
+      """
+
+      good = """
+      # before
+      # this is foo
+      foo
+      # this is bar
+      | bar
+      # this is baz
+      | baz
+
+      # after
+      """
+
+      assert_format bad, good, @short_length
+    end
+
+    test "with comment before, during and after mixed right" do
+      assert_same """
+      one
+      # when two
+      # when three
+      when four
+           # | five
+           | six
+      """
+    end
+
+    test "handles nodes without meta info" do
+      assert_same "(a -> b) |> (c -> d)"
+      assert_same "(a -> b) when c: d"
+      assert_same "(a -> b) when (c -> d)"
+    end
+  end
+
   describe "containers" do
     test "with comment outside before, during and after" do
       assert_same ~S"""
@@ -753,7 +1044,11 @@ defmodule Code.Formatter.CommentsTest do
 
       assert_format ambiguous, ~S"""
       # comment
-      [one, two, three]
+      [
+        one,
+        two,
+        three
+      ]
       """
     end
 
@@ -1124,6 +1419,131 @@ defmodule Code.Formatter.CommentsTest do
       """
 
       assert_format bad, good
+    end
+  end
+
+  describe "defstruct" do
+    test "with first field comments" do
+      bad = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct [ # foo
+          # 1. one
+          one: 1, # 2. one
+          # 1. two
+          # 2. two
+          two: 2
+        ]
+      end
+      """
+
+      good = ~S"""
+      defmodule Foo do
+        # defstruct
+        # foo
+        defstruct [
+          # 1. one
+          # 2. one
+          one: 1,
+          # 1. two
+          # 2. two
+          two: 2
+        ]
+      end
+      """
+
+      assert_format bad, good
+    end
+
+    test "with first field comments and defstruct has the parens" do
+      bad = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct([ # foo
+          # 1. one
+          one: 1, # 2. one
+          # 1. two
+          # 2. two
+          two: 2
+        ])
+      end
+      """
+
+      good = ~S"""
+      defmodule Foo do
+        # defstruct
+        # foo
+        defstruct(
+          # 1. one
+          # 2. one
+          one: 1,
+          # 1. two
+          # 2. two
+          two: 2
+        )
+      end
+      """
+
+      assert_format bad, good
+    end
+
+    test "without first field comments" do
+      bad = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct [
+          one: 1,
+          # 1. two
+          two: 2 # 2. two
+        ]
+      end
+      """
+
+      good = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct one: 1,
+                  # 1. two
+                  # 2. two
+                  two: 2
+      end
+      """
+
+      assert_format bad, good
+    end
+
+    test "without field comments" do
+      bad = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct [
+          one: 1,
+          two: 2
+        ]
+      end
+      """
+
+      good = ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct one: 1,
+                  two: 2
+      end
+      """
+
+      assert_format bad, good
+    end
+
+    test "without square brackets" do
+      assert_same ~S"""
+      defmodule Foo do
+        # defstruct
+        defstruct one: 1,
+                  # 1. two
+                  # 2. two
+                  two: 2
+      end
+      """
     end
   end
 end

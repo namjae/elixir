@@ -1,5 +1,29 @@
 Code.require_file("test_helper.exs", __DIR__)
 
+# This is to temporarily test some inconsistencies in
+# the error ArgumentError messages.
+# Remove MyArgumentError and replace the calls to:
+# - MyArgumentError with ArgumentError
+# - MyArgumentError.culprit() with Atom.to_string("Foo")
+# in Erlang/OTP 25
+defmodule MyArgumentError do
+  defexception message: "argument error"
+
+  @impl true
+  def message(_) do
+    """
+    errors were found at the given arguments:
+
+      * 1st argument: not an atom
+    """
+  end
+
+  def culprit() do
+    raise = fn -> raise(MyArgumentError) end
+    raise.()
+  end
+end
+
 defmodule Inspect.AtomTest do
   use ExUnit.Case, async: true
 
@@ -49,11 +73,16 @@ defmodule Inspect.AtomTest do
     assert inspect(:<~) == ":<~"
     assert inspect(:~>) == ":~>"
     assert inspect(:&&&) == ":&&&"
-    assert inspect(:~~~) == ":~~~"
+    assert inspect(:"~~~") == ":\"~~~\""
     assert inspect(:<<~) == ":<<~"
     assert inspect(:~>>) == ":~>>"
     assert inspect(:<~>) == ":<~>"
-    assert inspect(:<|>) == ":<|>"
+    assert inspect(:+++) == ":+++"
+    assert inspect(:---) == ":---"
+  end
+
+  test "::" do
+    assert inspect(:"::") == ~s[:"::"]
   end
 
   test "with @" do
@@ -86,20 +115,14 @@ defmodule Inspect.AtomTest do
     assert inspect(:hello, opts) == ":hello"
   end
 
-  # TODO: Remove this check once we depend only on 20
-  # TODO: Remove String.to_atom/1 when we support 20+
-  if :erlang.system_info(:otp_release) >= '20' do
-    test "unicode" do
-      assert inspect(String.to_atom("olá")) == ":olá"
-      assert inspect(String.to_atom("Olá")) == ":Olá"
-      assert inspect(String.to_atom("Ólá")) == ":Ólá"
+  test "Unicode" do
+    assert inspect(:olá) == ":olá"
+    assert inspect(:Olá) == ":Olá"
+    assert inspect(:Ólá) == ":Ólá"
+    assert inspect(:こんにちは世界) == ":こんにちは世界"
 
-      hello_world = String.to_atom("こんにちは世界")
-      assert inspect(hello_world) == ":こんにちは世界"
-
-      nfd = :unicode.characters_to_nfd_binary("olá")
-      assert inspect(String.to_atom(nfd)) == ":\"#{nfd}\""
-    end
+    nfd = :unicode.characters_to_nfd_binary("olá")
+    assert inspect(String.to_atom(nfd)) == ":\"#{nfd}\""
   end
 end
 
@@ -108,6 +131,10 @@ defmodule Inspect.BitStringTest do
 
   test "bitstring" do
     assert inspect(<<1::12-integer-signed>>) == "<<0, 1::size(4)>>"
+
+    assert inspect(<<1::12-integer-signed>>, syntax_colors: [number: :blue]) ==
+             "<<\e[34m0\e[0m, \e[34m1\e[0m::size(4)>>"
+
     assert inspect(<<1, 2, 3, 4, 5>>, pretty: true, width: 10) == "<<1, 2, 3,\n  4, 5>>"
   end
 
@@ -116,21 +143,21 @@ defmodule Inspect.BitStringTest do
     assert inspect(<<?a, ?b, ?c>>) == "\"abc\""
   end
 
-  test "escape" do
+  test "escaping" do
     assert inspect("f\no") == "\"f\\no\""
     assert inspect("f\\o") == "\"f\\\\o\""
     assert inspect("f\ao") == "\"f\\ao\""
+
+    assert inspect("\a\b\d\e\f\n\r\s\t\v") == "\"\\a\\b\\d\\e\\f\\n\\r \\t\\v\""
   end
 
   test "UTF-8" do
     assert inspect(" ゆんゆん") == "\" ゆんゆん\""
+    # BOM
+    assert inspect("\uFEFFhello world") == "\"\\uFEFFhello world\""
   end
 
-  test "all escapes" do
-    assert inspect("\a\b\d\e\f\n\r\s\t\v") == "\"\\a\\b\\d\\e\\f\\n\\r \\t\\v\""
-  end
-
-  test "opt infer" do
+  test "infer" do
     assert inspect(<<"john", 193, "doe">>, binaries: :infer) ==
              ~s(<<106, 111, 104, 110, 193, 100, 111, 101>>)
 
@@ -138,41 +165,38 @@ defmodule Inspect.BitStringTest do
     assert inspect(<<193>>, binaries: :infer) == ~s(<<193>>)
   end
 
-  test "opt as strings" do
+  test "as strings" do
     assert inspect(<<"john", 193, "doe">>, binaries: :as_strings) == ~s("john\\xC1doe")
     assert inspect(<<"john">>, binaries: :as_strings) == ~s("john")
     assert inspect(<<193>>, binaries: :as_strings) == ~s("\\xC1")
   end
 
-  test "opt as binaries" do
+  test "as binaries" do
     assert inspect(<<"john", 193, "doe">>, binaries: :as_binaries) ==
              "<<106, 111, 104, 110, 193, 100, 111, 101>>"
 
     assert inspect(<<"john">>, binaries: :as_binaries) == "<<106, 111, 104, 110>>"
     assert inspect(<<193>>, binaries: :as_binaries) == "<<193>>"
 
-    # base: :hex is recognized
-    assert inspect("abc", binaries: :as_binary, base: :hex) == "<<0x61, 0x62, 0x63>>"
-
-    # any base other than :decimal implies binaries: :as_binaries
+    # Any base other than :decimal implies "binaries: :as_binaries"
     assert inspect("abc", base: :hex) == "<<0x61, 0x62, 0x63>>"
     assert inspect("abc", base: :octal) == "<<0o141, 0o142, 0o143>>"
 
-    # size is still represented as decimal
+    # Size is still represented as decimal
     assert inspect(<<10, 11, 12::4>>, base: :hex) == "<<0xA, 0xB, 0xC::size(4)>>"
   end
 
-  test "unprintable with opts" do
+  test "unprintable with limit" do
     assert inspect(<<193, 193, 193, 193>>, limit: 3) == "<<193, 193, 193, ...>>"
   end
 
   test "printable limit" do
     assert inspect("hello world", printable_limit: 4) == ~s("hell" <> ...)
 
-    # non printable characters after the limit don't matter
+    # Non-printable characters after the limit don't matter
     assert inspect("hello world" <> <<0>>, printable_limit: 4) == ~s("hell" <> ...)
 
-    # non printable strings aren't affected by printable limit
+    # Non printable strings aren't affected by printable limit
     assert inspect(<<0, 1, 2, 3, 4>>, printable_limit: 3) == ~s(<<0, 1, 2, 3, 4>>)
   end
 end
@@ -190,20 +214,22 @@ defmodule Inspect.NumberTest do
 
   test "hex" do
     assert inspect(100, base: :hex) == "0x64"
+    assert inspect(-100, base: :hex) == "-0x64"
   end
 
   test "octal" do
     assert inspect(100, base: :octal) == "0o144"
+    assert inspect(-100, base: :octal) == "-0o144"
   end
 
   test "binary" do
     assert inspect(86, base: :binary) == "0b1010110"
+    assert inspect(-86, base: :binary) == "-0b1010110"
   end
 
   test "float" do
     assert inspect(1.0) == "1.0"
-    assert inspect(1.0e10) == "1.0e10"
-    assert inspect(1.0e10) == "1.0e10"
+    assert inspect(1.0e10) == "10000000000.0"
     assert inspect(1.0e-10) == "1.0e-10"
   end
 
@@ -223,7 +249,7 @@ defmodule Inspect.NumberTest do
 end
 
 defmodule Inspect.TupleTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   test "basic" do
     assert inspect({1, "b", 3}) == "{1, \"b\", 3}"
@@ -268,14 +294,14 @@ defmodule Inspect.ListTest do
   end
 
   test "printable" do
-    assert inspect('abc') == "'abc'"
+    assert inspect(~c"abc") == ~s(~c"abc")
   end
 
   test "printable limit" do
-    assert inspect('hello world', printable_limit: 4) == ~s('hell' ++ ...)
-    # non printable characters after the limit don't matter
-    assert inspect('hello world' ++ [0], printable_limit: 4) == ~s('hell' ++ ...)
-    # non printable strings aren't affected by printable limit
+    assert inspect(~c"hello world", printable_limit: 4) == ~s(~c"hell" ++ ...)
+    # Non printable characters after the limit don't matter
+    assert inspect(~c"hello world" ++ [0], printable_limit: 4) == ~s(~c"hell" ++ ...)
+    # Non printable strings aren't affected by printable limit
     assert inspect([0, 1, 2, 3, 4], printable_limit: 3) == ~s([0, 1, 2, 3, 4])
   end
 
@@ -289,25 +315,29 @@ defmodule Inspect.ListTest do
              "[\n  foo: [1, 2, 3],\n  baz: [4, 5, 6]\n]"
   end
 
+  test "keyword operators" do
+    assert inspect("::": 1, +: 2) == ~s(["::": 1, +: 2])
+  end
+
   test "opt infer" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :infer) ==
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :infer) ==
              "[106, 111, 104, 110, 0, 100, 111, 101]"
 
-    assert inspect('john', charlists: :infer) == "'john'"
+    assert inspect(~c"john", charlists: :infer) == ~s(~c"john")
     assert inspect([0], charlists: :infer) == "[0]"
   end
 
   test "opt as strings" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :as_charlists) == "'john\\0doe'"
-    assert inspect('john', charlists: :as_charlists) == "'john'"
-    assert inspect([0], charlists: :as_charlists) == "'\\0'"
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :as_charlists) == ~s(~c"john\\0doe")
+    assert inspect(~c"john", charlists: :as_charlists) == ~s(~c"john")
+    assert inspect([0], charlists: :as_charlists) == ~s(~c"\\0")
   end
 
   test "opt as lists" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :as_lists) ==
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :as_lists) ==
              "[106, 111, 104, 110, 0, 100, 111, 101]"
 
-    assert inspect('john', charlists: :as_lists) == "[106, 111, 104, 110]"
+    assert inspect(~c"john", charlists: :as_lists) == "[106, 111, 104, 110]"
     assert inspect([0], charlists: :as_lists) == "[0]"
   end
 
@@ -331,7 +361,7 @@ defmodule Inspect.ListTest do
   end
 
   test "codepoints" do
-    assert inspect('é') == "[233]"
+    assert inspect(~c"é") == "[233]"
   end
 
   test "empty" do
@@ -382,7 +412,7 @@ defmodule Inspect.ListTest do
 end
 
 defmodule Inspect.MapTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   test "basic" do
     assert inspect(%{1 => "b"}) == "%{1 => \"b\"}"
@@ -426,44 +456,169 @@ defmodule Inspect.MapTest do
   end
 
   defmodule Failing do
-    defstruct key: 0
+    @enforce_keys [:name]
+    defstruct @enforce_keys
 
     defimpl Inspect do
-      def inspect(struct, _) do
-        struct.unknown
+      def inspect(%Failing{name: _name}, _) do
+        MyArgumentError.culprit()
       end
     end
   end
 
-  test "bad implementation unsafe" do
-    msg =
-      "got KeyError with message \"key :unknown not found in: " <>
-        "%{__struct__: Inspect.MapTest.Failing, key: 0}\" while " <>
-        "inspecting %{__struct__: Inspect.MapTest.Failing, key: 0}"
-
-    assert_raise Inspect.Error, msg, fn ->
-      inspect(%Failing{}, safe: false)
+  test "safely inspect bad implementation" do
+    assert_raise MyArgumentError, ~r/errors were found at the given arguments:/, fn ->
+      raise(MyArgumentError)
     end
 
-    assert [{Inspect.Inspect.MapTest.Failing, :inspect, 2, _} | _] = System.stacktrace()
+    message = ~s'''
+    #Inspect.Error<
+      got MyArgumentError with message:
+
+          """
+          errors were found at the given arguments:
+
+            * 1st argument: not an atom
+          """
+
+      while inspecting:
+
+          %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
+    '''
+
+    assert inspect(%Failing{name: "Foo"}) =~ message
   end
 
-  test "bad implementation safe" do
-    msg =
-      "got KeyError with message \"key :unknown not found in: " <>
-        "%{__struct__: Inspect.MapTest.Failing, key: 0}\" while " <>
-        "inspecting %{__struct__: Inspect.MapTest.Failing, key: 0}"
+  test "safely inspect bad implementation disables colors" do
+    message = ~s'''
+    #Inspect.Error<
+      got MyArgumentError with message:
 
-    assert inspect(%Failing{}) == inspect(%Inspect.Error{message: "#{msg}"})
+          """
+          errors were found at the given arguments:
+
+            * 1st argument: not an atom
+          """
+
+      while inspecting:
+
+          %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
+    '''
+
+    assert inspect(%Failing{name: "Foo"}, syntax_colors: [atom: [:green]]) =~ message
   end
 
-  test "bad implementation safe disables colors" do
-    msg =
-      "got KeyError with message \\\"key :unknown not found in: " <>
-        "%{__struct__: Inspect.MapTest.Failing, key: 0}\\\" while " <>
-        "inspecting %{__struct__: Inspect.MapTest.Failing, key: 0}"
+  test "unsafely inspect bad implementation" do
+    exception_message = ~s'''
+    got MyArgumentError with message:
 
-    assert inspect(%Failing{}, syntax_colors: [atom: [:green]]) =~ msg
+        """
+        errors were found at the given arguments:
+
+          * 1st argument: not an atom
+        """
+
+    while inspecting:
+
+        %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
+    '''
+
+    try do
+      inspect(%Failing{name: "Foo"}, safe: false)
+    rescue
+      exception in Inspect.Error ->
+        assert Exception.message(exception) =~ exception_message
+        assert [{MyArgumentError, fun_name, 0, [{:file, _}, {:line, _} | _]} | _] = __STACKTRACE__
+
+        assert fun_name in [:"-culprit/0-fun-0-", :culprit]
+        assert Exception.message(exception) =~ exception_message
+    else
+      _ -> flunk("expected failure")
+    end
+  end
+
+  test "raise when trying to inspect with a bad implementation from inside another exception that is being raised" do
+    # Inspect.Error is raised here when we tried to print the error message
+    # called by another exception (Protocol.UndefinedError in this case)
+    exception_message = ~s'''
+    protocol Enumerable not implemented for #Inspect.Error<
+      got MyArgumentError with message:
+
+          """
+          errors were found at the given arguments:
+
+            * 1st argument: not an atom
+          """
+
+      while inspecting:
+
+          %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
+    '''
+
+    try do
+      Enum.to_list(%Failing{name: "Foo"})
+    rescue
+      exception in Protocol.UndefinedError ->
+        assert Exception.message(exception) =~ exception_message
+
+        assert [
+                 {Enumerable, :impl_for!, 1, _} | _
+               ] = __STACKTRACE__
+
+        # The culprit
+        assert Enum.any?(__STACKTRACE__, fn
+                 {Enum, :to_list, 1, _} -> true
+                 _ -> false
+               end)
+
+        # The line calling the culprit
+        assert Enum.any?(__STACKTRACE__, fn
+                 {Inspect.MapTest, _test_name, 1, file: file, line: _line_number} ->
+                   String.ends_with?(List.to_string(file), "test/elixir/inspect_test.exs")
+
+                 _ ->
+                   false
+               end)
+    else
+      _ -> flunk("expected failure")
+    end
+  end
+
+  test "Exception.message/1 with bad implementation" do
+    message = ~s'''
+    #Inspect.Error<
+      got MyArgumentError with message:
+
+          """
+          errors were found at the given arguments:
+
+            * 1st argument: not an atom
+          """
+
+      while inspecting:
+
+          %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
+    '''
+
+    {my_argument_error, stacktrace} =
+      try do
+        MyArgumentError.culprit()
+      rescue
+        e ->
+          {e, __STACKTRACE__}
+      end
+
+    inspected =
+      inspect(
+        Inspect.Error.exception(
+          exception: my_argument_error,
+          stacktrace: stacktrace,
+          inspected_struct: "%{__struct__: Inspect.MapTest.Failing, name: \"Foo\"}"
+        )
+      )
+
+    assert inspect(%Failing{name: "Foo"}) =~ message
+    assert inspected =~ message
   end
 
   test "exception" do
@@ -484,6 +639,138 @@ defmodule Inspect.MapTest do
 
     assert inspect(%{a: 9999}, opts) ==
              "\e[32m%{\e[36m" <> "\e[31ma:\e[36m " <> "\e[34m9999\e[36m" <> "\e[32m}\e[36m"
+  end
+
+  defmodule StructWithoutOptions do
+    @derive Inspect
+    defstruct [:a, :b, :c, :d]
+  end
+
+  test "struct without options" do
+    struct = %StructWithoutOptions{a: 1, b: 2, c: 3, d: 4}
+    assert inspect(struct) == "%Inspect.MapTest.StructWithoutOptions{a: 1, b: 2, c: 3, d: 4}"
+
+    assert inspect(struct, pretty: true, width: 1) ==
+             "%Inspect.MapTest.StructWithoutOptions{\n  a: 1,\n  b: 2,\n  c: 3,\n  d: 4\n}"
+  end
+
+  defmodule StructWithOnlyOption do
+    @derive {Inspect, only: [:b, :c]}
+    defstruct [:a, :b, :c, :d]
+  end
+
+  test "struct with :only option" do
+    struct = %StructWithOnlyOption{a: 1, b: 2, c: 3, d: 4}
+    assert inspect(struct) == "#Inspect.MapTest.StructWithOnlyOption<b: 2, c: 3, ...>"
+
+    assert inspect(struct, pretty: true, width: 1) ==
+             "#Inspect.MapTest.StructWithOnlyOption<\n  b: 2,\n  c: 3,\n  ...\n>"
+
+    struct = %{struct | c: [1, 2, 3, 4]}
+    assert inspect(struct) == "#Inspect.MapTest.StructWithOnlyOption<b: 2, c: [1, 2, 3, 4], ...>"
+  end
+
+  defmodule StructWithEmptyOnlyOption do
+    @derive {Inspect, only: []}
+    defstruct [:a, :b, :c, :d]
+  end
+
+  test "struct with empty :only option" do
+    struct = %StructWithEmptyOnlyOption{a: 1, b: 2, c: 3, d: 4}
+    assert inspect(struct) == "#Inspect.MapTest.StructWithEmptyOnlyOption<...>"
+  end
+
+  defmodule StructWithAllFieldsInOnlyOption do
+    @derive {Inspect, only: [:a, :b]}
+    defstruct [:a, :b]
+  end
+
+  test "struct with all fields in the :only option" do
+    struct = %StructWithAllFieldsInOnlyOption{a: 1, b: 2}
+    assert inspect(struct) == "%Inspect.MapTest.StructWithAllFieldsInOnlyOption{a: 1, b: 2}"
+
+    assert inspect(struct, pretty: true, width: 1) ==
+             "%Inspect.MapTest.StructWithAllFieldsInOnlyOption{\n  a: 1,\n  b: 2\n}"
+  end
+
+  test "struct missing fields in the :only option" do
+    assert_raise ArgumentError,
+                 "unknown fields [:c] in :only when deriving the Inspect protocol for Inspect.MapTest.StructMissingFieldsInOnlyOption",
+                 fn ->
+                   defmodule StructMissingFieldsInOnlyOption do
+                     @derive {Inspect, only: [:c]}
+                     defstruct [:a, :b]
+                   end
+                 end
+  end
+
+  test "struct missing fields in the :except option" do
+    assert_raise ArgumentError,
+                 "unknown fields [:c, :d] in :except when deriving the Inspect protocol for Inspect.MapTest.StructMissingFieldsInExceptOption",
+                 fn ->
+                   defmodule StructMissingFieldsInExceptOption do
+                     @derive {Inspect, except: [:c, :d]}
+                     defstruct [:a, :b]
+                   end
+                 end
+  end
+
+  defmodule StructWithExceptOption do
+    @derive {Inspect, except: [:b, :c]}
+    defstruct [:a, :b, :c, :d]
+  end
+
+  test "struct with :except option" do
+    struct = %StructWithExceptOption{a: 1, b: 2, c: 3, d: 4}
+    assert inspect(struct) == "#Inspect.MapTest.StructWithExceptOption<a: 1, d: 4, ...>"
+
+    assert inspect(struct, pretty: true, width: 1) ==
+             "#Inspect.MapTest.StructWithExceptOption<\n  a: 1,\n  d: 4,\n  ...\n>"
+  end
+
+  defmodule StructWithBothOnlyAndExceptOptions do
+    @derive {Inspect, only: [:a, :b], except: [:b, :c]}
+    defstruct [:a, :b, :c, :d]
+  end
+
+  test "struct with both :only and :except options" do
+    struct = %StructWithBothOnlyAndExceptOptions{a: 1, b: 2, c: 3, d: 4}
+    assert inspect(struct) == "#Inspect.MapTest.StructWithBothOnlyAndExceptOptions<a: 1, ...>"
+
+    assert inspect(struct, pretty: true, width: 1) ==
+             "#Inspect.MapTest.StructWithBothOnlyAndExceptOptions<\n  a: 1,\n  ...\n>"
+  end
+
+  defmodule StructWithOptionalAndOrder do
+    @derive {Inspect, optional: [:b, :c]}
+    defstruct [:c, :d, :a, :b]
+  end
+
+  test "struct with both :order and :optional options" do
+    struct = %StructWithOptionalAndOrder{a: 1, b: 2, c: 3, d: 4}
+
+    assert inspect(struct) ==
+             "%Inspect.MapTest.StructWithOptionalAndOrder{c: 3, d: 4, a: 1, b: 2}"
+
+    struct = %StructWithOptionalAndOrder{}
+    assert inspect(struct) == "%Inspect.MapTest.StructWithOptionalAndOrder{d: nil, a: nil}"
+  end
+
+  defmodule StructWithExceptOptionalAndOrder do
+    @derive {Inspect, optional: [:b, :c], except: [:e]}
+    defstruct [:c, :d, :e, :a, :b]
+  end
+
+  test "struct with :except, :order, and :optional options" do
+    struct = %StructWithExceptOptionalAndOrder{a: 1, b: 2, c: 3, d: 4}
+
+    assert inspect(struct) ==
+             "#Inspect.MapTest.StructWithExceptOptionalAndOrder<c: 3, d: 4, a: 1, b: 2, ...>"
+
+    struct = %StructWithExceptOptionalAndOrder{}
+
+    assert inspect(struct) ==
+             "#Inspect.MapTest.StructWithExceptOptionalAndOrder<d: nil, a: nil, ...>"
   end
 end
 
@@ -527,7 +814,7 @@ defmodule Inspect.OthersTest do
     anony = Application.get_env(:elixir, :anony)
     named = Application.get_env(:elixir, :named)
 
-    assert inspect(anony) =~ ~r"#Function<0.\d+/0 in Inspect.OthersTest.V>"
+    assert inspect(anony) =~ ~r"#Function<0.\d+/0"
     assert inspect(named) =~ ~r"&Inspect.OthersTest.V.fun/0"
   after
     Application.delete_env(:elixir, :anony)
@@ -548,7 +835,7 @@ defmodule Inspect.OthersTest do
   end
 
   test "map set" do
-    assert "#MapSet<" <> _ = inspect(MapSet.new())
+    assert "MapSet.new(" <> _ = inspect(MapSet.new())
   end
 
   test "PIDs" do
@@ -567,11 +854,120 @@ defmodule Inspect.OthersTest do
   test "regex" do
     assert inspect(~r(foo)m) == "~r/foo/m"
 
+    assert inspect(Regex.compile!("a\\/b")) == "~r/a\\/b/"
+
     assert inspect(Regex.compile!("\a\b\d\e\f\n\r\s\t\v/")) ==
              "~r/\\a\\x08\\x7F\\x1B\\f\\n\\r \\t\\v\\//"
 
     assert inspect(~r<\a\b\d\e\f\n\r\s\t\v/>) == "~r/\\a\\b\\d\\e\\f\\n\\r\\s\\t\\v\\//"
     assert inspect(~r" \\/ ") == "~r/ \\\\\\/ /"
     assert inspect(~r/hi/, syntax_colors: [regex: :red]) == "\e[31m~r/hi/\e[0m"
+
+    assert inspect(Regex.compile!("foo", "i")) == "~r/foo/i"
+    assert inspect(Regex.compile!("foo", [:caseless])) == ~S'Regex.compile!("foo", [:caseless])'
+  end
+
+  test "inspect_fun" do
+    fun = fn
+      integer, _opts when is_integer(integer) ->
+        "<#{integer}>"
+
+      %URI{} = uri, _opts ->
+        "#URI<#{uri}>"
+
+      term, opts ->
+        Inspect.inspect(term, opts)
+    end
+
+    opts = [inspect_fun: fun]
+
+    assert inspect(1000, opts) == "<1000>"
+    assert inspect([1000], opts) == "[<1000>]"
+
+    uri = URI.parse("https://elixir-lang.org")
+    assert inspect(uri, opts) == "#URI<https://elixir-lang.org>"
+    assert inspect([uri], opts) == "[#URI<https://elixir-lang.org>]"
+  end
+
+  defmodule Nested do
+    defstruct nested: nil
+
+    defimpl Inspect do
+      import Inspect.Algebra
+
+      def inspect(%Nested{nested: nested}, opts) do
+        indent = Keyword.get(opts.custom_options, :indent, 2)
+        level = Keyword.get(opts.custom_options, :level, 1)
+
+        nested_str =
+          Kernel.inspect(nested, custom_options: [level: level + 1, indent: indent + 2])
+
+        concat(
+          nest(line("#Nested[##{level}/#{indent}]<", nested_str), indent),
+          nest(line("", ">"), indent - 2)
+        )
+      end
+    end
+  end
+
+  test "custom_options" do
+    assert inspect(%Nested{nested: %Nested{nested: 42}}) ==
+             "#Nested[#1/2]<\n  #Nested[#2/4]<\n    42\n  >\n>"
+  end
+end
+
+defmodule Inspect.CustomProtocolTest do
+  use ExUnit.Case, async: true
+
+  defprotocol CustomInspect do
+    def inspect(term, opts)
+  end
+
+  defmodule MissingImplementation do
+    defstruct []
+  end
+
+  test "unsafely inspect missing implementation" do
+    msg = ~S'''
+    got Protocol.UndefinedError with message:
+
+        """
+        protocol Inspect.CustomProtocolTest.CustomInspect not implemented for %Inspect.CustomProtocolTest.MissingImplementation{} of type Inspect.CustomProtocolTest.MissingImplementation (a struct)
+        """
+
+    while inspecting:
+
+        %{__struct__: Inspect.CustomProtocolTest.MissingImplementation}
+    '''
+
+    opts = [safe: false, inspect_fun: &CustomInspect.inspect/2]
+
+    try do
+      inspect(%MissingImplementation{}, opts)
+    rescue
+      e in Inspect.Error ->
+        assert Exception.message(e) =~ msg
+        assert [{Inspect.CustomProtocolTest.CustomInspect, :impl_for!, 1, _} | _] = __STACKTRACE__
+    else
+      _ -> flunk("expected failure")
+    end
+  end
+
+  test "safely inspect missing implementation" do
+    msg = ~S'''
+    #Inspect.Error<
+      got Protocol.UndefinedError with message:
+
+          """
+          protocol Inspect.CustomProtocolTest.CustomInspect not implemented for %Inspect.CustomProtocolTest.MissingImplementation{} of type Inspect.CustomProtocolTest.MissingImplementation (a struct)
+          """
+
+      while inspecting:
+
+          %{__struct__: Inspect.CustomProtocolTest.MissingImplementation}
+    '''
+
+    opts = [inspect_fun: &CustomInspect.inspect/2]
+    assert inspect(%MissingImplementation{}, opts) =~ msg
   end
 end

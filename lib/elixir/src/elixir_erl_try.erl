@@ -1,108 +1,135 @@
 -module(elixir_erl_try).
 -export([clauses/3]).
 -include("elixir.hrl").
+-define(REQUIRES_STACKTRACE,
+        ['Elixir.FunctionClauseError', 'Elixir.UndefinedFunctionError',
+         'Elixir.KeyError', 'Elixir.ArgumentError', 'Elixir.SystemLimitError']).
 
-clauses(_Meta, Args, S) ->
+clauses(_Ann, Args, S) ->
   Catch = elixir_erl_clauses:get_clauses('catch', Args, 'catch'),
   Rescue = elixir_erl_clauses:get_clauses(rescue, Args, rescue),
-  reduce_clauses(Rescue ++ Catch, [], S, S).
+  {StackName, SV} = elixir_erl_var:build('__STACKTRACE__', S),
+  OldStack = SV#elixir_erl.stacktrace,
+  SS = SV#elixir_erl{stacktrace=StackName},
+  reduce_clauses(Rescue ++ Catch, [], OldStack, SS, SS).
 
-reduce_clauses([H | T], Acc, SAcc, S) ->
+reduce_clauses([H | T], Acc, OldStack, SAcc, S) ->
   {TH, TS} = each_clause(H, SAcc),
-  reduce_clauses(T, TH ++ Acc, elixir_erl_var:mergec(S, TS), S);
-reduce_clauses([], Acc, SAcc, _S) ->
-  {lists:reverse(Acc), SAcc}.
+  reduce_clauses(T, [TH | Acc], OldStack, TS, S);
+reduce_clauses([], Acc, OldStack, SAcc, _S) ->
+  {lists:reverse(Acc), SAcc#elixir_erl{stacktrace=OldStack}}.
 
 each_clause({'catch', Meta, Raw, Expr}, S) ->
   {Args, Guards} = elixir_utils:extract_splat_guards(Raw),
 
-  Final = case Args of
-    [X]   -> [throw, X, {'_', Meta, nil}];
-    [X, Y] -> [X, Y, {'_', Meta, nil}]
-  end,
+  Match =
+    case Args of
+      [X] -> [throw, X];
+      [X, Y] -> [X, Y]
+    end,
 
-  Condition = [{'{}', Meta, Final}],
-  {TC, TS} = elixir_erl_clauses:clause(Meta, fun elixir_erl_pass:translate_args/2,
-                                       Condition, Expr, Guards, S),
-  {[TC], TS};
+  {{clause, Line, [TKind, TMatches], TGuards, TBody}, TS} =
+    elixir_erl_clauses:clause(?ann(Meta), fun elixir_erl_pass:translate_args/3, Match, Expr, Guards, S),
+
+  build_clause(Line, TKind, TMatches, TGuards, TBody, TS);
 
 each_clause({rescue, Meta, [{in, _, [Left, Right]}], Expr}, S) ->
-  {TempName, _, CS} = elixir_erl_var:build('_', S),
-  TempVar = {TempName, Meta, ?var_context},
-  {Parts, Safe, FS} = rescue_guards(Meta, TempVar, Right, CS),
-  Body = rescue_clause_body(Left, Expr, Safe, TempVar, Meta),
-  build_rescue(Meta, Parts, Body, FS);
+  {TempVar, _, CS} = elixir_erl_var:assign(Meta, S),
+  {Guards, ErlangAliases} = rescue_guards(Meta, TempVar, Right),
+  Body = normalize_rescue(Meta, TempVar, Left, Expr, ErlangAliases),
+  build_rescue(Meta, TempVar, Guards, Body, CS);
 
 each_clause({rescue, Meta, [{VarName, _, Context} = Left], Expr}, S) when is_atom(VarName), is_atom(Context) ->
-  {TempName, _, CS} = elixir_erl_var:build('_', S),
-  TempVar = {TempName, Meta, ?var_context},
-  Body = rescue_clause_body(Left, Expr, false, TempVar, Meta),
-  build_rescue(Meta, [{TempVar, []}], Body, CS).
+  {TempVar, _, CS} = elixir_erl_var:assign(Meta, S),
+  Body = normalize_rescue(Meta, TempVar, Left, Expr, ['Elixir.ErlangError']),
+  build_rescue(Meta, TempVar, [], Body, CS).
 
-rescue_clause_body({'_', _, Atom}, Expr, _Safe, _Var, _Meta) when is_atom(Atom) ->
+normalize_rescue(_Meta, _Var, {'_', _, Atom}, Expr, _) when is_atom(Atom) ->
   Expr;
-rescue_clause_body(Pattern, Expr, Safe, Var, Meta) ->
-  Normalized =
-    case Safe of
-      true -> Var;
-      false -> {{'.', Meta, ['Elixir.Exception', normalize]}, Meta, [error, Var]}
+normalize_rescue(Meta, Var, Pattern, Expr, []) ->
+  prepend_to_block(Meta, {'=', Meta, [Pattern, Var]}, Expr);
+normalize_rescue(Meta, Var, Pattern, Expr, ErlangAliases) ->
+  Stacktrace =
+    case lists:member('Elixir.ErlangError', ErlangAliases) of
+      true ->
+        dynamic_normalize(Meta, Var, ?REQUIRES_STACKTRACE);
+
+      false ->
+        case lists:splitwith(fun is_normalized_with_stacktrace/1, ErlangAliases) of
+          {[], _} -> [];
+          {_, []} -> {'__STACKTRACE__', Meta, nil};
+          {Some, _} -> dynamic_normalize(Meta, Var, Some)
+        end
     end,
+
+  Normalized = {{'.', Meta, ['Elixir.Exception', normalize]}, Meta, [error, Var, Stacktrace]},
   prepend_to_block(Meta, {'=', Meta, [Pattern, Normalized]}, Expr).
+
+dynamic_normalize(Meta, Var, [H | T]) ->
+  Generated = ?generated(Meta),
+
+  Guards =
+    lists:foldl(fun(Alias, Acc) ->
+      {'when', Generated, [erl_rescue_stacktrace_for(Generated, Var, Alias), Acc]}
+    end, erl_rescue_stacktrace_for(Generated, Var, H), T),
+
+  {'case', Generated, [
+    Var,
+    [{do, [
+      {'->', Generated, [[{'when', Generated, [{'_', Generated, nil}, Guards]}], {'__STACKTRACE__', Generated, nil}]},
+      {'->', Generated, [[{'_', Generated, nil}], []]}
+    ]}]
+  ]}.
+
+erl_rescue_stacktrace_for(_Meta, _Var, 'Elixir.ErlangError') ->
+  %% ErlangError is a "meta" exception, we should never expand it here.
+  error(badarg);
+erl_rescue_stacktrace_for(Meta, Var, 'Elixir.KeyError') ->
+  %% Only the two-element tuple requires stacktrace.
+  erl_and(Meta, erl_tuple_size(Meta, Var, 2), erl_record_compare(Meta, Var, badkey));
+erl_rescue_stacktrace_for(Meta, Var, Module) ->
+  erl_rescue_guard_for(Meta, Var, Module).
+
+is_normalized_with_stacktrace(Module) ->
+  lists:member(Module, ?REQUIRES_STACKTRACE).
 
 %% Helpers
 
-build_rescue(Meta, Parts, Body, S) ->
-  Matches = [Match || {Match, _} <- Parts],
+build_rescue(Meta, Var, Guards, Body, S) ->
+  {{clause, Line, [TMatch], TGuards, TBody}, TS} =
+    elixir_erl_clauses:clause(?ann(Meta), fun elixir_erl_pass:translate_args/3, [Var], Body, Guards, S),
 
-  {{clause, Line, TMatches, _, TBody}, TS} =
-    elixir_erl_clauses:clause(Meta, fun elixir_erl_pass:translate_args/2,
-                              Matches, Body, [], S),
-
-  TClauses =
-    [begin
-      TArgs   = [{tuple, Line, [{atom, Line, error}, TMatch, {var, Line, '_'}]}],
-      TGuards = elixir_erl_clauses:guards(Guards, [], TS),
-      {clause, Line, TArgs, TGuards, TBody}
-     end || {TMatch, {_, Guards}} <- lists:zip(TMatches, Parts)],
-
-  {TClauses, TS}.
+  build_clause(Line, {atom, Line, error}, TMatch, TGuards, TBody, TS).
 
 %% Convert rescue clauses ("var in [alias1, alias2]") into guards.
-rescue_guards(Meta, Var, Aliases, S) ->
-  {Elixir, Erlang} = rescue_each_ref(Meta, Var, Aliases, [], [], S),
+rescue_guards(_Meta, _Var, []) ->
+  {[], []};
+rescue_guards(Meta, Var, Aliases) ->
+  {ErlangGuards, ErlangAliases} = erl_rescue(Meta, Var, Aliases, [], []),
 
-  {ElixirParts, ES} =
-    case Elixir of
-      [] -> {[], S};
-      _  ->
-        {VarName, _, CS} = elixir_erl_var:build('_', S),
-        StructVar = {VarName, Meta, 'Elixir'},
-        Map = {'%{}', Meta, [{'__struct__', StructVar}, {'__exception__', true}]},
-        Match = {'=', Meta, [Map, Var]},
-        Guards = [{erl(Meta, '=='), Meta, [StructVar, Mod]} || Mod <- Elixir],
-        {[{Match, Guards}], CS}
-    end,
+  ElixirGuards =
+    [erl_and(Meta,
+       {erl(Meta, '=='), Meta, [{erl(Meta, map_get), Meta, ['__struct__', Var]}, Alias]},
+       {erl(Meta, map_get), Meta, ['__exception__', Var]}
+     ) || Alias <- Aliases],
 
-  ErlangParts =
-    case Erlang of
-      [] -> [];
-      _  -> [{Var, Erlang}]
-    end,
+  {ElixirGuards ++ ErlangGuards, ErlangAliases}.
 
-  {ElixirParts ++ ErlangParts, ErlangParts == [], ES}.
+build_clause(Line, Kind, Expr, Guards, Body, #elixir_erl{stacktrace=Var} = TS) ->
+  Match = {tuple, Line, [Kind, Expr, {var, Line, Var}]},
+  {{clause, Line, [Match], Guards, Body}, TS}.
 
 %% Rescue each atom name considering their Erlang or Elixir matches.
 %% Matching of variables is done with Erlang exceptions is done in
 %% function for optimization.
 
-rescue_each_ref(Meta, Var, [H | T], Elixir, Erlang, S) when is_atom(H) ->
+erl_rescue(Meta, Var, [H | T], Guards, Aliases) when is_atom(H) ->
   case erl_rescue_guard_for(Meta, Var, H) of
-    false -> rescue_each_ref(Meta, Var, T, [H | Elixir], Erlang, S);
-    Expr  -> rescue_each_ref(Meta, Var, T, [H | Elixir], [Expr | Erlang], S)
+    false -> erl_rescue(Meta, Var, T, Guards, Aliases);
+    Expr  -> erl_rescue(Meta, Var, T, [Expr | Guards], [H | Aliases])
   end;
-
-rescue_each_ref(_, _, [], Elixir, Erlang, _) ->
-  {Elixir, Erlang}.
+erl_rescue(_, _, [], Guards, Aliases) ->
+  {Guards, Aliases}.
 
 %% Handle Erlang rescue matches.
 
@@ -181,11 +208,13 @@ erl_rescue_guard_for(Meta, Var, 'Elixir.ArgumentError') ->
                  erl_record_compare(Meta, Var, badarg)));
 
 erl_rescue_guard_for(Meta, Var, 'Elixir.ErlangError') ->
-  IsNotTuple  = {erl(Meta, 'not'), Meta, [{erl(Meta, is_tuple), Meta, [Var]}]},
-  IsException = {erl(Meta, '/='), Meta, [
-    {erl(Meta, element), Meta, [2, Var]}, '__exception__'
-  ]},
-  erl_or(Meta, IsNotTuple, IsException);
+  Condition =
+    erl_and(
+      Meta,
+      {erl(Meta, is_map), Meta, [Var]},
+      {erl(Meta, is_map_key), Meta, ['__exception__', Var]}
+    ),
+  {erl(Meta, 'not'), Meta, [Condition]};
 
 erl_rescue_guard_for(_, _, _) ->
   false.
@@ -207,6 +236,6 @@ prepend_to_block(_Meta, Expr, {'__block__', Meta, Args}) ->
 prepend_to_block(Meta, Expr, Args) ->
   {'__block__', Meta, [Expr, Args]}.
 
-erl(Meta, Op)      -> {'.', Meta, [erlang, Op]}.
-erl_or(Meta, Left, Right) -> {{'.', Meta, [erlang, 'orelse']}, Meta, [Left, Right]}.
-erl_and(Meta, Left, Right) -> {{'.', Meta, [erlang, 'andalso']}, Meta, [Left, Right]}.
+erl(Meta, Op) -> {'.', Meta, [erlang, Op]}.
+erl_or(Meta, Left, Right) -> {erl(Meta, 'orelse'), Meta, [Left, Right]}.
+erl_and(Meta, Left, Right) -> {erl(Meta, 'andalso'), Meta, [Left, Right]}.

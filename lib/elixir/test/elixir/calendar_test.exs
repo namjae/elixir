@@ -1,626 +1,386 @@
 Code.require_file("test_helper.exs", __DIR__)
-Code.require_file("fixtures/calendar/holocene.exs", __DIR__)
 
-defmodule FakeCalendar do
-  def date_to_string(_, _, _), do: "boom"
-  def time_to_string(_, _, _, _), do: "boom"
-  def naive_datetime_to_string(_, _, _, _, _, _, _), do: "boom"
-  def datetime_to_string(_, _, _, _, _, _, _, _, _, _), do: "boom"
-  def day_rollover_relative_to_midnight_utc, do: {123_456, 123_457}
-end
-
-defmodule DateTest do
+defmodule CalendarTest do
   use ExUnit.Case, async: true
-  doctest Date
+  doctest Calendar
 
-  test "to_string/1" do
-    assert to_string(~D[2000-01-01]) == "2000-01-01"
-
-    date = %{~D[2000-01-01] | calendar: FakeCalendar}
-    assert to_string(date) == "boom"
-  end
-
-  test "inspect/1" do
-    assert inspect(~D[2000-01-01]) == "~D[2000-01-01]"
-
-    date = %{~D[2000-01-01] | calendar: FakeCalendar}
-    assert inspect(date) == "%Date{calendar: FakeCalendar, day: 1, month: 1, year: 2000}"
-  end
-
-  test "compare/2" do
-    date1 = ~D[2000-01-01]
-    date2 = ~D[2000-01-02]
-    assert Date.compare(date1, date1) == :eq
-    assert Date.compare(date1, date2) == :lt
-    assert Date.compare(date2, date1) == :gt
-  end
-
-  test "compare/2 across calendars" do
-    date1 = ~D[2000-01-01]
-    date2 = Calendar.Holocene.date(12000, 01, 01)
-    assert Date.compare(date1, date2) == :eq
-
-    date2 = Calendar.Holocene.date(12001, 01, 01)
-    assert Date.compare(date1, date2) == :lt
-    assert Date.compare(date2, date1) == :gt
-  end
-
-  test "day_of_week/1" do
-    assert Date.day_of_week(~D[2016-10-31]) == 1
-    assert Date.day_of_week(~D[2016-11-01]) == 2
-    assert Date.day_of_week(~D[2016-11-02]) == 3
-    assert Date.day_of_week(~D[2016-11-03]) == 4
-    assert Date.day_of_week(~D[2016-11-04]) == 5
-    assert Date.day_of_week(~D[2016-11-05]) == 6
-    assert Date.day_of_week(~D[2016-11-06]) == 7
-  end
-
-  test "convert/2" do
-    assert Date.convert(~D[2000-01-01], Calendar.Holocene) ==
-             {:ok, Calendar.Holocene.date(12000, 01, 01)}
-
-    assert ~D[2000-01-01]
-           |> Date.convert!(Calendar.Holocene)
-           |> Date.convert!(Calendar.ISO) == ~D[2000-01-01]
-
-    assert Date.convert(~D[2016-02-03], FakeCalendar) == {:error, :incompatible_calendars}
-
-    assert Date.convert(~N[2000-01-01 00:00:00], Calendar.Holocene) ==
-             {:ok, Calendar.Holocene.date(12000, 01, 01)}
-  end
-
-  test "add/2" do
-    assert_raise FunctionClauseError, fn ->
-      Date.add(~D[0000-01-01], 3_652_425)
+  describe "strftime/3" do
+    test "returns received string if there is no datetime formatting to be found in it" do
+      assert Calendar.strftime(~N[2019-08-20 15:47:34.001], "same string") == "same string"
     end
 
-    assert_raise FunctionClauseError, fn ->
-      Date.add(~D[0000-01-01], -1)
+    test "formats all time zones blank when receiving a NaiveDateTime" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.001], "%z%Z") == ""
     end
-  end
 
-  test "diff/2" do
-    assert Date.diff(~D[2000-01-31], ~D[2000-01-01]) == 30
-    assert Date.diff(~D[2000-01-01], ~D[2000-01-31]) == -30
+    test "raises error when trying to format a date with a map that has no date fields" do
+      time_without_date = %{hour: 15, minute: 47, second: 34, microsecond: {0, 0}}
 
-    date1 = ~D[2000-01-01]
-    date2 = Calendar.Holocene.date(12000, 01, 14)
-    assert Date.diff(date1, date2) == -13
-    assert Date.diff(date2, date1) == 13
-  end
-end
-
-defmodule TimeTest do
-  use ExUnit.Case, async: true
-  doctest Time
-
-  test "to_string/1" do
-    assert to_string(~T[23:00:07.005]) == "23:00:07.005"
-  end
-
-  test "inspect/1" do
-    assert inspect(~T[23:00:07.005]) == "~T[23:00:07.005]"
-  end
-
-  test "compare/2" do
-    time0 = ~T[01:01:01.0]
-    time1 = ~T[01:01:01.005]
-    time2 = ~T[01:01:01.0050]
-    time3 = ~T[23:01:01.0050]
-    assert Time.compare(time0, time1) == :lt
-    assert Time.compare(time1, time1) == :eq
-    assert Time.compare(time1, time2) == :eq
-    assert Time.compare(time1, time3) == :lt
-    assert Time.compare(time3, time2) == :gt
-  end
-
-  test "truncate/2" do
-    assert Time.truncate(~T[01:01:01.123456], :microsecond) == ~T[01:01:01.123456]
-
-    assert Time.truncate(~T[01:01:01.0], :millisecond) == ~T[01:01:01.0]
-    assert Time.truncate(~T[01:01:01.00], :millisecond) == ~T[01:01:01.00]
-    assert Time.truncate(~T[01:01:01.1], :millisecond) == ~T[01:01:01.1]
-    assert Time.truncate(~T[01:01:01.100], :millisecond) == ~T[01:01:01.100]
-    assert Time.truncate(~T[01:01:01.999], :millisecond) == ~T[01:01:01.999]
-    assert Time.truncate(~T[01:01:01.1000], :millisecond) == ~T[01:01:01.100]
-    assert Time.truncate(~T[01:01:01.1001], :millisecond) == ~T[01:01:01.100]
-    assert Time.truncate(~T[01:01:01.123456], :millisecond) == ~T[01:01:01.123]
-    assert Time.truncate(~T[01:01:01.000123], :millisecond) == ~T[01:01:01.000]
-    assert Time.truncate(~T[01:01:01.00012], :millisecond) == ~T[01:01:01.000]
-
-    assert Time.truncate(~T[01:01:01.123456], :second) == ~T[01:01:01]
-  end
-end
-
-defmodule NaiveDateTimeTest do
-  use ExUnit.Case, async: true
-  doctest NaiveDateTime
-
-  test "to_string/1" do
-    assert to_string(~N[2000-01-01 23:00:07.005]) == "2000-01-01 23:00:07.005"
-
-    ndt = %{~N[2000-01-01 23:00:07.005] | calendar: FakeCalendar}
-    assert to_string(ndt) == "boom"
-  end
-
-  test "inspect/1" do
-    assert inspect(~N[2000-01-01 23:00:07.005]) == "~N[2000-01-01 23:00:07.005]"
-
-    ndt = %{~N[2000-01-01 23:00:07.005] | calendar: FakeCalendar}
-
-    assert inspect(ndt) ==
-             "%NaiveDateTime{calendar: FakeCalendar, day: 1, hour: 23, " <>
-               "microsecond: {5000, 3}, minute: 0, month: 1, second: 7, year: 2000}"
-  end
-
-  test "compare/2" do
-    ndt1 = ~N[2000-04-16 13:30:15.0049]
-    ndt2 = ~N[2000-04-16 13:30:15.0050]
-    ndt3 = ~N[2001-04-16 13:30:15.0050]
-    assert NaiveDateTime.compare(ndt1, ndt1) == :eq
-    assert NaiveDateTime.compare(ndt1, ndt2) == :lt
-    assert NaiveDateTime.compare(ndt2, ndt1) == :gt
-    assert NaiveDateTime.compare(ndt3, ndt1) == :gt
-    assert NaiveDateTime.compare(ndt3, ndt2) == :gt
-  end
-
-  test "to_iso8601/1" do
-    ndt = ~N[2000-04-16 12:34:15.1234]
-    ndt = put_in(ndt.calendar, FakeCalendar)
-
-    message =
-      "cannot convert #{inspect(ndt)} to target calendar Calendar.ISO, " <>
-        "reason: #{inspect(ndt.calendar)} and Calendar.ISO have different day rollover moments, " <>
-        "making this conversion ambiguous"
-
-    assert_raise ArgumentError, message, fn ->
-      NaiveDateTime.to_iso8601(ndt)
+      assert_raise KeyError, fn -> Calendar.strftime(time_without_date, "%x") end
     end
-  end
 
-  test "add/2 with other calendars" do
-    assert ~N[2000-01-01 12:34:15.123456]
-           |> NaiveDateTime.convert!(Calendar.Holocene)
-           |> NaiveDateTime.add(10, :second) ==
-             %NaiveDateTime{
-               calendar: Calendar.Holocene,
-               year: 12000,
-               month: 1,
-               day: 1,
-               hour: 12,
-               minute: 34,
-               second: 25,
-               microsecond: {123_456, 6}
-             }
-  end
+    test "raises error when trying to format a time with a map that has no time fields" do
+      date_without_time = %{year: 2019, month: 8, day: 20}
 
-  test "diff/2 with other calendars" do
-    assert ~N[2000-01-01 12:34:15.123456]
-           |> NaiveDateTime.convert!(Calendar.Holocene)
-           |> NaiveDateTime.add(10, :second)
-           |> NaiveDateTime.diff(~N[2000-01-01 12:34:15.123456]) == 10
-  end
-
-  test "convert/2" do
-    assert NaiveDateTime.convert(~N[2000-01-01 12:34:15.123400], Calendar.Holocene) ==
-             {:ok, Calendar.Holocene.naive_datetime(12000, 1, 1, 12, 34, 15, {123_400, 6})}
-
-    assert ~N[2000-01-01 12:34:15]
-           |> NaiveDateTime.convert!(Calendar.Holocene)
-           |> NaiveDateTime.convert!(Calendar.ISO) == ~N[2000-01-01 12:34:15]
-
-    assert ~N[2000-01-01 12:34:15.123456]
-           |> NaiveDateTime.convert!(Calendar.Holocene)
-           |> NaiveDateTime.convert!(Calendar.ISO) == ~N[2000-01-01 12:34:15.123456]
-
-    assert NaiveDateTime.convert(~N[2016-02-03 00:00:01], FakeCalendar) ==
-             {:error, :incompatible_calendars}
-
-    assert NaiveDateTime.convert(~N[1970-01-01 00:00:00], Calendar.Holocene) ==
-             {:ok, Calendar.Holocene.naive_datetime(11970, 1, 1, 0, 0, 0, {0, 0})}
-
-    assert NaiveDateTime.convert(DateTime.from_unix!(0, :seconds), Calendar.Holocene) ==
-             {:ok, Calendar.Holocene.naive_datetime(11970, 1, 1, 0, 0, 0, {0, 0})}
-  end
-
-  test "truncate/2" do
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :microsecond) ==
-             ~N[2017-11-06 00:23:51.123456]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.0], :millisecond) ==
-             ~N[2017-11-06 00:23:51.0]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.999], :millisecond) ==
-             ~N[2017-11-06 00:23:51.999]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.1009], :millisecond) ==
-             ~N[2017-11-06 00:23:51.100]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :millisecond) ==
-             ~N[2017-11-06 00:23:51.123]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.000456], :millisecond) ==
-             ~N[2017-11-06 00:23:51.000]
-
-    assert NaiveDateTime.truncate(~N[2017-11-06 00:23:51.123456], :second) ==
-             ~N[2017-11-06 00:23:51]
-  end
-end
-
-defmodule DateTimeTest do
-  use ExUnit.Case, async: true
-  doctest DateTime
-
-  test "to_string/1" do
-    datetime = %DateTime{
-      year: 2000,
-      month: 2,
-      day: 29,
-      zone_abbr: "BRM",
-      hour: 23,
-      minute: 0,
-      second: 7,
-      microsecond: {0, 0},
-      utc_offset: -12600,
-      std_offset: 3600,
-      time_zone: "Brazil/Manaus"
-    }
-
-    assert to_string(datetime) == "2000-02-29 23:00:07-02:30 BRM Brazil/Manaus"
-  end
-
-  test "from_iso8601/1 handles positive and negative offsets" do
-    assert DateTime.from_iso8601("2015-01-24T09:50:07-10:00")
-           |> elem(1) ==
-             %DateTime{
-               microsecond: {0, 0},
-               month: 1,
-               std_offset: 0,
-               time_zone: "Etc/UTC",
-               utc_offset: 0,
-               year: 2015,
-               zone_abbr: "UTC",
-               day: 24,
-               hour: 19,
-               minute: 50,
-               second: 7
-             }
-
-    assert DateTime.from_iso8601("2015-01-24T09:50:07+10:00")
-           |> elem(1) ==
-             %DateTime{
-               microsecond: {0, 0},
-               month: 1,
-               std_offset: 0,
-               time_zone: "Etc/UTC",
-               utc_offset: 0,
-               year: 2015,
-               zone_abbr: "UTC",
-               day: 23,
-               hour: 23,
-               minute: 50,
-               second: 7
-             }
-  end
-
-  test "from_unix/2" do
-    # with Unix times back to 0 Gregorian seconds
-    min_datetime = %DateTime{
-      calendar: Calendar.ISO,
-      day: 1,
-      hour: 0,
-      microsecond: {0, 0},
-      minute: 0,
-      month: 1,
-      second: 0,
-      std_offset: 0,
-      time_zone: "Etc/UTC",
-      utc_offset: 0,
-      year: 0,
-      zone_abbr: "UTC"
-    }
-
-    assert DateTime.from_unix(-62_167_219_200) == {:ok, min_datetime}
-    assert DateTime.from_unix(-62_167_219_201) == {:error, :invalid_unix_time}
-
-    max_datetime = %DateTime{
-      calendar: Calendar.ISO,
-      day: 31,
-      hour: 23,
-      microsecond: {999_999, 6},
-      minute: 59,
-      month: 12,
-      second: 59,
-      std_offset: 0,
-      time_zone: "Etc/UTC",
-      utc_offset: 0,
-      year: 9999,
-      zone_abbr: "UTC"
-    }
-
-    assert DateTime.from_unix(253_402_300_799_999_999, :microsecond) == {:ok, max_datetime}
-    assert DateTime.from_unix(253_402_300_800) == {:error, :invalid_unix_time}
-
-    minus_datetime = %DateTime{
-      calendar: Calendar.ISO,
-      day: 31,
-      hour: 23,
-      microsecond: {999_999, 6},
-      minute: 59,
-      month: 12,
-      second: 59,
-      std_offset: 0,
-      time_zone: "Etc/UTC",
-      utc_offset: 0,
-      year: 1969,
-      zone_abbr: "UTC"
-    }
-
-    assert DateTime.from_unix(-1, :microsecond) == {:ok, minus_datetime}
-  end
-
-  test "from_unix!/2" do
-    # with Unix times back to 0 Gregorian seconds
-    datetime = %DateTime{
-      calendar: Calendar.ISO,
-      day: 1,
-      hour: 0,
-      microsecond: {0, 0},
-      minute: 0,
-      month: 1,
-      second: 0,
-      std_offset: 0,
-      time_zone: "Etc/UTC",
-      utc_offset: 0,
-      year: 0,
-      zone_abbr: "UTC"
-    }
-
-    assert DateTime.from_unix!(-62_167_219_200) == datetime
-
-    assert_raise ArgumentError, fn ->
-      DateTime.from_unix!(-62_167_219_201)
+      assert_raise KeyError, fn -> Calendar.strftime(date_without_time, "%X") end
     end
-  end
 
-  test "to_unix/2 works with Unix times back to 0 Gregorian seconds" do
-    # with Unix times back to 0 Gregorian seconds
-    gregorian_0 = %DateTime{
-      calendar: Calendar.ISO,
-      day: 1,
-      hour: 0,
-      microsecond: {0, 0},
-      minute: 0,
-      month: 1,
-      second: 0,
-      std_offset: 0,
-      time_zone: "Etc/UTC",
-      utc_offset: 0,
-      year: 0,
-      zone_abbr: "UTC"
-    }
+    test "raises error when the format is invalid" do
+      assert_raise ArgumentError, "invalid strftime format: %-", fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%-2-ç")
+      end
 
-    assert DateTime.to_unix(gregorian_0) == -62_167_219_200
-
-    before_gregorian_0 = %DateTime{gregorian_0 | year: -1}
-
-    assert_raise FunctionClauseError, fn ->
-      DateTime.to_unix(before_gregorian_0)
+      assert_raise ArgumentError, "invalid strftime format: %", fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%")
+      end
     end
-  end
 
-  test "compare/2" do
-    datetime1 = %DateTime{
-      year: 2000,
-      month: 2,
-      day: 29,
-      zone_abbr: "CET",
-      hour: 23,
-      minute: 0,
-      second: 7,
-      microsecond: {0, 0},
-      utc_offset: 3600,
-      std_offset: 0,
-      time_zone: "Europe/Warsaw"
-    }
+    test "raises error when the preferred_datetime calls itself" do
+      assert_raise ArgumentError, fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%c", preferred_datetime: "%c")
+      end
+    end
 
-    datetime2 = %DateTime{
-      year: 2000,
-      month: 2,
-      day: 29,
-      zone_abbr: "AMT",
-      hour: 23,
-      minute: 0,
-      second: 7,
-      microsecond: {0, 0},
-      utc_offset: -14400,
-      std_offset: 0,
-      time_zone: "America/Manaus"
-    }
+    test "raises error when the preferred_date calls itself" do
+      assert_raise ArgumentError, fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%x", preferred_date: "%x")
+      end
+    end
 
-    assert DateTime.compare(datetime1, datetime1) == :eq
-    assert DateTime.compare(datetime1, datetime2) == :lt
-    assert DateTime.compare(datetime2, datetime1) == :gt
-  end
+    test "raises error when the preferred_time calls itself" do
+      assert_raise ArgumentError, fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%X", preferred_time: "%X")
+      end
+    end
 
-  test "convert/2" do
-    datetime_iso = %DateTime{
-      year: 2000,
-      month: 2,
-      day: 29,
-      zone_abbr: "CET",
-      hour: 23,
-      minute: 0,
-      second: 7,
-      microsecond: {0, 0},
-      utc_offset: 3600,
-      std_offset: 0,
-      time_zone: "Europe/Warsaw"
-    }
+    test "raises error when the preferred formats creates a circular chain" do
+      assert_raise ArgumentError, fn ->
+        Calendar.strftime(~N[2019-08-20 15:47:34.001], "%c",
+          preferred_datetime: "%x",
+          preferred_date: "%X",
+          preferred_time: "%c"
+        )
+      end
+    end
 
-    datetime_hol = %DateTime{
-      year: 12000,
-      month: 2,
-      day: 29,
-      zone_abbr: "CET",
-      hour: 23,
-      minute: 0,
-      second: 7,
-      microsecond: {0, 0},
-      utc_offset: 3600,
-      std_offset: 0,
-      time_zone: "Europe/Warsaw",
-      calendar: Calendar.Holocene
-    }
+    test "with preferred formats are included multiple times on the same string" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.001], "%c %c %x %x %X %X") ==
+               "2019-08-15 17:07:57 2019-08-15 17:07:57 2019-08-15 2019-08-15 17:07:57 17:07:57"
+    end
 
-    assert DateTime.convert(datetime_iso, Calendar.Holocene) == {:ok, datetime_hol}
+    test "`-` removes padding" do
+      assert Calendar.strftime(~D[2019-01-01], "%-j") == "1"
+      assert Calendar.strftime(~T[17:07:57.001], "%-999M") == "7"
+    end
 
-    assert datetime_iso
-           |> DateTime.convert!(Calendar.Holocene)
-           |> DateTime.convert!(Calendar.ISO) == datetime_iso
+    test "formats time zones correctly when receiving a DateTime" do
+      datetime_with_zone = %DateTime{
+        year: 2019,
+        month: 8,
+        day: 15,
+        zone_abbr: "EEST",
+        hour: 17,
+        minute: 7,
+        second: 57,
+        microsecond: {0, 0},
+        utc_offset: 7200,
+        std_offset: 3600,
+        time_zone: "UK"
+      }
 
-    assert %{datetime_iso | microsecond: {123, 6}}
-           |> DateTime.convert!(Calendar.Holocene)
-           |> DateTime.convert!(Calendar.ISO) == %{datetime_iso | microsecond: {123, 6}}
+      assert Calendar.strftime(datetime_with_zone, "%z %Z") == "+0300 EEST"
+    end
 
-    assert DateTime.convert(datetime_iso, FakeCalendar) == {:error, :incompatible_calendars}
-  end
+    test "formats AM and PM correctly on the %P and %p options" do
+      am_time_almost_pm = ~U[2019-08-26 11:59:59.001Z]
+      pm_time = ~U[2019-08-26 12:00:57.001Z]
+      pm_time_almost_am = ~U[2019-08-26 23:59:57.001Z]
+      am_time = ~U[2019-08-26 00:00:01.001Z]
 
-  test "from_iso8601/1 with tz offsets" do
-    assert DateTime.from_iso8601("2017-06-02T14:00:00+01:00")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 13,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
+      assert Calendar.strftime(am_time_almost_pm, "%P %p") == "am AM"
+      assert Calendar.strftime(pm_time, "%P %p") == "pm PM"
+      assert Calendar.strftime(pm_time_almost_am, "%P %p") == "pm PM"
+      assert Calendar.strftime(am_time, "%P %p") == "am AM"
+    end
 
-    assert DateTime.from_iso8601("2017-06-02T14:00:00-04:00")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 18,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
+    test "formats all weekdays correctly with %A and %a formats" do
+      sunday = ~U[2019-08-25 11:59:59.001Z]
+      monday = ~U[2019-08-26 11:59:59.001Z]
+      tuesday = ~U[2019-08-27 11:59:59.001Z]
+      wednesday = ~U[2019-08-28 11:59:59.001Z]
+      thursday = ~U[2019-08-29 11:59:59.001Z]
+      friday = ~U[2019-08-30 11:59:59.001Z]
+      saturday = ~U[2019-08-31 11:59:59.001Z]
 
-    assert DateTime.from_iso8601("2017-06-02T14:00:00+0100")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 13,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
+      assert Calendar.strftime(sunday, "%A %a") == "Sunday Sun"
+      assert Calendar.strftime(monday, "%A %a") == "Monday Mon"
+      assert Calendar.strftime(tuesday, "%A %a") == "Tuesday Tue"
+      assert Calendar.strftime(wednesday, "%A %a") == "Wednesday Wed"
+      assert Calendar.strftime(thursday, "%A %a") == "Thursday Thu"
+      assert Calendar.strftime(friday, "%A %a") == "Friday Fri"
+      assert Calendar.strftime(saturday, "%A %a") == "Saturday Sat"
+    end
 
-    assert DateTime.from_iso8601("2017-06-02T14:00:00-0400")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 18,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
+    test "formats all months correctly with the %B and %b formats" do
+      assert Calendar.strftime(%{month: 1}, "%B %b") == "January Jan"
+      assert Calendar.strftime(%{month: 2}, "%B %b") == "February Feb"
+      assert Calendar.strftime(%{month: 3}, "%B %b") == "March Mar"
+      assert Calendar.strftime(%{month: 4}, "%B %b") == "April Apr"
+      assert Calendar.strftime(%{month: 5}, "%B %b") == "May May"
+      assert Calendar.strftime(%{month: 6}, "%B %b") == "June Jun"
+      assert Calendar.strftime(%{month: 7}, "%B %b") == "July Jul"
+      assert Calendar.strftime(%{month: 8}, "%B %b") == "August Aug"
+      assert Calendar.strftime(%{month: 9}, "%B %b") == "September Sep"
+      assert Calendar.strftime(%{month: 10}, "%B %b") == "October Oct"
+      assert Calendar.strftime(%{month: 11}, "%B %b") == "November Nov"
+      assert Calendar.strftime(%{month: 12}, "%B %b") == "December Dec"
+    end
 
-    assert DateTime.from_iso8601("2017-06-02T14:00:00+01")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 13,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
+    test "formats all weekdays correctly on %A with day_of_week_names option" do
+      sunday = ~U[2019-08-25 11:59:59.001Z]
+      monday = ~U[2019-08-26 11:59:59.001Z]
+      tuesday = ~U[2019-08-27 11:59:59.001Z]
+      wednesday = ~U[2019-08-28 11:59:59.001Z]
+      thursday = ~U[2019-08-29 11:59:59.001Z]
+      friday = ~U[2019-08-30 11:59:59.001Z]
+      saturday = ~U[2019-08-31 11:59:59.001Z]
 
-    assert DateTime.from_iso8601("2017-06-02T14:00:00-04")
-           |> elem(1) ==
-             %DateTime{
-               year: 2017,
-               month: 6,
-               day: 2,
-               zone_abbr: "UTC",
-               hour: 18,
-               minute: 0,
-               second: 0,
-               microsecond: {0, 0},
-               utc_offset: 0,
-               std_offset: 0,
-               time_zone: "Etc/UTC"
-             }
-  end
+      day_of_week_names = fn day_of_week ->
+        {"segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado",
+         "domingo"}
+        |> elem(day_of_week - 1)
+      end
 
-  test "truncate/2" do
-    datetime = %DateTime{
-      year: 2017,
-      month: 11,
-      day: 6,
-      zone_abbr: "CET",
-      hour: 0,
-      minute: 6,
-      second: 23,
-      microsecond: {0, 0},
-      utc_offset: 3600,
-      std_offset: 0,
-      time_zone: "Europe/Paris"
-    }
+      assert Calendar.strftime(sunday, "%A", day_of_week_names: day_of_week_names) ==
+               "domingo"
 
-    assert DateTime.truncate(%{datetime | microsecond: {123_456, 6}}, :microsecond) ==
-             %{datetime | microsecond: {123_456, 6}}
+      assert Calendar.strftime(monday, "%A", day_of_week_names: day_of_week_names) ==
+               "segunda-feira"
 
-    assert DateTime.truncate(%{datetime | microsecond: {0, 0}}, :millisecond) ==
-             %{datetime | microsecond: {0, 0}}
+      assert Calendar.strftime(tuesday, "%A", day_of_week_names: day_of_week_names) ==
+               "terça-feira"
 
-    assert DateTime.truncate(%{datetime | microsecond: {000_100, 6}}, :millisecond) ==
-             %{datetime | microsecond: {0, 3}}
+      assert Calendar.strftime(wednesday, "%A", day_of_week_names: day_of_week_names) ==
+               "quarta-feira"
 
-    assert DateTime.truncate(%{datetime | microsecond: {000_999, 6}}, :millisecond) ==
-             %{datetime | microsecond: {0, 3}}
+      assert Calendar.strftime(thursday, "%A", day_of_week_names: day_of_week_names) ==
+               "quinta-feira"
 
-    assert DateTime.truncate(%{datetime | microsecond: {001_000, 6}}, :millisecond) ==
-             %{datetime | microsecond: {1000, 3}}
+      assert Calendar.strftime(friday, "%A", day_of_week_names: day_of_week_names) ==
+               "sexta-feira"
 
-    assert DateTime.truncate(%{datetime | microsecond: {001_200, 6}}, :millisecond) ==
-             %{datetime | microsecond: {1000, 3}}
+      assert Calendar.strftime(saturday, "%A", day_of_week_names: day_of_week_names) ==
+               "sábado"
+    end
 
-    assert DateTime.truncate(%{datetime | microsecond: {123_456, 6}}, :millisecond) ==
-             %{datetime | microsecond: {123_000, 3}}
+    test "formats all months correctly on the %B with month_names option" do
+      month_names = fn month ->
+        {"январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
+         "октябрь", "ноябрь", "декабрь"}
+        |> elem(month - 1)
+      end
 
-    assert DateTime.truncate(%{datetime | microsecond: {123_456, 6}}, :second) ==
-             %{datetime | microsecond: {0, 0}}
+      assert Calendar.strftime(%{month: 1}, "%B", month_names: month_names) == "январь"
+      assert Calendar.strftime(%{month: 2}, "%B", month_names: month_names) == "февраль"
+      assert Calendar.strftime(%{month: 3}, "%B", month_names: month_names) == "март"
+      assert Calendar.strftime(%{month: 4}, "%B", month_names: month_names) == "апрель"
+      assert Calendar.strftime(%{month: 5}, "%B", month_names: month_names) == "май"
+      assert Calendar.strftime(%{month: 6}, "%B", month_names: month_names) == "июнь"
+      assert Calendar.strftime(%{month: 7}, "%B", month_names: month_names) == "июль"
+      assert Calendar.strftime(%{month: 8}, "%B", month_names: month_names) == "август"
+      assert Calendar.strftime(%{month: 9}, "%B", month_names: month_names) == "сентябрь"
+      assert Calendar.strftime(%{month: 10}, "%B", month_names: month_names) == "октябрь"
+      assert Calendar.strftime(%{month: 11}, "%B", month_names: month_names) == "ноябрь"
+      assert Calendar.strftime(%{month: 12}, "%B", month_names: month_names) == "декабрь"
+    end
+
+    test "formats all weekdays correctly on the %a format with abbreviated_day_of_week_names option" do
+      sunday = ~U[2019-08-25 11:59:59.001Z]
+      monday = ~U[2019-08-26 11:59:59.001Z]
+      tuesday = ~U[2019-08-27 11:59:59.001Z]
+      wednesday = ~U[2019-08-28 11:59:59.001Z]
+      thursday = ~U[2019-08-29 11:59:59.001Z]
+      friday = ~U[2019-08-30 11:59:59.001Z]
+      saturday = ~U[2019-08-31 11:59:59.001Z]
+
+      abbreviated_day_of_week_names = fn day_of_week ->
+        {"seg", "ter", "qua", "qui", "sex", "sáb", "dom"}
+        |> elem(day_of_week - 1)
+      end
+
+      assert Calendar.strftime(sunday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "dom"
+
+      assert Calendar.strftime(monday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "seg"
+
+      assert Calendar.strftime(tuesday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "ter"
+
+      assert Calendar.strftime(wednesday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "qua"
+
+      assert Calendar.strftime(thursday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "qui"
+
+      assert Calendar.strftime(friday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "sex"
+
+      assert Calendar.strftime(saturday, "%a",
+               abbreviated_day_of_week_names: abbreviated_day_of_week_names
+             ) == "sáb"
+    end
+
+    test "formats all months correctly on the %b format with abbreviated_month_names option" do
+      abbreviated_month_names = fn month ->
+        {"янв", "февр", "март", "апр", "май", "июнь", "июль", "авг", "сент", "окт", "нояб", "дек"}
+        |> elem(month - 1)
+      end
+
+      assert Calendar.strftime(%{month: 1}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "янв"
+
+      assert Calendar.strftime(%{month: 2}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "февр"
+
+      assert Calendar.strftime(%{month: 3}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "март"
+
+      assert Calendar.strftime(%{month: 4}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "апр"
+
+      assert Calendar.strftime(%{month: 5}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "май"
+
+      assert Calendar.strftime(%{month: 6}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "июнь"
+
+      assert Calendar.strftime(%{month: 7}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "июль"
+
+      assert Calendar.strftime(%{month: 8}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "авг"
+
+      assert Calendar.strftime(%{month: 9}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
+               "сент"
+
+      assert Calendar.strftime(%{month: 10}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) == "окт"
+
+      assert Calendar.strftime(%{month: 11}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) == "нояб"
+
+      assert Calendar.strftime(%{month: 12}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) == "дек"
+    end
+
+    test "formats ignores padding and width options on microseconds" do
+      datetime = ~U[2019-08-15 17:07:57.001234Z]
+      assert Calendar.strftime(datetime, "%f") == "001234"
+      assert Calendar.strftime(datetime, "%f") == Calendar.strftime(datetime, "%_20f")
+      assert Calendar.strftime(datetime, "%f") == Calendar.strftime(datetime, "%020f")
+      assert Calendar.strftime(datetime, "%f") == Calendar.strftime(datetime, "%-f")
+    end
+
+    test "formats properly dates with different microsecond precisions" do
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.5Z], "%f") == "5"
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.45Z], "%f") == "45"
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.345Z], "%f") == "345"
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.2345Z], "%f") == "2345"
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.12345Z], "%f") == "12345"
+      assert Calendar.strftime(~U[2019-08-15 17:07:57.012345Z], "%f") == "012345"
+    end
+
+    test "formats properly different microsecond precisions of zero" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.0], "%f") == "0"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.00], "%f") == "00"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.000], "%f") == "000"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.0000], "%f") == "0000"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.00000], "%f") == "00000"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57.000000], "%f") == "000000"
+    end
+
+    test "returns a single zero if there's no microseconds precision" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%f") == "0"
+    end
+
+    test "handles `0` both as padding and as part of a width" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%10A") == "  Thursday"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%010A") == "00Thursday"
+    end
+
+    test "formats datetime with all options and modifiers" do
+      assert Calendar.strftime(
+               ~U[2019-08-15 17:07:57.001Z],
+               "%04% %a %A %b %B %-3c %d %f %H %I %j %m %_5M %p %P %q %S %u %x %X %y %Y %z %Z"
+             ) ==
+               "000% Thu Thursday Aug August 2019-08-15 17:07:57 15 001 17 05 227 08     7 PM pm 3 57 4 2019-08-15 17:07:57 19 2019 +0000 UTC"
+    end
+
+    test "formats according to custom configs" do
+      assert Calendar.strftime(
+               ~U[2019-08-15 17:07:57.001Z],
+               "%A %a %p %B %b %c %x %X",
+               am_pm_names: fn
+                 :am -> "a"
+                 :pm -> "p"
+               end,
+               month_names: fn month ->
+                 {"Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto",
+                  "Setembro", "Outubro", "Novembro", "Dezembro"}
+                 |> elem(month - 1)
+               end,
+               day_of_week_names: fn day_of_week ->
+                 {"понедельник", "вторник", "среда", "четверг", "пятница", "суббота",
+                  "воскресенье"}
+                 |> elem(day_of_week - 1)
+               end,
+               abbreviated_month_names: fn month ->
+                 {"Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov",
+                  "Dez"}
+                 |> elem(month - 1)
+               end,
+               abbreviated_day_of_week_names: fn day_of_week ->
+                 {"ПНД", "ВТР", "СРД", "ЧТВ", "ПТН", "СБТ", "ВСК"}
+                 |> elem(day_of_week - 1)
+               end,
+               preferred_date: "%05Y-%m-%d",
+               preferred_time: "%M:%_3H%S",
+               preferred_datetime: "%%"
+             ) == "четверг ЧТВ P Agosto Ago % 02019-08-15 07: 1757"
+    end
+
+    test "raises on unknown option according to custom configs" do
+      assert_raise ArgumentError, "unknown option :unknown given to Calendar.strftime/3", fn ->
+        Calendar.strftime(~D[2019-08-15], "%D", unknown: "option")
+      end
+    end
   end
 end

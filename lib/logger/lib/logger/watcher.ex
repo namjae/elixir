@@ -10,67 +10,80 @@ defmodule Logger.Watcher do
   This is useful when there is a need to start a handler
   outside of the handler supervision tree.
   """
-  def start_link(triplet) do
-    GenServer.start_link(__MODULE__, triplet)
+  def start_link(tuple) do
+    GenServer.start_link(__MODULE__, tuple)
   end
 
   ## Callbacks
 
   @doc false
-  def init({mod, handler, args}) do
+  def init({handler, args}) do
     Process.flag(:trap_exit, true)
 
-    case :gen_event.delete_handler(mod, handler, :ok) do
+    case :gen_event.delete_handler(Logger, handler, :ok) do
       {:error, :module_not_found} ->
-        case :gen_event.add_sup_handler(mod, handler, args) do
+        case :gen_event.add_sup_handler(Logger, handler, args) do
           :ok ->
-            {:ok, {mod, handler}}
+            {:ok, handler}
 
           {:error, :ignore} ->
             # Can't return :ignore as a transient child under a one_for_one.
             # Instead return ok and then immediately exit normally - using a fake
             # message.
             send(self(), {:gen_event_EXIT, handler, :normal})
-            {:ok, {mod, handler}}
+            {:ok, handler}
 
           {:error, reason} ->
             {:stop, reason}
+
+          {:EXIT, _} = exit ->
+            {:stop, exit}
         end
 
       _ ->
-        init({mod, handler, args})
+        init({handler, args})
     end
   end
 
   @doc false
-  def handle_info({:gen_event_EXIT, handler, reason}, {_, handler} = state)
+  def handle_info({:gen_event_EXIT, handler, reason}, handler)
       when reason in [:normal, :shutdown] do
-    {:stop, reason, state}
+    {:stop, reason, handler}
   end
 
-  def handle_info({:gen_event_EXIT, handler, reason}, {mod, handler} = state) do
+  def handle_info({:gen_event_EXIT, handler, reason}, handler) do
     message = [
       ":gen_event handler ",
       inspect(handler),
-      " installed at ",
-      inspect(mod),
-      ?\n,
+      " installed in Logger terminating\n",
       "** (exit) ",
       format_exit(reason)
     ]
 
-    _ = Logger.error(message)
-    {:stop, reason, state}
+    cond do
+      logger_has_backends?() -> :ok
+      true -> IO.puts(:stderr, message)
+    end
+
+    {:stop, reason, handler}
   end
 
   def handle_info(_msg, state) do
     {:noreply, state}
   end
 
-  def terminate(_reason, {mod, handler}) do
+  defp logger_has_backends?() do
+    try do
+      :gen_event.which_handlers(Logger) != [Logger.Config]
+    catch
+      _, _ -> false
+    end
+  end
+
+  def terminate(_reason, handler) do
     # On terminate we remove the handler, this makes the
     # process sync, allowing existing messages to be flushed
-    :gen_event.delete_handler(mod, handler, :ok)
+    :gen_event.delete_handler(Logger, handler, :ok)
     :ok
   end
 

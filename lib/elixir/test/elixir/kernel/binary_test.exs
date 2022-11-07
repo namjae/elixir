@@ -47,13 +47,26 @@ defmodule Kernel.BinaryTest do
              )
   end
 
+  test "heredoc with heredoc inside interpolation" do
+    assert """
+           1
+           #{"""
+           2
+           """}
+           """ == "1\n2\n\n"
+  end
+
   test "UTF-8" do
     assert byte_size(" ゆんゆん") == 13
   end
 
   test "UTF-8 char" do
     assert ?ゆ == 12422
-    assert ?\ゆ == 12422
+  end
+
+  test "size outside match" do
+    x = 16
+    assert <<0::size(x)>> == <<0, 0>>
   end
 
   test "string concatenation as match" do
@@ -73,10 +86,6 @@ defmodule Kernel.BinaryTest do
     <<x::binary-size(size)>> <> _ = "foobar"
     assert x == "foo"
 
-    size = 16
-    <<x::size(size)>> <> _ = "foobar"
-    assert x == 26223
-
     <<x::6*4-binary>> <> _ = "foobar"
     assert x == "foo"
 
@@ -86,12 +95,47 @@ defmodule Kernel.BinaryTest do
     <<x::24-bits>> <> _ = "foobar"
     assert x == "foo"
 
-    assert_raise MatchError, fn ->
-      Code.eval_string(~s{<<x::binary-size(3)-unit(4)>> <> _ = "foobar"})
+    <<x::utf8>> <> _ = "foobar"
+    assert x == ?f
+  end
+
+  test "string concatenation outside match" do
+    x = "bar"
+    assert "foobar" = "foo" <> x
+    assert "barfoo" = x <> "foo"
+  end
+
+  test "invalid string concatenation arguments" do
+    assert_raise ArgumentError, ~r"expected binary argument in <> operator but got: :bar", fn ->
+      Code.eval_string(~s["foo" <> :bar])
     end
 
-    assert_raise MatchError, fn ->
-      Code.eval_string(~s{<<x::integer-size(4)>> <> _ = "foobar"})
+    assert_raise ArgumentError, ~r"expected binary argument in <> operator but got: 1", fn ->
+      Code.eval_string(~s["foo" <> 1])
+    end
+
+    message = ~r"left argument of <> operator inside a match"
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[a <> "b" = "ab"])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s["a" <> b <> "c" = "abc"])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[
+        a = "a"
+        ^a <> "b" = "ab"
+      ])
+    end
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_string(~s[
+        b = "b"
+        "a" <> ^b <> "c" = "abc"
+      ])
     end
   end
 
@@ -134,9 +178,8 @@ defmodule Kernel.BinaryTest do
   end
 
   test "literal" do
-    # TODO: Remove String.to_atom/1 when we support 20+
     assert <<106, 111, 115, 195, 169>> == <<"josé">>
-    assert <<106, 111, 115, 195, 169>> == <<"#{String.to_atom("josé")}">>
+    assert <<106, 111, 115, 195, 169>> == <<"#{:josé}">>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::binary>>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::bits>>
     assert <<106, 111, 115, 195, 169>> == <<"josé"::bitstring>>
@@ -149,20 +192,20 @@ defmodule Kernel.BinaryTest do
   end
 
   test "literal errors" do
-    assert_raise CompileError, fn ->
+    message = ~r"conflicting type specification for bit field"
+
+    assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<"foo"::integer>>])
     end
 
-    assert_raise CompileError, fn ->
+    assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<"foo"::float>>])
     end
 
-    assert_raise CompileError, fn ->
-      Code.eval_string(~s[<<'foo'::binary>>])
-    end
+    message = ~r"invalid literal ~c\"foo\""
 
-    assert_raise ArgumentError, fn ->
-      Code.eval_string(~s[<<1::4>> <> "foo"])
+    assert_raise CompileError, message, fn ->
+      Code.eval_string(~s[<<'foo'::binary>>])
     end
   end
 
@@ -201,13 +244,33 @@ defmodule Kernel.BinaryTest do
     assert (fn <<_, _::size(x)>> -> true end).(<<?a, ?b>>)
   end
 
-  defmacrop signed_16 do
+  test "bitsyntax size using expressions" do
+    x = 8
+    assert <<1::size(x - 5)>>
+
+    foo = %{bar: 5}
+    assert <<1::size(foo.bar)>>
+    assert <<1::size(length(~c"abcd"))>>
+    assert <<255::size(hd(List.flatten([3])))>>
+  end
+
+  test "bitsyntax size using guard expressions in match context" do
+    x = 8
+    assert <<1::size(x - 5)>> = <<1::3>>
+    assert <<1::size(x - 5)-unit(8)>> = <<1::3*8>>
+    assert <<1::size(length(~c"abcd"))>> = <<1::4>>
+
+    foo = %{bar: 5}
+    assert <<1::size(foo.bar)>> = <<1::5>>
+  end
+
+  defmacro signed_16 do
     quote do
       big - signed - integer - unit(16)
     end
   end
 
-  defmacrop refb_spec do
+  defmacro refb_spec do
     quote do
       1 * 8 - big - signed - integer
     end
@@ -218,10 +281,32 @@ defmodule Kernel.BinaryTest do
     sec_data = "another"
 
     <<
-      byte_size(refb)::refb_spec,
+      byte_size(refb)::refb_spec(),
       refb::binary,
-      byte_size(sec_data)::size(1)-signed_16,
+      byte_size(sec_data)::size(1)-signed_16(),
       sec_data::binary
     >>
+  end
+
+  test "bitsyntax macro is expanded with a warning" do
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+             Code.eval_string("<<1::refb_spec>>", [], __ENV__)
+           end) =~
+             "bitstring specifier \"refb_spec\" does not exist and is being expanded to \"refb_spec()\""
+
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+             Code.eval_string("<<1::size(1)-signed_16>>", [], __ENV__)
+           end) =~
+             "bitstring specifier \"signed_16\" does not exist and is being expanded to \"signed_16()\""
+  end
+
+  test "bitsyntax with extra parentheses warns" do
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+             Code.eval_string("<<1::big()>>")
+           end) =~ "extra parentheses on a bitstring specifier \"big()\" have been deprecated"
+
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+             Code.eval_string("<<1::size(8)-integer()>>")
+           end) =~ "extra parentheses on a bitstring specifier \"integer()\" have been deprecated"
   end
 end

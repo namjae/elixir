@@ -18,16 +18,12 @@ defmodule Code.Formatter.ContainersTest do
       assert_format "{1,2,3}", "{1, 2, 3}"
     end
 
-    test "is strict on line limits" do
+    test "is flex on line limits" do
       bad = "{1, 2, 3, 4}"
 
       good = """
-      {
-        1,
-        2,
-        3,
-        4
-      }
+      {1, 2, 3,
+       4}
       """
 
       assert_format bad, good, @short_length
@@ -63,8 +59,8 @@ defmodule Code.Formatter.ContainersTest do
       }
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "{\nfoo, bar, baz}", "{foo, bar, baz}"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "{foo, bar, baz\n}", "{foo, bar, baz}"
     end
 
     test "preserves user choice even when it fits with trailing comma" do
@@ -182,10 +178,37 @@ defmodule Code.Formatter.ContainersTest do
       assert_same keyword, @short_length
     end
 
+    test "with keyword lists on comma line limit" do
+      bad = """
+      [
+        foooo: 1,
+        barrr: 2
+      ]
+      """
+
+      good = """
+      [
+        foooo:
+          1,
+        barrr: 2
+      ]
+      """
+
+      assert_format bad, good, @short_length
+    end
+
     test "with quoted keyword lists" do
       assert_same ~S(["with spaces": 1])
       assert_same ~S(["one #{two} three": 1])
+      assert_same ~S(["\w": 1, "\\w": 2])
+      assert_same ~S(["Elixir.Foo": 1, "Elixir.Bar": 2])
       assert_format ~S(["Foo": 1, "Bar": 2]), ~S([Foo: 1, Bar: 2])
+    end
+
+    test "with operators keyword lists" do
+      assert_same ~S([.: :.])
+      assert_same ~S([..: :..])
+      assert_same ~S([...: :...])
     end
 
     test "preserves user choice even when it fits" do
@@ -197,8 +220,8 @@ defmodule Code.Formatter.ContainersTest do
       ]
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "[\nfoo, bar, baz]", "[foo, bar, baz]"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "[foo, bar, baz\n]", "[foo, bar, baz]"
     end
 
     test "preserves user choice even when it fits with trailing comma" do
@@ -230,13 +253,19 @@ defmodule Code.Formatter.ContainersTest do
       assert_format "<<1,2,3>>", "<<1, 2, 3>>"
     end
 
-    test "add parens on first and last in case of ambiguity" do
+    test "add parens on first and last in case of binary ambiguity" do
       assert_format "<< <<>> >>", "<<(<<>>)>>"
       assert_format "<< <<>> + <<>> >>", "<<(<<>> + <<>>)>>"
       assert_format "<< 1 + <<>> >>", "<<(1 + <<>>)>>"
       assert_format "<< <<>> + 1 >>", "<<(<<>> + 1)>>"
       assert_format "<< <<>>, <<>>, <<>> >>", "<<(<<>>), <<>>, (<<>>)>>"
-      assert_format "<< <<>>::1, <<>>::2, <<>>::3 >>", "<<(<<>>::1), <<>>::2, <<>>::3>>"
+      assert_format "<< <<>>::1, <<>>::2, <<>>::3 >>", "<<(<<>>)::1, <<>>::2, <<>>::3>>"
+      assert_format "<< <<>>::<<>> >>", "<<(<<>>)::(<<>>)>>"
+    end
+
+    test "add parens on first in case of operator ambiguity" do
+      assert_format "<< ~~~1::8 >>", "<<(~~~1)::8>>"
+      assert_format "<< ~s[foo]::binary >>", "<<(~s[foo])::binary>>"
     end
 
     test "with modifiers" do
@@ -261,16 +290,41 @@ defmodule Code.Formatter.ContainersTest do
       assert_same "<<(<<y>> <- x)>>"
     end
 
-    test "is strict on line limits" do
+    test "normalizes bitstring modifiers by default" do
+      assert_format "<<foo::binary()>>", "<<foo::binary>>"
+      assert_same "<<foo::binary>>"
+
+      assert_format "<<foo::custom_type>>", "<<foo::custom_type()>>"
+      assert_same "<<foo::custom_type()>>"
+
+      assert_format "<<x::binary()-(13 * 6)-custom>>", "<<x::binary-(13 * 6)-custom()>>"
+      assert_same "<<x::binary-(13 * 6)-custom()>>"
+      assert_same "<<0::size*unit, bytes::binary>>"
+      assert_format "<<0::size*unit, bytes::custom>>", "<<0::size*unit, bytes::custom()>>"
+
+      assert_format "<<0, 1::2-integer() <- x>>", "<<0, 1::2-integer <- x>>"
+      assert_same "<<0, 1::2-integer <- x>>"
+    end
+
+    test "keeps parentheses when normalize_bitstring_modifiers is false" do
+      opts = [normalize_bitstring_modifiers: false]
+
+      assert_same "<<foo::binary()>>", opts
+      assert_same "<<foo::binary>>", opts
+
+      assert_same "<<foo::custom_type>>", opts
+      assert_same "<<foo::custom_type()>>", opts
+
+      assert_same "<<x::binary()-(13 * 6)-custom>>", opts
+      assert_same "<<0, 1::2-integer() <- x>>", opts
+    end
+
+    test "is flex on line limits" do
       bad = "<<1, 2, 3, 4>>"
 
       good = """
-      <<
-        1,
-        2,
-        3,
-        4
-      >>
+      <<1, 2, 3,
+        4>>
       """
 
       assert_format bad, good, @short_length
@@ -285,8 +339,8 @@ defmodule Code.Formatter.ContainersTest do
       >>
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "<<\nfoo, bar, baz>>", "<<foo, bar, baz>>"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "<<foo, bar, baz\n>>", "<<foo, bar, baz>>"
     end
 
     test "preserves user choice even when it fits with trailing comma" do
@@ -393,6 +447,11 @@ defmodule Code.Formatter.ContainersTest do
       assert_same map, @medium_length
     end
 
+    test "preserves user choice in regards to =>" do
+      assert_same "%{:hello => 1, :world => 2}"
+      assert_format "%{:true => 1, :false => 2}", "%{true => 1, false => 2}"
+    end
+
     test "preserves user choice even when it fits" do
       assert_same """
       %{
@@ -402,24 +461,24 @@ defmodule Code.Formatter.ContainersTest do
       }
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "%{\nfoo: 1, bar: 2}", "%{foo: 1, bar: 2}"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "%{foo: 1, bar: 2\n}", "%{foo: 1, bar: 2}"
     end
 
     test "preserves user choice even when it fits with trailing comma" do
       bad = """
       %{
-        :hello,
-        :foo,
-        :bar,
+        hello,
+        foo,
+        bar,
       }
       """
 
       assert_format bad, """
       %{
-        :hello,
-        :foo,
-        :bar
+        hello,
+        foo,
+        bar
       }
       """
     end
@@ -463,7 +522,7 @@ defmodule Code.Formatter.ContainersTest do
       }
       """
 
-      assert_format bad, good, @short_length
+      assert_format bad, good, line_length: 11
     end
 
     test "removes trailing comma" do
@@ -567,7 +626,7 @@ defmodule Code.Formatter.ContainersTest do
       }
       """
 
-      assert_format bad, good, @short_length
+      assert_format bad, good, line_length: 11
     end
 
     test "removes trailing comma" do

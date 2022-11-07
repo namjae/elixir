@@ -3,10 +3,85 @@ Code.require_file("../test_helper.exs", __DIR__)
 defmodule Kernel.ExpansionTarget do
   defmacro seventeen, do: 17
   defmacro bar, do: "bar"
+
+  defmacro message_hello(arg) do
+    send(self(), :hello)
+    arg
+  end
 end
 
 defmodule Kernel.ExpansionTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  defmacrop var_ver(var, version) do
+    quote do
+      {unquote(var), [version: unquote(version)], __MODULE__}
+    end
+  end
+
+  test "tracks variable version" do
+    assert {:__block__, _, [{:=, _, [var_ver(:x, 0), 0]}, {:=, _, [_, var_ver(:x, 0)]}]} =
+             expand_with_version(
+               quote do
+                 x = 0
+                 _ = x
+               end
+             )
+
+    assert {:__block__, _,
+            [
+              {:=, _, [var_ver(:x, 0), 0]},
+              {:=, _, [_, var_ver(:x, 0)]},
+              {:=, _, [var_ver(:x, 1), 1]},
+              {:=, _, [_, var_ver(:x, 1)]}
+            ]} =
+             expand_with_version(
+               quote do
+                 x = 0
+                 _ = x
+                 x = 1
+                 _ = x
+               end
+             )
+
+    assert {:__block__, _,
+            [
+              {:=, _, [var_ver(:x, 0), 0]},
+              {:fn, _, [{:->, _, [[var_ver(:x, 1)], {:=, _, [var_ver(:x, 2), 2]}]}]},
+              {:=, _, [_, var_ver(:x, 0)]},
+              {:=, _, [var_ver(:x, 3), 3]}
+            ]} =
+             expand_with_version(
+               quote do
+                 x = 0
+                 fn x -> x = 2 end
+                 _ = x
+                 x = 3
+               end
+             )
+
+    assert {:__block__, _,
+            [
+              {:=, _, [var_ver(:x, 0), 0]},
+              {:case, _, [:foo, [do: [{:->, _, [[var_ver(:x, 1)], var_ver(:x, 1)]}]]]},
+              {:=, _, [_, var_ver(:x, 0)]},
+              {:=, _, [var_ver(:x, 2), 2]}
+            ]} =
+             expand_with_version(
+               quote do
+                 x = 0
+                 case(:foo, do: (x -> x))
+                 _ = x
+                 x = 2
+               end
+             )
+  end
+
+  defp expand_with_version(expr) do
+    env = :elixir_env.reset_vars(__ENV__)
+    {expr, _, _} = :elixir_expand.expand(expr, :elixir_env.env_to_ex(env), env)
+    expr
+  end
 
   describe "__block__" do
     test "expands to nil when empty" do
@@ -73,6 +148,19 @@ defmodule Kernel.ExpansionTest do
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: alias(:lists, as: :foobar)))
+      end
+
+      message = ~r"invalid value for option :as, expected an alias, got: :\"Elixir.foobar\""
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: alias(:lists, as: :"Elixir.foobar")))
+      end
+
+      message =
+        ~r"alias cannot be inferred automatically for module: :lists, please use the :as option"
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: alias(:lists)))
       end
     end
 
@@ -150,7 +238,7 @@ defmodule Kernel.ExpansionTest do
 
     test "raises on conflicting options" do
       message =
-        ~r":only and :except can only be given together to import when :only is either :functions or :macros"
+        ~r":only and :except can only be given together to import when :only is :functions, :macros, or :sigils"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: import(Kernel, only: [], except: [])))
@@ -185,20 +273,16 @@ defmodule Kernel.ExpansionTest do
   end
 
   describe "=" do
-    test "sets context to match" do
-      assert expand(quote(do: __ENV__.context = :match)) == quote(do: :match = :match)
-    end
-
     test "defines vars" do
       {output, env} = expand_env(quote(do: a = 1), __ENV__)
       assert output == quote(do: a = 1)
-      assert {:a, __MODULE__} in env.vars
+      assert Macro.Env.has_var?(env, {:a, __MODULE__})
     end
 
     test "does not define _" do
       {output, env} = expand_env(quote(do: _ = 1), __ENV__)
       assert output == quote(do: _ = 1)
-      assert env.vars == []
+      assert Macro.Env.vars(env) == []
     end
   end
 
@@ -213,7 +297,8 @@ defmodule Kernel.ExpansionTest do
 
     test "__ENV__" do
       env = %{__ENV__ | line: 0}
-      assert expand_env(quote(do: __ENV__), env) == {{:%{}, [], Map.to_list(env)}, env}
+      assert expand_env(quote(do: __ENV__), env) == {Macro.escape(env), env}
+      assert %{lexical_tracker: nil, tracers: []} = __ENV__
     end
 
     test "__ENV__.accessor" do
@@ -221,7 +306,24 @@ defmodule Kernel.ExpansionTest do
       assert expand_env(quote(do: __ENV__.file), env) == {__ENV__.file, env}
 
       assert expand_env(quote(do: __ENV__.unknown), env) ==
-               {quote(do: unquote({:%{}, [], Map.to_list(env)}).unknown), env}
+               {quote(do: unquote(Macro.escape(env)).unknown), env}
+
+      assert __ENV__.lexical_tracker == nil
+      assert __ENV__.tracers == []
+    end
+
+    test "on match" do
+      assert_raise CompileError,
+                   ~r"invalid pattern in match, __ENV__ is not allowed in matches",
+                   fn -> expand(quote(do: __ENV__ = :ok)) end
+
+      assert_raise CompileError,
+                   ~r"invalid pattern in match, __CALLER__ is not allowed in matches",
+                   fn -> expand(quote(do: __CALLER__ = :ok)) end
+
+      assert_raise CompileError,
+                   ~r"invalid pattern in match, __STACKTRACE__ is not allowed in matches",
+                   fn -> expand(quote(do: __STACKTRACE__ = :ok)) end
     end
   end
 
@@ -229,7 +331,7 @@ defmodule Kernel.ExpansionTest do
     test "expand to local call" do
       {output, env} = expand_env(quote(do: a), __ENV__)
       assert output == quote(do: a())
-      assert env.vars == []
+      assert Macro.Env.vars(env) == []
     end
 
     test "forces variable to exist" do
@@ -241,14 +343,13 @@ defmodule Kernel.ExpansionTest do
 
       assert expand(code)
 
-      message = ~r"expected \"a\" to expand to an existing variable or be part of a match"
+      message = ~r"undefined variable \"a\""
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: var!(a)))
       end
 
-      message =
-        ~r"expected \"a\" \(context Unknown\) to expand to an existing variable or be part of a match"
+      message = ~r"undefined variable \"a\" \(context Unknown\)"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: var!(a, Unknown)))
@@ -295,7 +396,7 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "raises when the var is undefined" do
-      assert_raise CompileError, ~r"unknown variable \^foo", fn ->
+      assert_raise CompileError, ~r"undefined variable \^foo", fn ->
         expand(quote(do: ^foo = :foo))
       end
     end
@@ -307,7 +408,7 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "in matches" do
-      message = ~r"cannot invoke local foo/1 inside match, called as: foo\(:bar\)"
+      message = ~r"cannot find or invoke local foo/1 inside match. .+ Called as: foo\(:bar\)"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: foo(:bar) = :bar))
@@ -317,9 +418,9 @@ defmodule Kernel.ExpansionTest do
     test "in guards" do
       code = quote(do: fn pid when :erlang.==(pid, self) -> pid end)
       expanded_code = quote(do: fn pid when :erlang.==(pid, :erlang.self()) -> pid end)
-      assert clean_meta(expand(code), [:import, :context]) == expanded_code
+      assert clean_meta(expand(code), [:imports, :context]) == expanded_code
 
-      message = ~r"cannot invoke local foo/1 inside guard, called as: foo\(arg\)"
+      message = ~r"cannot find or invoke local foo/1"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: fn arg when foo(arg) -> arg end))
@@ -359,13 +460,34 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "with variables on keys" do
-      assert expand(quote(do: %{(x = 1) => 1})) == quote(do: %{(x = 1) => 1})
+      ast =
+        quote do
+          %{(x = 1) => 1}
+        end
 
-      assert_raise CompileError, ~r"illegal use of variable x inside map key match,", fn ->
+      assert expand(ast) == ast
+
+      ast =
+        quote do
+          x = 1
+          %{%{^x => 1} => 2} = y()
+        end
+
+      assert expand(ast) == ast
+
+      ast =
+        quote do
+          x = 1
+          %{{^x} => 1} = %{{1} => 1}
+        end
+
+      assert expand(ast) == ast
+
+      assert_raise CompileError, ~r"cannot use variable x as map key inside a pattern", fn ->
         expand(quote(do: %{x => 1} = %{}))
       end
 
-      assert_raise CompileError, ~r"unknown variable \^x", fn ->
+      assert_raise CompileError, ~r"undefined variable \^x", fn ->
         expand(quote(do: {x, %{^x => 1}} = %{}))
       end
     end
@@ -444,13 +566,13 @@ defmodule Kernel.ExpansionTest do
       assert expand(quote(do: quote(do: hello))) == {:{}, [], [:hello, [], __MODULE__]}
     end
 
-    test "raises if the :context option is nil or not a compile-time module" do
-      assert_raise CompileError, ~r"invalid :context for quote, .*, got: :erlang\.self\(\)", fn ->
-        expand(quote(do: quote(context: self(), do: :ok)))
+    test "raises if the :bind_quoted option is invalid" do
+      assert_raise CompileError, ~r"invalid :bind_quoted for quote", fn ->
+        expand(quote(do: quote(bind_quoted: self(), do: :ok)))
       end
 
-      assert_raise CompileError, ~r"invalid :context for quote, .*, got: nil", fn ->
-        expand(quote(do: quote(context: nil, do: :ok)))
+      assert_raise CompileError, ~r"invalid :bind_quoted for quote", fn ->
+        expand(quote(do: quote(bind_quoted: [{1, 2}], do: :ok)))
       end
     end
 
@@ -517,25 +639,35 @@ defmodule Kernel.ExpansionTest do
       assert expand(before_expansion) == after_expansion
     end
 
-    test "raises when not required" do
-      msg =
-        ~r"you must require Kernel\.ExpansionTarget before invoking the macro Kernel\.ExpansionTarget\.seventeen/0"
-
-      assert_raise CompileError, msg, fn ->
-        expand(quote(do: Kernel.ExpansionTarget.seventeen()))
-      end
-    end
-
     test "in matches" do
-      message =
-        ~r"cannot invoke remote function Hello.something_that_does_not_exist/0 inside match"
+      message = ~r"cannot invoke remote function Hello.fun_that_does_not_exist/0 inside a match"
 
       assert_raise CompileError, message, fn ->
-        expand(quote(do: Hello.something_that_does_not_exist() = :foo))
+        expand(quote(do: Hello.fun_that_does_not_exist() = :foo))
       end
 
-      message = ~r"cannot invoke remote function :erlang.make_ref/0 inside match"
+      message = ~r"cannot invoke remote function :erlang.make_ref/0 inside a match"
       assert_raise CompileError, message, fn -> expand(quote(do: make_ref() = :foo)) end
+
+      message = ~r"invalid argument for \+\+ operator inside a match"
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: "a" ++ "b" = "ab"))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: [1 | 2] ++ [3] = [1, 2, 3]))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: [1] ++ 2 ++ [3] = [1, 2, 3]))
+      end
+
+      assert {:=, _, [-1, {{:., _, [:erlang, :-]}, _, [1]}]} = expand(quote(do: -1 = -1))
+      assert {:=, _, [1, {{:., _, [:erlang, :+]}, _, [1]}]} = expand(quote(do: +1 = +1))
+
+      assert {:=, _, [[{:|, _, [1, [{:|, _, [2, 3]}]]}], [1, 2, 3]]} =
+               expand(quote(do: [1] ++ [2] ++ 3 = [1, 2, 3]))
     end
 
     test "in guards" do
@@ -550,6 +682,24 @@ defmodule Kernel.ExpansionTest do
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: fn arg when make_ref() -> arg end))
+      end
+    end
+
+    test "in guards with bitstrings" do
+      message = ~r"cannot invoke remote function String.Chars.to_string/1 inside guards"
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: fn arg when "#{arg}foo" == "argfoo" -> arg end))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(
+          quote do
+            fn arg when <<:"Elixir.Kernel".to_string(arg)::binary, "foo">> == "argfoo" ->
+              arg
+            end
+          end
+        )
       end
     end
   end
@@ -580,8 +730,78 @@ defmodule Kernel.ExpansionTest do
 
       after_expansion =
         quote do
-          for(<<(<<a::integer()>> <- b())>>, do: c = 1)
+          for(<<(<<a::integer>> <- b())>>, do: c = 1)
           c()
+        end
+
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
+    end
+
+    test "variables inside generator args do not leak" do
+      before_expansion =
+        quote do
+          for(
+            b <-
+              (
+                a = 1
+                [2]
+              ),
+            do: {a, b}
+          )
+
+          a
+        end
+
+      after_expansion =
+        quote do
+          for(
+            b <-
+              (
+                a = 1
+                [2]
+              ),
+            do: {a(), b}
+          )
+
+          a()
+        end
+
+      assert expand(before_expansion) == after_expansion
+
+      before_expansion =
+        quote do
+          for(
+            b <-
+              (
+                a = 1
+                [2]
+              ),
+            d <-
+              (
+                c = 3
+                [4]
+              ),
+            do: {a, b, c, d}
+          )
+        end
+
+      after_expansion =
+        quote do
+          for(
+            b <-
+              (
+                a = 1
+                [2]
+              ),
+            d <-
+              (
+                c = 3
+                [4]
+              ),
+            do: {a(), b, c(), d},
+            into: []
+          )
         end
 
       assert expand(before_expansion) == after_expansion
@@ -589,7 +809,7 @@ defmodule Kernel.ExpansionTest do
 
     test "variables inside filters are available in blocks" do
       assert expand(quote(do: for(a <- b, c = a, do: c))) ==
-               quote(do: for(a <- b(), c = a, do: c))
+               quote(do: for(a <- b(), c = a, do: c, into: []))
     end
 
     test "variables inside options do not leak" do
@@ -654,6 +874,26 @@ defmodule Kernel.ExpansionTest do
       end
     end
 
+    test "raise error on invalid reduce" do
+      assert_raise CompileError,
+                   ~r"cannot use :reduce alongside :into/:uniq in comprehension",
+                   fn ->
+                     expand(quote(do: for(x <- 1..3, reduce: %{}, into: %{}, do: (acc -> acc))))
+                   end
+
+      assert_raise CompileError,
+                   ~r"the do block was written using acc -> expr clauses but the :reduce option was not given",
+                   fn -> expand(quote(do: for(x <- 1..3, do: (acc -> acc)))) end
+
+      assert_raise CompileError,
+                   ~r"when using :reduce with comprehensions, the do block must be written using acc -> expr clauses",
+                   fn -> expand(quote(do: for(x <- 1..3, reduce: %{}, do: x))) end
+
+      assert_raise CompileError,
+                   ~r"when using :reduce with comprehensions, the do block must be written using acc -> expr clauses",
+                   fn -> expand(quote(do: for(x <- 1..3, reduce: %{}, do: (acc, x -> x)))) end
+    end
+
     test "raise error for unknown options" do
       assert_raise CompileError, ~r"unsupported option :else given to for", fn ->
         expand(quote(do: for(_ <- 1..2, do: 1, else: 1)))
@@ -677,6 +917,74 @@ defmodule Kernel.ExpansionTest do
         quote do
           with({foo} <- {bar()}, do: baz = :ok)
           baz()
+        end
+
+      assert expand(before_expansion) == after_expansion
+    end
+
+    test "variables inside args expression do not leak" do
+      before_expansion =
+        quote do
+          with(
+            b <-
+              (
+                a = 1
+                2
+              ),
+            do: {a, b}
+          )
+
+          a
+        end
+
+      after_expansion =
+        quote do
+          with(
+            b <-
+              (
+                a = 1
+                2
+              ),
+            do: {a(), b}
+          )
+
+          a()
+        end
+
+      assert expand(before_expansion) == after_expansion
+
+      before_expansion =
+        quote do
+          with(
+            b <-
+              (
+                a = 1
+                2
+              ),
+            d <-
+              (
+                c = 3
+                4
+              ),
+            do: {a, b, c, d}
+          )
+        end
+
+      after_expansion =
+        quote do
+          with(
+            b <-
+              (
+                a = 1
+                2
+              ),
+            d <-
+              (
+                c = 3
+                4
+              ),
+            do: {a(), b, c(), d}
+          )
         end
 
       assert expand(before_expansion) == after_expansion
@@ -728,6 +1036,10 @@ defmodule Kernel.ExpansionTest do
       assert_raise CompileError, ~r"expected -> clauses for :else in \"with\"", fn ->
         expand(quote(do: with(_ <- true, do: :ok, else: :error)))
       end
+
+      assert_raise CompileError, ~r"expected -> clauses for :else in \"with\"", fn ->
+        expand(quote(do: with(_ <- true, do: :ok, else: [])))
+      end
     end
 
     test "fails for invalid options" do
@@ -740,6 +1052,16 @@ defmodule Kernel.ExpansionTest do
       assert_raise CompileError, ~r"unexpected option :foo in \"with\"", fn ->
         expand(quote(do: with(_ <- true, do: :ok, else: (_ -> :ok), foo: :bar)))
       end
+
+      assert_raise CompileError, ~r"unexpected option :foo in \"with\"", fn ->
+        expand(
+          quote do
+            with _ <- true, foo: :bar do
+              :ok
+            end
+          end
+        )
+      end
     end
   end
 
@@ -751,10 +1073,11 @@ defmodule Kernel.ExpansionTest do
 
     test "expands remotes" do
       assert expand(quote(do: &List.flatten/2)) ==
-               quote(do: &:"Elixir.List".flatten/2) |> clean_meta([:import, :context])
+               quote(do: &:"Elixir.List".flatten/2)
+               |> clean_meta([:imports, :context, :no_parens])
 
       assert expand(quote(do: &Kernel.is_atom/1)) ==
-               quote(do: &:erlang.is_atom/1) |> clean_meta([:import, :context])
+               quote(do: &:erlang.is_atom/1) |> clean_meta([:imports, :context, :no_parens])
     end
 
     test "expands macros" do
@@ -770,25 +1093,26 @@ defmodule Kernel.ExpansionTest do
           fn -> 17 end
         end
 
-      assert expand(before_expansion) == after_expansion
+      assert clean_meta(expand(before_expansion), [:import, :context, :no_parens]) ==
+               after_expansion
     end
 
     test "fails on non-continuous" do
-      assert_raise CompileError, ~r"capture &0 is not allowed", fn ->
+      assert_raise CompileError, ~r"capture argument &0 must be numbered between 1 and 255", fn ->
         expand(quote(do: &foo(&0)))
       end
 
-      assert_raise CompileError, ~r"capture &2 cannot be defined without &1", fn ->
+      assert_raise CompileError, ~r"capture argument &2 cannot be defined without &1", fn ->
         expand(quote(do: & &2))
       end
 
-      assert_raise CompileError, ~r"capture &255 cannot be defined without &1", fn ->
+      assert_raise CompileError, ~r"capture argument &255 cannot be defined without &1", fn ->
         expand(quote(do: & &255))
       end
     end
 
     test "fails on block" do
-      message = ~r"invalid args for &, block expressions are not allowed, got: \(\n  1\n  2\n\)"
+      message = ~r"block expressions are not allowed inside the capture operator &, got: 1\n2"
 
       assert_raise CompileError, message, fn ->
         code =
@@ -804,16 +1128,13 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "fails on other types" do
-      message =
-        ~r"invalid args for &, expected an expression in the format of &Mod.fun/arity, &local/arity or a capture containing at least one argument as &1, got: :foo"
-
-      assert_raise CompileError, message, fn ->
+      assert_raise CompileError, ~r"invalid args for &, expected one of:", fn ->
         expand(quote(do: &:foo))
       end
     end
 
     test "fails on invalid arity" do
-      message = ~r"invalid arity for &, expected a number between 0 and 255, got: 256"
+      message = ~r"capture argument &256 must be numbered between 1 and 255"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: &Mod.fun/256))
@@ -821,24 +1142,21 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "fails when no captures" do
-      message =
-        ~r"invalid args for &, expected an expression in the format of &Mod.fun/arity, &local/arity or a capture containing at least one argument as &1, got: foo()"
-
-      assert_raise CompileError, message, fn ->
+      assert_raise CompileError, ~r"invalid args for &, expected one of:", fn ->
         expand(quote(do: &foo()))
       end
     end
 
     test "fails on nested capture" do
-      assert_raise CompileError, ~r"nested captures via & are not allowed: &\(&1\)", fn ->
+      assert_raise CompileError, ~r"nested captures are not allowed", fn ->
         expand(quote(do: &(& &1)))
       end
     end
 
     test "fails on integers" do
-      assert_raise CompileError, ~r"unhandled &1 outside of a capture", fn ->
-        expand(quote(do: &1))
-      end
+      assert_raise CompileError,
+                   ~r"capture argument &1 must be used within the capture operator &",
+                   fn -> expand(quote(do: &1)) end
     end
   end
 
@@ -986,7 +1304,7 @@ defmodule Kernel.ExpansionTest do
       assert expand(before_expansion) == after_expansion
     end
 
-    test "leaks vars" do
+    test "does not leak vars" do
       before_expansion =
         quote do
           cond do
@@ -1004,7 +1322,7 @@ defmodule Kernel.ExpansionTest do
             2 -> y = 2
           end
 
-          :erlang.+(x, y)
+          :erlang.+(x(), y())
         end
 
       assert expand(before_expansion) == after_expansion
@@ -1031,16 +1349,18 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expects one argument in clauses" do
-      assert_raise CompileError, ~r"expected one arg for :do clauses \(->\) in \"cond\"", fn ->
-        code =
-          quote do
-            cond do
-              _, _ -> :ok
-            end
-          end
+      assert_raise CompileError,
+                   ~r"expected one argument for :do clauses \(->\) in \"cond\"",
+                   fn ->
+                     code =
+                       quote do
+                         cond do
+                           _, _ -> :ok
+                         end
+                       end
 
-        expand(code)
-      end
+                     expand(code)
+                   end
     end
 
     test "raises for invalid arguments" do
@@ -1155,7 +1475,7 @@ defmodule Kernel.ExpansionTest do
       assert expand(before_expansion) == after_expansion
     end
 
-    test "leaks vars" do
+    test "does not leak vars" do
       before_expansion =
         quote do
           case w do
@@ -1173,7 +1493,7 @@ defmodule Kernel.ExpansionTest do
             y -> y = y
           end
 
-          :erlang.+(x, y)
+          :erlang.+(x(), y())
         end
 
       assert expand(before_expansion) == after_expansion
@@ -1214,16 +1534,18 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expects exactly one argument in clauses" do
-      assert_raise CompileError, ~r"expected one arg for :do clauses \(->\) in \"case\"", fn ->
-        code =
-          quote do
-            case e do
-              _, _ -> :ok
-            end
-          end
+      assert_raise CompileError,
+                   ~r"expected one argument for :do clauses \(->\) in \"case\"",
+                   fn ->
+                     code =
+                       quote do
+                         case e do
+                           _, _ -> :ok
+                         end
+                       end
 
-        expand(code)
-      end
+                     expand(code)
+                   end
     end
 
     test "fails with invalid arguments" do
@@ -1322,7 +1644,7 @@ defmodule Kernel.ExpansionTest do
       assert expand(before_expansion) == after_expansion
     end
 
-    test "leaks vars" do
+    test "does not leak vars" do
       before_expansion =
         quote do
           receive do
@@ -1340,13 +1662,13 @@ defmodule Kernel.ExpansionTest do
             y -> y = y
           end
 
-          :erlang.+(x, y)
+          :erlang.+(x(), y())
         end
 
       assert expand(before_expansion) == after_expansion
     end
 
-    test "leaks vars on after" do
+    test "does not leak vars on after" do
       before_expansion =
         quote do
           receive do
@@ -1370,7 +1692,7 @@ defmodule Kernel.ExpansionTest do
               w = y()
           end
 
-          :erlang.+(x, w)
+          :erlang.+(x(), w())
         end
 
       assert expand(before_expansion) == after_expansion
@@ -1426,18 +1748,20 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expects on argument for do/after clauses" do
-      assert_raise CompileError, ~r"expected one arg for :do clauses \(->\) in \"receive\"", fn ->
-        code =
-          quote do
-            receive do
-              _, _ -> :ok
-            end
-          end
+      assert_raise CompileError,
+                   ~r"expected one argument for :do clauses \(->\) in \"receive\"",
+                   fn ->
+                     code =
+                       quote do
+                         receive do
+                           _, _ -> :ok
+                         end
+                       end
 
-        expand(code)
-      end
+                     expand(code)
+                   end
 
-      message = ~r"expected one arg for :after clauses \(->\) in \"receive\""
+      message = ~r"expected one argument for :after clauses \(->\) in \"receive\""
 
       assert_raise CompileError, message, fn ->
         code =
@@ -1540,6 +1864,8 @@ defmodule Kernel.ExpansionTest do
         quote do
           try do
             x
+          catch
+            _, _ -> :ok
           else
             z -> z
           end
@@ -1551,6 +1877,8 @@ defmodule Kernel.ExpansionTest do
         quote do
           try do
             x()
+          catch
+            _, _ -> :ok
           else
             z -> z
           end
@@ -1590,7 +1918,7 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expects more than do" do
-      assert_raise CompileError, ~r"missing :catch/:rescue/:after/:else option in \"try\"", fn ->
+      assert_raise CompileError, ~r"missing :catch/:rescue/:after option in \"try\"", fn ->
         code =
           quote do
             try do
@@ -1689,18 +2017,20 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expects exactly one argument in rescue clauses" do
-      assert_raise CompileError, ~r"expected one arg for :rescue clauses \(->\) in \"try\"", fn ->
-        code =
-          quote do
-            try do
-              x
-            rescue
-              _, _ -> :ok
-            end
-          end
+      assert_raise CompileError,
+                   ~r"expected one argument for :rescue clauses \(->\) in \"try\"",
+                   fn ->
+                     code =
+                       quote do
+                         try do
+                           x
+                         rescue
+                           _, _ -> :ok
+                         end
+                       end
 
-        expand(code)
-      end
+                     expand(code)
+                   end
     end
 
     test "expects an alias, a variable, or \"var in [alias]\" as the argument of rescue clauses" do
@@ -1762,6 +2092,19 @@ defmodule Kernel.ExpansionTest do
         expand(code)
       end
 
+      assert_raise CompileError, ~r"expected -> clauses for :rescue in \"try\"", fn ->
+        code =
+          quote do
+            try do
+              e
+            rescue
+              []
+            end
+          end
+
+        expand(code)
+      end
+
       assert_raise CompileError, ~r"expected -> clauses for :catch in \"try\"", fn ->
         code =
           quote do
@@ -1788,11 +2131,26 @@ defmodule Kernel.ExpansionTest do
         expand(code)
       end
 
+      assert_raise CompileError, ~r"expected -> clauses for :catch in \"try\"", fn ->
+        code =
+          quote do
+            try do
+              e
+            catch
+              []
+            end
+          end
+
+        expand(code)
+      end
+
       assert_raise CompileError, ~r"expected -> clauses for :else in \"try\"", fn ->
         code =
           quote do
             try do
               e
+            catch
+              _ -> :ok
             else
               x
             end
@@ -1806,8 +2164,25 @@ defmodule Kernel.ExpansionTest do
           quote do
             try do
               e
+            catch
+              _ -> :ok
             else
               [:not, :clauses]
+            end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, ~r"expected -> clauses for :else in \"try\"", fn ->
+        code =
+          quote do
+            try do
+              e
+            catch
+              _ -> :ok
+            else
+              []
             end
           end
 
@@ -1817,37 +2192,187 @@ defmodule Kernel.ExpansionTest do
   end
 
   describe "bitstrings" do
+    test "parallel match" do
+      assert expand(quote(do: <<foo>> = <<bar>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<foo::integer>> = <<bar()::integer>>)
+               |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<foo>> = baz = <<bar>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<foo::integer>> = baz = <<bar()::integer>>)
+               |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<foo>> = {<<baz>>} = bar())) |> clean_meta([:alignment]) ==
+               quote(do: <<foo::integer>> = {<<baz::integer>>} = bar())
+               |> clean_bit_modifiers()
+
+      message = ~r"binary patterns cannot be matched in parallel using \"=\""
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<foo>> = <<baz>> = bar()))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<foo>> = qux = <<baz>> = bar()))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: {<<foo>>} = {qux} = {<<baz>>} = bar()))
+      end
+
+      assert expand(quote(do: {:foo, <<foo>>} = {<<baz>>, :baz} = bar()))
+
+      # two-element tuples are special cased
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: {:foo, <<foo>>} = {:foo, <<baz>>} = bar()))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: %{foo: <<foo>>} = %{baz: <<qux>>, foo: <<baz>>} = bar()))
+      end
+
+      assert expand(quote(do: %{foo: <<foo>>} = %{baz: <<baz>>} = bar()))
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: %_{foo: <<foo>>} = %_{foo: <<baz>>} = bar()))
+      end
+
+      assert expand(quote(do: %_{foo: <<foo>>} = %_{baz: <<baz>>} = bar()))
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: %_{foo: <<foo>>} = %{foo: <<baz>>} = bar()))
+      end
+
+      assert expand(quote(do: %_{foo: <<foo>>} = %{baz: <<baz>>} = bar()))
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            case bar() do
+              <<foo>> = <<baz>> -> nil
+            end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            case bar() do
+              <<foo>> = qux = <<baz>> -> nil
+            end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            case bar() do
+              [<<foo>>] = [<<baz>>] -> nil
+            end
+          end
+
+        expand(code)
+      end
+    end
+
+    test "nested match" do
+      assert expand(quote(do: <<foo = bar>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<foo = bar()::integer>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<?-, <<_, _::binary>> = rest()::binary>>))
+             |> clean_meta([:alignment]) ==
+               quote(do: <<45::integer, <<_::integer, _::binary>> = rest()::binary>>)
+               |> clean_bit_modifiers()
+
+      message = ~r"cannot pattern match inside a bitstring that is already in match"
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<bar = baz>> = foo()))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<?-, <<_, _::binary>> = rest::binary>> = foo()))
+      end
+    end
+
     test "inlines binaries inside interpolation" do
       import Kernel.ExpansionTarget
 
-      assert expand(quote(do: "foo#{bar()}" = "foobar")) ==
-               quote(do: <<"foo"::binary(), "bar"::binary()>> = "foobar")
+      # Check expansion happens only once
+      assert expand(quote(do: "foo#{message_hello("bar")}")) |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, "bar"::binary>>) |> clean_bit_modifiers()
+
+      assert_received :hello
+      refute_received :hello
+
+      # And it also works in match
+      assert expand(quote(do: "foo#{bar()}" = "foobar")) |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, "bar"::binary>> = "foobar")
+               |> clean_bit_modifiers()
+    end
+
+    test "inlines binaries inside interpolation is isomorphic after manual expansion" do
+      import Kernel.ExpansionTarget
+
+      quoted = Macro.prewalk(quote(do: "foo#{bar()}" = "foobar"), &Macro.expand(&1, __ENV__))
+
+      assert expand(quoted) |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, "bar"::binary>> = "foobar")
+               |> clean_bit_modifiers()
     end
 
     test "expands size * unit" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
+      import Kernel.ExpansionTarget
 
-      assert expand(quote(do: <<x::13>>)) == quote(do: <<x()::integer()-size(13)>>)
+      assert expand(quote(do: <<x::13>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-size(13)>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::13*6>>)) == quote(do: <<x()::integer()-unit(6)-size(13)>>)
+      assert expand(quote(do: <<x::13*6>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-unit(6)-size(13)>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::_*6-binary>>)) == quote(do: <<x()::binary()-unit(6)>>)
+      assert expand(quote(do: <<x::_*6-binary>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary-unit(6)>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::13*6-binary>>)) ==
-               quote(do: <<x()::binary()-unit(6)-size(13)>>)
+      assert expand(quote(do: <<x::13*6-binary>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary-unit(6)-size(13)>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::binary-(13 * 6)-binary>>)) ==
-               quote(do: <<x()::binary()-unit(6)-size(13)>>)
+      assert expand(quote(do: <<x::binary-(13 * 6)-binary>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary-unit(6)-size(13)>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::seventeen()>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-size(17)>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::seventeen()*2>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-unit(2)-size(17)>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::seventeen()*seventeen()>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-unit(17)-size(17)>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::_*seventeen()-binary>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary-unit(17)>>) |> clean_bit_modifiers()
     end
 
     test "expands binary/bitstring specifiers" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
 
-      assert expand(quote(do: <<x::binary>>)) == quote(do: <<x()::binary()>>)
-      assert expand(quote(do: <<x::bytes>>)) == quote(do: <<x()::binary()>>)
-      assert expand(quote(do: <<x::bitstring>>)) == quote(do: <<x()::bitstring()>>)
-      assert expand(quote(do: <<x::bits>>)) == quote(do: <<x()::bitstring()>>)
-      assert expand(quote(do: <<x::binary-little>>)) == quote(do: <<x()::binary()>>)
+      assert expand(quote(do: <<x::binary>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::bytes>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::bitstring>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::bitstring>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::bits>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::bitstring>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::binary-little>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::binary>>) |> clean_bit_modifiers()
 
       message = ~r"signed and unsigned specifiers are supported only on integer and float type"
 
@@ -1857,11 +2382,16 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expands utf* specifiers" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
 
-      assert expand(quote(do: <<x::utf8>>)) == quote(do: <<x()::utf8()>>)
-      assert expand(quote(do: <<x::utf16>>)) == quote(do: <<x()::utf16()>>)
-      assert expand(quote(do: <<x::utf32-little>>)) == quote(do: <<x()::utf32()-little()>>)
+      assert expand(quote(do: <<x::utf8>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::utf8>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::utf16>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::utf16>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::utf32-little>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::utf32-little>>) |> clean_bit_modifiers()
 
       message = ~r"signed and unsigned specifiers are supported only on integer and float type"
 
@@ -1875,17 +2405,22 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expands numbers specifiers" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
 
-      assert expand(quote(do: <<x::integer>>)) == quote(do: <<x()::integer()>>)
-      assert expand(quote(do: <<x::little>>)) == quote(do: <<x()::integer()-little()>>)
-      assert expand(quote(do: <<x::signed>>)) == quote(do: <<x()::integer()-signed()>>)
+      assert expand(quote(do: <<x::integer>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::signed-native>>)) ==
-               quote(do: <<x()::integer()-native()-signed()>>)
+      assert expand(quote(do: <<x::little>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-little>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<x::float-signed-native>>)) ==
-               quote(do: <<x()::float()-native()-signed()>>)
+      assert expand(quote(do: <<x::signed>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-signed>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::signed-native>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-native-signed>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x::float-signed-native>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::float-native-signed>>) |> clean_bit_modifiers()
 
       message =
         ~r"integer and float types require a size specifier if the unit specifier is given"
@@ -1896,17 +2431,20 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "expands macro specifiers" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
       import Kernel.ExpansionTarget
 
-      assert expand(quote(do: <<x::seventeen>>)) == quote(do: <<x()::integer()-size(17)>>)
+      assert expand(quote(do: <<x::seventeen>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer-size(17)>>) |> clean_bit_modifiers()
 
-      assert expand(quote(do: <<seventeen::seventeen, x::size(seventeen)>> = 1)) ==
-               quote(do: <<seventeen::integer()-size(17), x::integer()-size(seventeen)>> = 1)
+      assert expand(quote(do: <<seventeen::seventeen, x::size(seventeen)>> = 1))
+             |> clean_meta([:alignment]) ==
+               quote(do: <<seventeen::integer-size(17), x::integer-size(seventeen)>> = 1)
+               |> clean_bit_modifiers()
     end
 
     test "expands macro in args" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
 
       before_expansion =
         quote do
@@ -1917,14 +2455,15 @@ defmodule Kernel.ExpansionTest do
       after_expansion =
         quote do
           :"Elixir.Kernel.ExpansionTarget"
-          <<x()::integer()-size(17)>>
+          <<x()::integer-size(17)>>
         end
 
-      assert expand(before_expansion) == after_expansion
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
     end
 
     test "supports dynamic size" do
-      import Kernel, except: [-: 2]
+      import Kernel, except: [-: 1, -: 2]
 
       before_expansion =
         quote do
@@ -1935,17 +2474,119 @@ defmodule Kernel.ExpansionTest do
       after_expansion =
         quote do
           var = 1
-          <<x()::integer()-unit(8)-size(var)>>
+          <<x()::integer-unit(8)-size(var)>>
         end
 
-      assert expand(before_expansion) == after_expansion
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
+    end
+
+    defmacro offset(size, binary) do
+      quote do
+        offset = unquote(size)
+        <<_::size(offset)>> = unquote(binary)
+      end
+    end
+
+    test "supports size from counters" do
+      assert offset(8, <<0>>)
+    end
+
+    test "merges bitstrings" do
+      import Kernel, except: [-: 1, -: 2]
+
+      assert expand(quote(do: <<x, <<y::signed-native>>, z>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer, y()::integer-native-signed, z()::integer>>)
+               |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<x, <<y::signed-native>>::bitstring, z>>))
+             |> clean_meta([:alignment]) ==
+               quote(do: <<x()::integer, y()::integer-native-signed, z()::integer>>)
+               |> clean_bit_modifiers()
+    end
+
+    test "merges binaries" do
+      import Kernel, except: [-: 1, -: 2]
+
+      assert expand(quote(do: "foo" <> x)) |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, x()::binary>>) |> clean_bit_modifiers()
+
+      assert expand(quote(do: "foo" <> <<x::size(4), y::size(4)>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, x()::integer-size(4), y()::integer-size(4)>>)
+               |> clean_bit_modifiers()
+
+      assert expand(quote(do: <<"foo", <<x::size(4), y::size(4)>>::binary>>))
+             |> clean_meta([:alignment]) ==
+               quote(do: <<"foo"::binary, x()::integer-size(4), y()::integer-size(4)>>)
+               |> clean_bit_modifiers()
+    end
+
+    test "guard expressions on size" do
+      import Kernel, except: [-: 1, -: 2, +: 1, +: 2, length: 1]
+
+      # Arithmetic operations with literals and variables are valid expressions
+      # for bitstring size in OTP 23+
+
+      before_expansion =
+        quote do
+          var = 1
+          <<x::size(var + 3)>>
+        end
+
+      after_expansion =
+        quote do
+          var = 1
+          <<x()::integer-size(:erlang.+(var, 3))>>
+        end
+
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
+
+      # Other valid guard expressions are also legal for bitstring size in OTP 23+
+
+      before_expansion = quote(do: <<x::size(length(~c"test"))>>)
+      after_expansion = quote(do: <<x()::integer-size(:erlang.length([?t, ?e, ?s, ?t]))>>)
+
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
+    end
+
+    test "map lookup on size" do
+      import Kernel, except: [-: 1, -: 2]
+
+      before_expansion =
+        quote do
+          var = %{foo: 3}
+          <<x::size(var.foo)>>
+        end
+
+      after_expansion =
+        quote do
+          var = %{foo: 3}
+          <<x()::integer-size(var.foo)>>
+        end
+
+      assert expand(before_expansion) |> clean_meta([:alignment]) ==
+               clean_bit_modifiers(after_expansion)
+    end
+
+    test "raises on unaligned binaries in match" do
+      message = ~r"its number of bits is not divisible by 8"
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<rest::size(3)>> <> _ = "foo"))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<1::4>> <> "foo"))
+      end
     end
 
     test "raises on size or unit for literal bitstrings" do
       message = ~r"literal <<>> in bitstring supports only type specifiers"
 
       assert_raise CompileError, message, fn ->
-        expand(quote(do: <<(<<"foo">>::32)>>))
+        expand(quote(do: <<(<<"foo">>)::32>>))
       end
     end
 
@@ -1957,14 +2598,21 @@ defmodule Kernel.ExpansionTest do
       end
     end
 
+    test "16-bit floats" do
+      import Kernel, except: [-: 1, -: 2]
+
+      assert expand(quote(do: <<12.3::float-16>>)) |> clean_meta([:alignment]) ==
+               quote(do: <<12.3::float-size(16)>>) |> clean_bit_modifiers()
+    end
+
     test "raises for invalid size * unit for floats" do
-      message = ~r"float requires size\*unit to be 32 or 64 \(default\), got: 128"
+      message = ~r"float requires size\*unit to be 16, 32, or 64 \(default\), got: 128"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: <<12.3::32*4>>))
       end
 
-      message = ~r"float requires size\*unit to be 32 or 64 \(default\), got: 256"
+      message = ~r"float requires size\*unit to be 16, 32, or 64 \(default\), got: 256"
 
       assert_raise CompileError, message, fn ->
         expand(quote(do: <<12.3::256>>))
@@ -1972,10 +2620,85 @@ defmodule Kernel.ExpansionTest do
     end
 
     test "raises for invalid size" do
-      message = ~r"size in bitstring expects an integer or a variable as argument, got: :oops"
+      assert_raise CompileError, ~r/undefined variable "foo"/, fn ->
+        code =
+          quote do
+            fn <<_::size(foo)>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, ~r/undefined variable "foo"/, fn ->
+        code =
+          quote do
+            fn <<_::size(foo), foo::size(8)>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, ~r/undefined variable "foo"/, fn ->
+        code =
+          quote do
+            fn foo, <<_::size(foo)>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      assert_raise CompileError, ~r/undefined variable "foo"/, fn ->
+        code =
+          quote do
+            fn foo, <<_::size(foo + 1)>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      message = ~r"cannot find or invoke local foo/0 inside bitstring size specifier"
 
       assert_raise CompileError, message, fn ->
-        expand(quote(do: <<"foo"::size(:oops)>>))
+        code =
+          quote do
+            fn <<_::size(foo())>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      message = ~r"anonymous call is not allowed in bitstring size specifier"
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            fn <<_::size(foo.())>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      message = ~r"cannot invoke remote function in bitstring size specifier"
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            foo = %{bar: true}
+            fn <<_::size(foo.bar())>> -> :ok end
+          end
+
+        expand(code)
+      end
+
+      message = ~r"cannot invoke remote function Foo.bar/0 inside bitstring size specifier"
+
+      assert_raise CompileError, message, fn ->
+        code =
+          quote do
+            fn <<_::size(Foo.bar())>> -> :ok end
+          end
+
+        expand(code)
       end
     end
 
@@ -2021,19 +2744,44 @@ defmodule Kernel.ExpansionTest do
       assert_raise CompileError, message, fn ->
         expand(quote(do: <<x::binary, y::binary>> = "foobar"))
       end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<(<<x::binary>>), y::binary>> = "foobar"))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<(<<x::bitstring>>), y::bitstring>> = "foobar"))
+      end
+
+      assert_raise CompileError, message, fn ->
+        expand(quote(do: <<(<<x::bitstring>>)::bitstring, y::bitstring>> = "foobar"))
+      end
     end
   end
 
   describe "op ambiguity" do
     test "raises when a call is ambiguous" do
+      # We use string_to_quoted! here to avoid the formatter adding parentheses
       message = ~r["a -1" looks like a function call but there is a variable named "a"]
 
       assert_raise CompileError, message, fn ->
-        # We use string_to_quoted! here to avoid the formatter adding parentheses to "a -1".
         code =
           Code.string_to_quoted!("""
           a = 1
           a -1
+          """)
+
+        expand(code)
+      end
+
+      message =
+        ~r["a -1\.\.\(a \+ 1\)" looks like a function call but there is a variable named "a"]
+
+      assert_raise CompileError, message, fn ->
+        code =
+          Code.string_to_quoted!("""
+          a = 1
+          a -1 .. a + 1
           """)
 
         expand(code)
@@ -2046,19 +2794,8 @@ defmodule Kernel.ExpansionTest do
       expand(quote(do: unquote({1, 2, 3})))
     end
 
-    assert_raise CompileError, ~r"invalid quoted expression: #Function<", fn ->
+    assert_raise CompileError, ~r"invalid quoted expression: #Function\<", fn ->
       expand(quote(do: unquote({:sample, fn -> nil end})))
-    end
-
-    assert_raise CompileError, ~r"invalid pattern in match", fn ->
-      code =
-        quote do
-          case true do
-            true && true -> true
-          end
-        end
-
-      expand(code)
     end
 
     assert_raise CompileError, ~r"invalid pattern in match", fn ->
@@ -2074,7 +2811,7 @@ defmodule Kernel.ExpansionTest do
       expand(code)
     end
 
-    assert_raise CompileError, ~r"invalid expression in guard", fn ->
+    assert_raise CompileError, ~r"anonymous call is not allowed in guards", fn ->
       code =
         quote do
           x = & &1
@@ -2091,20 +2828,50 @@ defmodule Kernel.ExpansionTest do
       expand(quote(do: foo(1)(2)))
     end
 
-    assert_raise CompileError, ~r"invalid call 1\.foo\(\)", fn ->
+    assert_raise CompileError, ~r"invalid call 1\.foo", fn ->
       expand(quote(do: 1.foo))
+    end
+
+    assert_raise CompileError, ~r"invalid call 0\.foo", fn ->
+      expand(quote(do: __ENV__.line.foo))
     end
 
     assert_raise CompileError, ~r"unhandled operator ->", fn ->
       expand(quote(do: (foo -> bar)))
     end
 
-    message = ~r"size in bitstring expects an integer or a variable as argument, got: foo\(\)"
+    message = ~r/"wrong_fun" cannot handle clauses with the ->/
 
     assert_raise CompileError, message, fn ->
       code =
         quote do
-          fn <<_::size(foo)>> -> :ok end
+          wrong_fun do
+            _ -> :ok
+          end
+        end
+
+      expand(code)
+    end
+
+    assert_raise CompileError, message, fn ->
+      code =
+        quote do
+          wrong_fun do
+            foo -> bar
+          after
+            :ok
+          end
+        end
+
+      expand(code)
+    end
+
+    assert_raise CompileError, ~r/"length" cannot handle clauses with the ->/, fn ->
+      code =
+        quote do
+          length do
+            _ -> :ok
+          end
         end
 
       expand(code)
@@ -2122,17 +2889,42 @@ defmodule Kernel.ExpansionTest do
     Macro.prewalk(expr, &Macro.update_meta(&1, cleaner))
   end
 
+  @bitstring_modifiers [
+    :integer,
+    :float,
+    :binary,
+    :utf8,
+    :utf16,
+    :utf32,
+    :native,
+    :signed,
+    :bitstring,
+    :little
+  ]
+
+  defp clean_bit_modifiers(expr) do
+    Macro.prewalk(expr, fn
+      {expr, meta, atom} when expr in @bitstring_modifiers and is_atom(atom) ->
+        {expr, meta, nil}
+
+      other ->
+        other
+    end)
+  end
+
   defp expand(expr) do
     expand_env(expr, __ENV__) |> elem(0)
   end
 
   defp expand_env(expr, env) do
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      send(self(), {:expand_env, :elixir_expand.expand(expr, env)})
+      send(self(), {:expand_env, :elixir_expand.expand(expr, :elixir_env.env_to_ex(env), env)})
     end)
 
     receive do
-      {:expand_env, result} -> result
+      {:expand_env, {expr, scope, env}} ->
+        env = :elixir_env.to_caller({env.line, scope, env})
+        {clean_meta(expr, [:version, :inferred_bitstring_spec]), env}
     end
   end
 end

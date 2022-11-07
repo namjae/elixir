@@ -10,21 +10,23 @@ defmodule Mix.Tasks.Profile.Fprof do
   sequential code.
 
   Before running the code, it invokes the `app.start` task which compiles
-  and loads your project. Then the target expression is profiled, together
-  with all processes which are spawned by it. Other processes (e.g. those
+  and loads your project. After that, the target expression is profiled, together
+  with all processes which are spawned by it. Other processes (for example, those
   residing in the OTP application supervision tree) are not profiled.
 
   To profile the code, you can use syntax similar to the `mix run` task:
 
-      mix profile.fprof -e Hello.world
-      mix profile.fprof my_script.exs arg1 arg2 arg3
+      $ mix profile.fprof -e Hello.world
+      $ mix profile.fprof my_script.exs arg1 arg2 arg3
+
+  This task is automatically re-enabled, so you can profile multiple times
+  in the same Mix invocation.
 
   ## Command line options
 
     * `--callers` - prints detailed information about immediate callers and called functions
     * `--details` - includes profile data for each profiled process
     * `--sort key` - sorts the output by given key: `acc` (default) or `own`
-    * `--config`, `-c`  - loads the given configuration file
     * `--eval`, `-e` - evaluates the given code
     * `--require`, `-r` - requires pattern before running the command
     * `--parallel`, `-p` - makes all requires parallel
@@ -84,12 +86,12 @@ defmodule Mix.Tasks.Profile.Fprof do
   the total time spent in the function was 50ms.
 
   For a detailed explanation it's worth reading the analysis in
-  [Erlang documentation for fprof](http://www.erlang.org/doc/man/fprof.html#analysis).
+  [Erlang/OTP documentation for fprof](https://www.erlang.org/doc/man/fprof.html#analysis).
 
   ## Caveats
 
   You should be aware that the code being profiled is running in an anonymous
-  function which is invoked by [`:fprof` module](http://wwww.erlang.org/doc/man/fprof.html).
+  function which is invoked by [`:fprof` module](https://www.erlang.org/doc/man/fprof.html).
   Thus, you'll see some additional entries in your profile output,
   such as `:fprof` calls, an anonymous
   function with high ACC time, or an `:undefined` function which represents
@@ -125,8 +127,10 @@ defmodule Mix.Tasks.Profile.Fprof do
 
   @aliases [r: :require, p: :parallel, e: :eval, c: :config]
 
+  @impl true
   def run(args) do
     {opts, head} = OptionParser.parse_head!(args, aliases: @aliases, strict: @switches)
+    Mix.Task.reenable("profile.fprof")
 
     Mix.Tasks.Run.run(
       ["--no-mix-exs" | args],
@@ -146,7 +150,7 @@ defmodule Mix.Tasks.Profile.Fprof do
           fn ->
             unquote(Code.string_to_quoted!(code_string))
           end,
-          unquote(opts)
+          unquote(Macro.escape(Enum.map(opts, &parse_opt/1)))
         )
       end
 
@@ -154,11 +158,30 @@ defmodule Mix.Tasks.Profile.Fprof do
     Code.compile_quoted(content)
   end
 
-  @doc false
-  def profile(fun, opts) do
-    fun
-    |> profile_and_analyse(opts)
-    |> print_output
+  defp parse_opt({:sort, "acc"}), do: {:sort, :acc}
+  defp parse_opt({:sort, "own"}), do: {:sort, :own}
+  defp parse_opt({:sort, other}), do: Mix.raise("Invalid sort option: #{other}")
+  defp parse_opt(other), do: other
+
+  @doc """
+  Allows to programmatically run the `fprof` profiler on expression in `fun`.
+
+  Returns the return value of `fun`.
+
+  ## Options
+
+    * `:callers` - prints detailed information about immediate callers and called functions
+    * `:details` - includes profile data for each profiled process
+    * `:sort` - sorts the output by given key: `:acc` (default) or `:own`
+
+  """
+  @spec profile((-> any()), keyword()) :: any()
+  def profile(fun, opts \\ []) when is_function(fun, 0) do
+    {return_value, analysis_output} = profile_and_analyse(fun, opts)
+
+    print_output(analysis_output)
+
+    return_value
   end
 
   defp profile_and_analyse(fun, opts) do
@@ -167,14 +190,8 @@ defmodule Mix.Tasks.Profile.Fprof do
       fun.()
     end
 
-    sorting =
-      case Keyword.get(opts, :sort, "acc") do
-        "acc" -> :acc
-        "own" -> :own
-      end
-
     {:ok, tracer} = :fprof.profile(:start)
-    :fprof.apply(fun, [], tracer: tracer)
+    return_value = :fprof.apply(fun, [], tracer: tracer)
 
     {:ok, analyse_dest} = StringIO.open("")
 
@@ -184,12 +201,12 @@ defmodule Mix.Tasks.Profile.Fprof do
         totals: true,
         details: Keyword.get(opts, :details, false),
         callers: Keyword.get(opts, :callers, false),
-        sort: sorting
+        sort: Keyword.get(opts, :sort, :acc)
       )
     else
       :ok ->
         {_in, analysis_output} = StringIO.contents(analyse_dest)
-        String.to_charlist(analysis_output)
+        {return_value, String.to_charlist(analysis_output)}
     after
       StringIO.close(analyse_dest)
     end

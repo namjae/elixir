@@ -14,17 +14,23 @@ import(Meta, Ref, Opts, E) ->
       {only, macros} ->
         {Added2, Macs} = import_macros(true, Meta, Ref, Opts, E),
         {keydelete(Ref, ?key(E, functions)), Macs, Added2};
+      {only, sigils} ->
+        {Added1, Funs} = import_sigil_functions(Meta, Ref, Opts, E),
+        {Added2, Macs} = import_sigil_macros(Meta, Ref, Opts, E),
+        {Funs, Macs, Added1 or Added2};
       {only, List} when is_list(List) ->
         {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
         {Added2, Macs} = import_macros(false, Meta, Ref, Opts, E),
         {Funs, Macs, Added1 or Added2};
+      {only, Other} ->
+        elixir_errors:form_error(Meta, E, ?MODULE, {invalid_option, only, Other});
       false ->
         {Added1, Funs} = import_functions(Meta, Ref, Opts, E),
         {Added2, Macs} = import_macros(false, Meta, Ref, Opts, E),
         {Funs, Macs, Added1 or Added2}
     end,
 
-  record_warn(Meta, Ref, Opts, Added, E),
+  elixir_env:trace({import, [{imported, Added} | Meta], Ref, Opts}, E),
   {Functions, Macros}.
 
 import_functions(Meta, Ref, Opts, E) ->
@@ -38,34 +44,42 @@ import_macros(Force, Meta, Ref, Opts, E) ->
       {ok, Macros} ->
         Macros;
       error when Force ->
-        elixir_errors:form_error(Meta, ?key(E, file), ?MODULE, {no_macros, Ref});
+        elixir_errors:form_error(Meta, E, ?MODULE, {no_macros, Ref});
       error ->
         []
     end
   end).
 
-record_warn(Meta, Ref, Opts, Added, E) ->
-  Warn =
-    case keyfind(warn, Opts) of
-      {warn, false} -> false;
-      {warn, true} -> true;
-      false -> not lists:keymember(context, 1, Meta)
-    end,
+import_sigil_functions(Meta, Ref, Opts, E) ->
+  calculate(Meta, Ref, Opts, ?key(E, functions), ?key(E, file), fun() ->
+    filter_sigils(get_functions(Ref))
+  end).
 
-  Only =
-    case keyfind(only, Opts) of
-      {only, List} when is_list(List) -> List;
-      _ -> []
-    end,
+import_sigil_macros(Meta, Ref, Opts, E) ->
+  calculate(Meta, Ref, Opts, ?key(E, macros), ?key(E, file), fun() ->
+    case fetch_macros(Ref) of
+      {ok, Macros} ->
+        filter_sigils(Macros);
+      error ->
+        []
+    end
+  end).
 
-  elixir_lexical:record_import(Ref, Only, ?line(Meta), Added and Warn, ?key(E, lexical_tracker)).
+filter_sigils(Key) ->
+  lists:filter(fun({Atom, _}) ->
+    case atom_to_list(Atom) of
+      "sigil_" ++ [L] when L >= $a, L =< $z; L >= $A, L =< $Z -> true;
+      _ -> false
+    end
+  end, Key).
 
 %% Calculates the imports based on only and except
 
 calculate(Meta, Key, Opts, Old, File, Existing) ->
   New = case keyfind(only, Opts) of
     {only, Only} when is_list(Only) ->
-      ok = ensure_keyword_list(Meta, File, Only, only),
+      ensure_keyword_list(Meta, File, Only, only),
+      ensure_no_duplicates(Meta, File, Only, only),
       case keyfind(except, Opts) of
         false ->
           ok;
@@ -83,7 +97,8 @@ calculate(Meta, Key, Opts, Old, File, Existing) ->
         false ->
           remove_underscored(Existing());
         {except, Except} when is_list(Except) ->
-          ok = ensure_keyword_list(Meta, File, Except, except),
+          ensure_keyword_list(Meta, File, Except, except),
+          ensure_no_duplicates(Meta, File, Except, except),
           %% We are not checking existence of exports listed in :except option
           %% on purpose: to support backwards compatible code.
           %% For example, "import String, except: [trim: 1]"
@@ -91,7 +106,9 @@ calculate(Meta, Key, Opts, Old, File, Existing) ->
           case keyfind(Key, Old) of
             false -> remove_underscored(Existing()) -- Except;
             {Key, OldImports} -> OldImports -- Except
-          end
+          end;
+        {except, Other} ->
+          elixir_errors:form_error(Meta, File, ?MODULE, {invalid_option, except, Other})
       end
   end,
 
@@ -154,11 +171,24 @@ ensure_keyword_list(Meta, File, [{Key, Value} | Rest], Kind) when is_atom(Key), 
 ensure_keyword_list(Meta, File, _Other, Kind) ->
   elixir_errors:form_error(Meta, File, ?MODULE, {invalid_option, Kind}).
 
+ensure_no_duplicates(Meta, File, Option, Kind) ->
+  lists:foldl(fun({Name, Arity}, Acc) ->
+    case lists:member({Name, Arity}, Acc) of
+      true ->
+        elixir_errors:form_error(Meta, File, ?MODULE, {duplicated_import, {Kind, Name, Arity}});
+      false ->
+        [{Name, Arity} | Acc]
+    end
+  end, [], Option).
+
 %% ERROR HANDLING
 
 format_error(only_and_except_given) ->
   ":only and :except can only be given together to import "
-  "when :only is either :functions or :macros";
+  "when :only is :functions, :macros, or :sigils";
+
+format_error({duplicated_import, {Option, Name, Arity}}) ->
+  io_lib:format("invalid :~s option for import, ~ts/~B is duplicated", [Option, Name, Arity]);
 
 format_error({invalid_import, {Receiver, Name, Arity}}) ->
   io_lib:format("cannot import ~ts.~ts/~B because it is undefined or private",
@@ -167,6 +197,15 @@ format_error({invalid_import, {Receiver, Name, Arity}}) ->
 format_error({invalid_option, Option}) ->
   Message = "invalid :~s option for import, expected a keyword list with integer values",
   io_lib:format(Message, [Option]);
+
+format_error({invalid_option, only, Value}) ->
+  Message = "invalid :only option for import, expected value to be an atom :functions, :macros"
+  ", or a list literal, got: ~s",
+  io_lib:format(Message, ['Elixir.Macro':to_string(Value)]);
+
+format_error({invalid_option, except, Value}) ->
+  Message = "invalid :except option for import, expected value to be a list literal, got: ~s",
+  io_lib:format(Message, ['Elixir.Macro':to_string(Value)]);
 
 format_error({special_form_conflict, {Receiver, Name, Arity}}) ->
   io_lib:format("cannot import ~ts.~ts/~B because it conflicts with Elixir special forms",
@@ -191,7 +230,7 @@ intersection([H | T], All) ->
 
 intersection([], _All) -> [].
 
-%% Internal funs that are never imported etc.
+%% Internal funs that are never imported, and the like
 
 remove_underscored(List) ->
   lists:filter(fun({Name, _}) ->
@@ -211,6 +250,8 @@ special_form('&', 1) -> true;
 special_form('^', 1) -> true;
 special_form('=', 2) -> true;
 special_form('%', 2) -> true;
+special_form('|', 2) -> true;
+special_form('.', 2) -> true;
 special_form('::', 2) -> true;
 special_form('__block__', _) -> true;
 special_form('->', _) -> true;
@@ -225,6 +266,7 @@ special_form('import', 1) -> true;
 special_form('import', 2) -> true;
 special_form('__ENV__', 0) -> true;
 special_form('__CALLER__', 0) -> true;
+special_form('__STACKTRACE__', 0) -> true;
 special_form('__MODULE__', 0) -> true;
 special_form('__DIR__', 0) -> true;
 special_form('__aliases__', _) -> true;
@@ -238,6 +280,6 @@ special_form('for', _) -> true;
 special_form('with', _) -> true;
 special_form('cond', 1) -> true;
 special_form('case', 2) -> true;
-special_form('try', 2) -> true;
+special_form('try', 1) -> true;
 special_form('receive', 1) -> true;
 special_form(_, _) -> false.

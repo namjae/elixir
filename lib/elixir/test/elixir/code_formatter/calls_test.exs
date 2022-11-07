@@ -75,16 +75,16 @@ defmodule Code.Formatter.CallsTest do
 
     test "for heredocs" do
       assert_same """
-      foo('''
+      foo(~c'''
       bar
       ''')
       """
 
-      assert_same to_string('''
-                  foo("""
-                  bar
-                  """)
-                  ''')
+      assert_same ~S'''
+      foo("""
+      bar
+      """)
+      '''
 
       assert_same """
       foo(~S'''
@@ -98,21 +98,6 @@ defmodule Code.Formatter.CallsTest do
                   ''')
                   """,
                   @short_length
-    end
-
-    test "for binaries" do
-      bad = "foo(<<1, 2, 3, 4>>)"
-
-      good = """
-      foo(<<
-        1,
-        2,
-        3,
-        4
-      >>)
-      """
-
-      assert_format bad, good, @short_length
     end
 
     test "for lists" do
@@ -145,6 +130,40 @@ defmodule Code.Formatter.CallsTest do
       """
 
       assert_format bad, good, @medium_length
+    end
+
+    test "for binaries only on eol" do
+      bad = "foo(<<1, 2, 3, 4>>)"
+
+      good = """
+      foo(
+        <<1, 2,
+          3, 4>>
+      )
+      """
+
+      assert_format bad, good, @short_length
+
+      bad = """
+      foo(<<
+        # foo
+        1,
+        2,
+        3,
+        4>>)
+      """
+
+      good = """
+      foo(<<
+        # foo
+        1,
+        2,
+        3,
+        4
+      >>)
+      """
+
+      assert_format bad, good, @short_length
     end
   end
 
@@ -182,9 +201,23 @@ defmodule Code.Formatter.CallsTest do
       assert_format bad, good, @short_length
     end
 
+    test "with arguments on comma limit" do
+      bad = """
+      import(foo(abc, cde), :next)
+      """
+
+      good = """
+      import(
+        foo(abc, cde),
+        :next
+      )
+      """
+
+      assert_format bad, good, @medium_length
+    end
+
     test "with keyword lists" do
       assert_same "foo(foo: 1, bar: 2)"
-
       assert_same "foo(:hello, foo: 1, bar: 2)"
 
       bad = """
@@ -201,8 +234,14 @@ defmodule Code.Formatter.CallsTest do
 
       assert_format bad, good, @short_length
 
-      # Check it preserves multiline.
-      assert_same good
+      bad = """
+      foo(:hello, foo: 1,
+        bar: 2, baz: 3)
+      """
+
+      assert_format bad, """
+      foo(:hello, foo: 1, bar: 2, baz: 3)
+      """
     end
 
     test "with lists maybe rewritten as keyword lists" do
@@ -216,21 +255,19 @@ defmodule Code.Formatter.CallsTest do
       assert_same "bar = if foo, do: bar, else: baz"
 
       assert_same """
-                  for :one,
-                      :two,
-                      :three,
-                      fn ->
-                        :ok
-                      end
-                  """,
-                  @short_length
+      for :one,
+          :two,
+          :three,
+          fn ->
+            :ok
+          end
+      """
 
       assert_same """
-                  for :one, fn ->
-                    :ok
-                  end
-                  """,
-                  @medium_length
+      for :one, fn ->
+        :ok
+      end
+      """
     end
 
     test "without parens on line limit" do
@@ -244,6 +281,22 @@ defmodule Code.Formatter.CallsTest do
       assert_format bad, good, @short_length
     end
 
+    test "without parens on comma limit" do
+      bad = """
+      import foo(abc, cde), :next
+      """
+
+      good = """
+      import foo(
+               abc,
+               cde
+             ),
+             :next
+      """
+
+      assert_format bad, good, @medium_length
+    end
+
     test "without parens and with keyword lists preserves multiline" do
       assert_same """
       defstruct foo: 1,
@@ -252,9 +305,54 @@ defmodule Code.Formatter.CallsTest do
 
       assert_same """
       config :app,
+        foo: 1
+      """
+
+      assert_same """
+      config :app,
         foo: 1,
         bar: 2
       """
+
+      assert_same """
+      config :app, :key,
+        foo: 1,
+        bar: 2
+      """
+
+      assert_same """
+      config :app,
+             :key,
+             foo: 1,
+             bar: 2
+      """
+
+      bad = """
+      config :app, foo: 1,
+        bar: 2
+      """
+
+      assert_format bad, """
+      config :app,
+        foo: 1,
+        bar: 2
+      """
+    end
+
+    test "without parens and with keyword lists on comma limit" do
+      bad = """
+      import foo(abc, cde), opts: :next
+      """
+
+      good = """
+      import foo(
+               abc,
+               cde
+             ),
+             opts: :next
+      """
+
+      assert_format bad, good, @medium_length
     end
 
     test "without parens and with keyword lists on line limit" do
@@ -317,39 +415,45 @@ defmodule Code.Formatter.CallsTest do
     end
 
     test "without parens on unique argument" do
-      assert_same "foo(all 1, 2, 3)"
-      assert_same "foo(bar, all(1, 2, 3))"
-      assert_same "check all 1, 2, 3"
-      assert_same "check foo, all(1, 2, 3)"
+      assert_same "foo(for 1, 2, 3)"
+      assert_same "foo(bar, for(1, 2, 3))"
+      assert_same "assert for 1, 2, 3"
+      assert_same "assert foo, for(1, 2, 3)"
 
       assert_same """
-      check all 1, 2, 3 do
+      assert for 1, 2, 3 do
         :ok
       end
       """
 
       assert_same """
-      check foo, all(1, 2, 3) do
+      assert foo, for(1, 2, 3) do
         :ok
       end
       """
 
       assert_same """
-      check all(1, 2, 3) do
+      assert for(1, 2, 3) do
         :ok
       end
       """
 
       assert_same """
-      check (all 1, 2, 3 do
-               :ok
-             end)
+      assert (for 1, 2, 3 do
+                :ok
+              end)
       """
     end
 
     test "call on call" do
       assert_same "unquote(call)()"
       assert_same "unquote(call)(one, two)"
+
+      assert_same """
+      unquote(call)() do
+        :ok
+      end
+      """
 
       assert_same """
       unquote(call)(one, two) do
@@ -415,8 +519,31 @@ defmodule Code.Formatter.CallsTest do
       )
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "call(\nfoo, bar, baz)", "call(foo, bar, baz)"
+      assert_same """
+      call(
+        :hello,
+        :foo,
+        :bar
+      ) do
+        1 + 2
+      end
+      """
+
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "call(foo, bar, baz\n)", "call(foo, bar, baz)"
+
+      # Doesn't preserve because there are no args
+      bad = """
+      call() do
+        1 + 2
+      end
+      """
+
+      assert_format bad, """
+      call do
+        1 + 2
+      end
+      """
 
       # Doesn't preserve because we have a single argument with next break fits
       bad = """
@@ -427,7 +554,6 @@ defmodule Code.Formatter.CallsTest do
       )
       """
 
-      # Doesn't preserve this because only the beginning has a newline
       assert_format bad, """
       call(%{
         key: :value
@@ -548,6 +674,11 @@ defmodule Code.Formatter.CallsTest do
       assert_same "foo.bar(call)(one, two)"
 
       assert_same """
+      foo.bar(call)() do
+      end
+      """
+
+      assert_same """
       foo.bar(call)(one, two) do
         :ok
       end
@@ -596,8 +727,16 @@ defmodule Code.Formatter.CallsTest do
       )
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "Remote.call(\nfoo, bar, baz)", "Remote.call(foo, bar, baz)"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "Remote.call(foo, bar, baz\n)", "Remote.call(foo, bar, baz)"
+
+      assert_same """
+      Remote.call(
+        :hello,
+        :foo,
+        fn -> :bar end
+      )
+      """
     end
   end
 
@@ -697,14 +836,28 @@ defmodule Code.Formatter.CallsTest do
       )
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "call.(\nfoo, bar, baz)", "call.(foo, bar, baz)"
+      # Doesn't preserve this because only the ending has a newline
+      assert_format "call.(foo, bar, baz\n)", "call.(foo, bar, baz)"
     end
   end
 
   describe "do-end blocks" do
     test "with non-block keywords" do
       assert_same "foo(do: nil)"
+    end
+
+    test "with forced block keywords" do
+      good = """
+      foo do
+        nil
+      end
+      """
+
+      assert_format "foo(do: nil)", good, force_do_end_blocks: true
+
+      # Avoid false positives
+      assert_same "foo(do: 1, do: 2)", force_do_end_blocks: true
+      assert_same "foo(do: 1, another: 2)", force_do_end_blocks: true
     end
 
     test "with multiple keywords" do
@@ -1022,8 +1175,7 @@ defmodule Code.Formatter.CallsTest do
       }
       """
 
-      # Doesn't preserve this because only the beginning has a newline
-      assert_format "call.{\nfoo, bar, baz}", "call.{foo, bar, baz}"
+      assert_format "call.{foo, bar, baz\n}", "call.{foo, bar, baz}"
     end
   end
 
@@ -1063,7 +1215,9 @@ defmodule Code.Formatter.CallsTest do
     end
 
     test "with keywords" do
-      assert_format "expr[foo: bar, baz: bat]", "expr[[foo: bar, baz: bat]]"
+      assert_format "expr[[]]", "expr[[]]"
+      assert_format "expr[foo: bar, baz: bat]", "expr[foo: bar, baz: bat]"
+      assert_format "expr[[foo: bar, baz: bat]]", "expr[[foo: bar, baz: bat]]"
     end
   end
 end

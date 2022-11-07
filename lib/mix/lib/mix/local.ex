@@ -3,27 +3,25 @@ defmodule Mix.Local do
 
   @public_keys_html "https://repo.hex.pm/installs/public_keys.html"
 
-  @type item :: :archive | :escript
-
   @doc """
   Returns the name for an archive or an escript, based on the project config.
 
   ## Examples
 
-      iex> Mix.Local.name_for(:archive, [app: "foo", version: "0.1.0"])
+      iex> Mix.Local.name_for(:archives, app: "foo", version: "0.1.0")
       "foo-0.1.0.ez"
 
-      iex> Mix.Local.name_for(:escript, [escript: [name: "foo"]])
+      iex> Mix.Local.name_for(:escripts, escript: [name: "foo"])
       "foo"
 
   """
-  @spec name_for(item, keyword) :: String.t()
-  def name_for(:archive, project) do
+  @spec name_for(:archives | :escripts, keyword) :: String.t()
+  def name_for(:archives, project) do
     version = if version = project[:version], do: "-#{version}"
     "#{project[:app]}#{version}.ez"
   end
 
-  def name_for(:escript, project) do
+  def name_for(:escripts, project) do
     case get_in(project, [:escript, :name]) do
       nil -> project[:app]
       name -> name
@@ -31,32 +29,53 @@ defmodule Mix.Local do
     |> to_string()
   end
 
-  @doc """
-  The path for local archives or escripts.
-  """
-  @spec path_for(item) :: String.t()
-  def path_for(:archive) do
-    System.get_env("MIX_ARCHIVES") || Path.join(Mix.Utils.mix_home(), "archives")
-  end
-
-  def path_for(:escript) do
-    Path.join(Mix.Utils.mix_home(), "escripts")
-  end
+  @deprecated "Use Mix.path_for/1 instead"
+  def path_for(:archive), do: Mix.path_for(:archives)
+  def path_for(:escript), do: Mix.path_for(:escripts)
 
   @doc """
-  Appends archives paths into Erlang code path.
+  Appends archive paths to the Erlang code path.
   """
   def append_archives do
-    archives = archives_ebins()
-    Enum.each(archives, &check_elixir_version_in_ebin/1)
-    Enum.each(archives, &Code.append_path/1)
+    for archive <- archives_ebins() do
+      check_elixir_version_in_ebin(archive)
+      Code.append_path(archive)
+    end
+
+    :ok
   end
 
   @doc """
-  Appends Mix paths into Erlang code path.
+  Removes archive paths from Erlang code path.
+  """
+  def remove_archives do
+    for archive <- archives_ebins() do
+      Code.delete_path(archive)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Appends Mix paths to the Erlang code path.
   """
   def append_paths do
-    Enum.each(Mix.Utils.mix_paths(), &Code.append_path(&1))
+    Enum.each(mix_paths(), &Code.append_path(&1))
+  end
+
+  defp mix_paths do
+    if path = System.get_env("MIX_PATH") do
+      String.split(path, path_separator())
+    else
+      []
+    end
+  end
+
+  defp path_separator do
+    case :os.type() do
+      {:win32, _} -> ";"
+      {:unix, _} -> ":"
+    end
   end
 
   @doc """
@@ -83,7 +102,7 @@ defmodule Mix.Local do
   end
 
   defp archives_ebins do
-    path = path_for(:archive)
+    path = Mix.path_for(:archives)
 
     case File.ls(path) do
       {:ok, entries} -> Enum.map(entries, &archive_ebin(Path.join(path, &1)))
@@ -122,18 +141,21 @@ defmodule Mix.Local do
 
   Used to install both Rebar and Hex from S3.
   """
-  def find_matching_versions_from_signed_csv!(name, path) do
-    csv = read_path!(name, path)
+  def find_matching_versions_from_signed_csv!(name, version, path) do
+    csv = read_unsafe_path!(name, path)
 
     signature =
-      read_path!(name, path <> ".signed")
+      read_unsafe_path!(name, path <> ".signed")
       |> String.replace("\n", "")
       |> Base.decode64!()
 
     if Mix.PublicKey.verify(csv, :sha512, signature) do
-      csv
-      |> parse_csv
-      |> find_latest_eligible_version
+      result =
+        csv
+        |> parse_csv()
+        |> find_latest_eligible_version(version)
+
+      result || Mix.raise("Could not find a matching version of #{name}")
     else
       Mix.raise(
         "Could not install #{name} because Mix could not verify authenticity " <>
@@ -145,18 +167,33 @@ defmodule Mix.Local do
     end
   end
 
-  defp read_path!(name, path) do
-    case Mix.Utils.read_path(path) do
+  defp read_unsafe_path!(name, path) do
+    case Mix.Utils.read_path(path, unsafe_uri: true) do
       {:ok, contents} ->
         contents
 
       {:remote, message} ->
-        Mix.raise("""
-        #{message}
+        Mix.raise(
+          """
+          #{message}
 
-        Could not install #{name} because Mix could not download metadata at #{path}.
-        """)
+          Could not install #{name} because Mix could not download metadata at #{path}.
+          """ <> suggestions(name)
+        )
     end
+  end
+
+  defp suggestions("Hex") do
+    """
+
+    Alternatively, you can compile and install Hex directly with this command:
+
+        $ mix archive.install github hexpm/hex branch latest
+    """
+  end
+
+  defp suggestions(_) do
+    ""
   end
 
   defp parse_csv(body) do
@@ -165,17 +202,39 @@ defmodule Mix.Local do
     |> Enum.map(&:binary.split(&1, ",", [:global, :trim]))
   end
 
-  defp find_latest_eligible_version(entries) do
-    {:ok, current_version} = Version.parse(System.version())
+  defp find_latest_eligible_version(entries, artifact_version) do
+    elixir_version = Version.parse!(System.version())
 
     entries
     |> Enum.reverse()
-    |> Enum.find_value(entries, &find_version(&1, current_version))
+    |> find_version(artifact_version, elixir_version)
   end
 
-  defp find_version([artifact_version, digest | versions], current_version) do
-    if version = Enum.find(versions, &(Version.compare(&1, current_version) != :gt)) do
+  defp find_version(entries, _artifact_version = nil, elixir_version) do
+    Enum.find_value(entries, &find_by_elixir_version(&1, elixir_version))
+  end
+
+  defp find_version(entries, artifact_version, elixir_version) do
+    Enum.find_value(entries, &find_by_artifact_version(&1, artifact_version, elixir_version))
+  end
+
+  defp find_by_elixir_version([artifact_version, digest | versions], elixir_version) do
+    if version = Enum.find(versions, &(Version.compare(&1, elixir_version) != :gt)) do
       {version, artifact_version, digest}
     end
+  end
+
+  defp find_by_artifact_version(
+         [artifact_version, digest | versions],
+         artifact_version,
+         elixir_version
+       ) do
+    if version = Enum.find(versions, &(Version.compare(&1, elixir_version) != :gt)) do
+      {version, artifact_version, digest}
+    end
+  end
+
+  defp find_by_artifact_version(_entry, _artifact_version, _elixir_version) do
+    nil
   end
 end

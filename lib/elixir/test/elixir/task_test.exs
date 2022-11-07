@@ -22,13 +22,18 @@ defmodule TaskTest do
 
     receive do
       {:DOWN, ^ref, _, _, _} ->
-        %Task{ref: ref, pid: pid, owner: self()}
+        %Task{ref: ref, pid: pid, owner: self(), mfa: {__MODULE__, :create_dummy_task, 1}}
     end
   end
 
   def sleep(number) do
     Process.sleep(number)
     number
+  end
+
+  def wait_until_down(task) do
+    ref = Process.monitor(task.pid)
+    assert_receive {:DOWN, ^ref, _, _, _}
   end
 
   test "can be supervised directly" do
@@ -67,6 +72,7 @@ defmodule TaskTest do
     assert task.__struct__ == Task
     assert is_pid(task.pid)
     assert is_reference(task.ref)
+    assert task.mfa == {:erlang, :apply, 2}
 
     # Assert the link
     {:links, links} = Process.info(self(), :links)
@@ -75,7 +81,7 @@ defmodule TaskTest do
     receive do: (:ready -> :ok)
 
     # Assert the initial call
-    {:name, fun_name} = :erlang.fun_info(fun, :name)
+    {:name, fun_name} = Function.info(fun, :name)
     assert {__MODULE__, fun_name, 0} === :proc_lib.translate_initial_call(task.pid)
 
     # Run the task
@@ -90,18 +96,32 @@ defmodule TaskTest do
   test "async/3" do
     task = Task.async(__MODULE__, :wait_and_send, [self(), :done])
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
 
     {:links, links} = Process.info(self(), :links)
     assert task.pid in links
 
     receive do: (:ready -> :ok)
-
     assert {__MODULE__, :wait_and_send, 2} === :proc_lib.translate_initial_call(task.pid)
 
     send(task.pid, true)
-
     assert Task.await(task) === :done
     assert_receive :done
+  end
+
+  test "async with $callers" do
+    grandparent = self()
+
+    Task.async(fn ->
+      parent = self()
+      assert Process.get(:"$callers") == [grandparent]
+
+      Task.async(fn ->
+        assert Process.get(:"$callers") == [parent, grandparent]
+      end)
+      |> Task.await()
+    end)
+    |> Task.await()
   end
 
   test "start/1" do
@@ -114,7 +134,7 @@ defmodule TaskTest do
 
     receive do: (:ready -> :ok)
 
-    {:name, fun_name} = :erlang.fun_info(fun, :name)
+    {:name, fun_name} = Function.info(fun, :name)
     assert {__MODULE__, fun_name, 0} === :proc_lib.translate_initial_call(pid)
 
     send(pid, true)
@@ -135,6 +155,15 @@ defmodule TaskTest do
     assert_receive :done
   end
 
+  test "completed/1" do
+    task = Task.completed(:done)
+    assert task.__struct__ == Task
+
+    refute task.pid
+
+    assert Task.await(task) == :done
+  end
+
   test "start_link/1" do
     parent = self()
     fun = fn -> wait_and_send(parent, :done) end
@@ -145,7 +174,7 @@ defmodule TaskTest do
 
     receive do: (:ready -> :ok)
 
-    {:name, fun_name} = :erlang.fun_info(fun, :name)
+    {:name, fun_name} = Function.info(fun, :name)
     assert {__MODULE__, fun_name, 0} === :proc_lib.translate_initial_call(pid)
 
     send(pid, true)
@@ -166,9 +195,85 @@ defmodule TaskTest do
     assert_receive :done
   end
 
+  test "start_link with $callers" do
+    grandparent = self()
+
+    Task.start_link(fn ->
+      parent = self()
+      assert Process.get(:"$callers") == [grandparent]
+
+      Task.start_link(fn ->
+        assert Process.get(:"$callers") == [parent, grandparent]
+        send(grandparent, :done)
+      end)
+    end)
+
+    assert_receive :done
+  end
+
+  describe "ignore/1" do
+    test "discards on time replies" do
+      task = Task.async(fn -> :ok end)
+      wait_until_down(task)
+      assert Task.ignore(task) == {:ok, :ok}
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards late replies" do
+      task = Task.async(fn -> assert_receive(:go) && :ok end)
+      assert Task.ignore(task) == nil
+      send(task.pid, :go)
+      wait_until_down(task)
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards on-time failures" do
+      Process.flag(:trap_exit, true)
+      task = Task.async(fn -> exit(:oops) end)
+      wait_until_down(task)
+      assert Task.ignore(task) == {:exit, :oops}
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards late failures" do
+      task = Task.async(fn -> assert_receive(:go) && exit(:oops) end)
+      assert Task.ignore(task) == nil
+      send(task.pid, :go)
+      wait_until_down(task)
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "exits on :noconnection" do
+      ref = make_ref()
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
+      send(self(), {:DOWN, ref, self(), self(), :noconnection})
+      assert catch_exit(Task.ignore(task)) |> elem(0) == {:nodedown, :nonode@nohost}
+    end
+
+    test "can ignore completed tasks" do
+      assert Task.ignore(Task.completed(:done)) == {:ok, :done}
+    end
+  end
+
   describe "await/2" do
+    test "demonitors and unalias on timeout" do
+      task =
+        Task.async(fn ->
+          assert_receive :go
+          :done
+        end)
+
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+      send(task.pid, :go)
+      ref = task.ref
+
+      wait_until_down(task)
+      refute_received {^ref, :done}
+      refute_received {:DOWN, ^ref, _, _, _}
+    end
+
     test "exits on timeout" do
-      task = %Task{ref: make_ref(), owner: self()}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
     end
 
@@ -191,6 +296,8 @@ defmodule TaskTest do
       assert {{%RuntimeError{}, _}, {Task, :await, [^task, 5000]}} = catch_exit(Task.await(task))
     end
 
+    @compile {:no_warn_undefined, :module_does_not_exist}
+
     test "exits on task undef module error" do
       Process.flag(:trap_exit, true)
       task = Task.async(&:module_does_not_exist.undef/0)
@@ -199,6 +306,8 @@ defmodule TaskTest do
       assert {:undef, [{:module_does_not_exist, :undef, _, _} | _]} = exit_status
       assert {Task, :await, [^task, 5000]} = mfa
     end
+
+    @compile {:no_warn_undefined, {TaskTest, :undef, 0}}
 
     test "exits on task undef function error" do
       Process.flag(:trap_exit, true)
@@ -216,14 +325,14 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, self(), :noconnection})
       assert catch_exit(Task.await(task)) |> elem(0) == {:nodedown, :nonode@nohost}
     end
 
     test "exits on :noconnection from named monitor" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: nil, owner: self()}
+      task = %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, {:name, :node}, :noconnection})
       assert catch_exit(Task.await(task)) |> elem(0) == {:nodedown, :node}
     end
@@ -239,9 +348,152 @@ defmodule TaskTest do
     end
   end
 
+  describe "await_many/2" do
+    test "returns list of replies" do
+      tasks = for val <- [1, 3, 9], do: Task.async(fn -> val end)
+      assert Task.await_many(tasks) == [1, 3, 9]
+    end
+
+    test "returns replies in input order ignoring response order" do
+      refs = [ref_1 = make_ref(), ref_2 = make_ref(), ref_3 = make_ref()]
+
+      tasks =
+        Enum.map(refs, fn ref ->
+          %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+        end)
+
+      send(self(), {ref_2, 3})
+      send(self(), {ref_3, 9})
+      send(self(), {ref_1, 1})
+      assert Task.await_many(tasks) == [1, 3, 9]
+    end
+
+    test "returns an empty list immediately" do
+      assert Task.await_many([]) == []
+    end
+
+    test "ignores messages from other processes" do
+      other_ref = make_ref()
+      tasks = for val <- [:a, :b], do: Task.async(fn -> val end)
+      send(self(), other_ref)
+      send(self(), {other_ref, :z})
+      send(self(), {:DOWN, other_ref, :process, 1, :goodbye})
+      assert Task.await_many(tasks) == [:a, :b]
+      assert_received ^other_ref
+      assert_received {^other_ref, :z}
+      assert_received {:DOWN, ^other_ref, :process, 1, :goodbye}
+    end
+
+    test "ignores additional messages after reply" do
+      refs = [ref_1 = make_ref(), ref_2 = make_ref()]
+
+      tasks =
+        Enum.map(refs, fn ref ->
+          %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+        end)
+
+      send(self(), {ref_2, :b})
+      send(self(), {ref_2, :other})
+      send(self(), {ref_1, :a})
+      assert Task.await_many(tasks) == [:a, :b]
+      assert_received {^ref_2, :other}
+    end
+
+    test "exits on timeout" do
+      tasks = [Task.async(fn -> Process.sleep(:infinity) end)]
+      assert catch_exit(Task.await_many(tasks, 0)) == {:timeout, {Task, :await_many, [tasks, 0]}}
+    end
+
+    test "exits with same reason when task exits" do
+      tasks = [Task.async(fn -> exit(:normal) end)]
+      assert catch_exit(Task.await_many(tasks)) == {:normal, {Task, :await_many, [tasks, 5000]}}
+    end
+
+    test "exits immediately when any task exits" do
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        Task.async(fn -> exit(:normal) end)
+      ]
+
+      assert catch_exit(Task.await_many(tasks)) == {:normal, {Task, :await_many, [tasks, 5000]}}
+    end
+
+    test "exits immediately when any task crashes" do
+      Process.flag(:trap_exit, true)
+
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        Task.async(fn -> exit(:unknown) end)
+      ]
+
+      assert catch_exit(Task.await_many(tasks)) == {:unknown, {Task, :await_many, [tasks, 5000]}}
+
+      # Make sure all monitors are cleared up afterwards too
+      Enum.each(tasks, &Process.exit(&1.pid, :kill))
+      refute_received {:DOWN, _, _, _, _}
+    end
+
+    test "exits immediately when any task throws" do
+      Process.flag(:trap_exit, true)
+
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        Task.async(fn -> throw(:unknown) end)
+      ]
+
+      assert {{{:nocatch, :unknown}, _}, {Task, :await_many, [^tasks, 5000]}} =
+               catch_exit(Task.await_many(tasks))
+    end
+
+    test "exits immediately on any task error" do
+      Process.flag(:trap_exit, true)
+
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        Task.async(fn -> raise "oops" end)
+      ]
+
+      assert {{%RuntimeError{}, _}, {Task, :await_many, [^tasks, 5000]}} =
+               catch_exit(Task.await_many(tasks))
+    end
+
+    test "exits immediately on :noconnection" do
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        %Task{ref: ref = make_ref(), owner: self(), pid: self(), mfa: {__MODULE__, :test, 1}}
+      ]
+
+      send(self(), {:DOWN, ref, :process, self(), :noconnection})
+      assert catch_exit(Task.await_many(tasks)) |> elem(0) == {:nodedown, :nonode@nohost}
+    end
+
+    test "exits immediately on :noconnection from named monitor" do
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        %Task{ref: ref = make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      ]
+
+      send(self(), {:DOWN, ref, :process, {:name, :node}, :noconnection})
+      assert catch_exit(Task.await_many(tasks)) |> elem(0) == {:nodedown, :node}
+    end
+
+    test "raises when invoked from a non-owner process" do
+      tasks = [
+        Task.async(fn -> Process.sleep(:infinity) end),
+        bad_task = create_task_in_other_process()
+      ]
+
+      message =
+        "task #{inspect(bad_task)} must be queried from the owner " <>
+          "but was queried from #{inspect(self())}"
+
+      assert_raise ArgumentError, message, fn -> Task.await_many(tasks, 1) end
+    end
+  end
+
   describe "yield/2" do
     test "returns {:ok, result} when reply and :DOWN in message queue" do
-      task = %Task{ref: make_ref(), owner: self()}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, self(), :abnormal})
       assert Task.yield(task, 0) == {:ok, :result}
@@ -249,7 +501,7 @@ defmodule TaskTest do
     end
 
     test "returns nil on timeout" do
-      task = %Task{ref: make_ref(), owner: self()}
+      task = %Task{ref: make_ref(), pid: nil, owner: self(), mfa: {__MODULE__, :test, 1}}
       assert Task.yield(task, 0) == nil
     end
 
@@ -260,7 +512,7 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, self(), self(), :noconnection})
       assert catch_exit(Task.yield(task)) |> elem(0) == {:nodedown, :nonode@nohost}
     end
@@ -278,16 +530,41 @@ defmodule TaskTest do
 
   describe "yield_many/2" do
     test "returns {:ok, result} when reply and :DOWN in message queue" do
-      task = %Task{ref: make_ref(), owner: self()}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, self(), :abnormal})
       assert Task.yield_many([task], 0) == [{task, {:ok, :result}}]
       refute_received {:DOWN, _, _, _, _}
     end
 
-    test "returns nil on timeout" do
-      task = %Task{ref: make_ref(), owner: self()}
+    test "returns nil on timeout by default" do
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       assert Task.yield_many([task], 0) == [{task, nil}]
+    end
+
+    test "shuts down on timeout when configured" do
+      Process.flag(:trap_exit, true)
+      task = Task.async(fn -> Process.sleep(:infinity) end)
+      assert Task.yield_many([task], timeout: 0, on_timeout: :kill_task) == [{task, nil}]
+      refute Process.alive?(task.pid)
+    end
+
+    test "ignores on timeout when configured" do
+      task =
+        Task.async(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      assert Task.yield_many([task], timeout: 0, on_timeout: :ignore) == [{task, nil}]
+      assert Process.alive?(task.pid)
+
+      ref = Process.monitor(task.pid)
+      send(task.pid, :done)
+      assert_receive {:DOWN, ^ref, _, _, _}
+
+      assert Task.yield(task, 0) == nil
     end
 
     test "return exit on normal exit" do
@@ -297,7 +574,7 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, self(), :noconnection})
       assert catch_exit(Task.yield_many([task])) |> elem(0) == {:nodedown, :nonode@nohost}
     end
@@ -313,15 +590,28 @@ defmodule TaskTest do
     end
 
     test "returns results from multiple tasks" do
-      task1 = %Task{ref: make_ref(), owner: self()}
-      task2 = %Task{ref: make_ref(), owner: self()}
-      task3 = %Task{ref: make_ref(), owner: self()}
+      task1 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task2 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task3 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
 
       send(self(), {task1.ref, :result})
       send(self(), {:DOWN, task3.ref, :process, self(), :normal})
 
       assert Task.yield_many([task1, task2, task3], 0) ==
                [{task1, {:ok, :result}}, {task2, nil}, {task3, {:exit, :normal}}]
+    end
+
+    test "returns results on infinity timeout" do
+      task1 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task2 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task3 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+
+      send(self(), {task1.ref, :result})
+      send(self(), {task2.ref, :result})
+      send(self(), {:DOWN, task3.ref, :process, self(), :normal})
+
+      assert Task.yield_many([task1, task2, task3], :infinity) ==
+               [{task1, {:ok, :result}}, {task2, {:ok, :result}}, {task3, {:exit, :normal}}]
     end
   end
 
@@ -342,7 +632,7 @@ defmodule TaskTest do
       refute_received {:DOWN, _, _, _, _}
     end
 
-    test "returns {:ok, result} when reply and shutdown :DOWN in message queue" do
+    test "returns {:ok, result} when reply and shut down :DOWN in message queue" do
       task = create_dummy_task(:shutdown)
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, task.pid, :shutdown})
@@ -387,10 +677,18 @@ defmodule TaskTest do
                {{:nodedown, node()}, {Task, :shutdown, [task, 5000]}}
     end
 
-    test "raises if task PID is nil" do
-      task = %Task{ref: make_ref(), pid: nil}
-      message = "task #{inspect(task)} does not have an associated task process"
-      assert_raise ArgumentError, message, fn -> Task.shutdown(task) end
+    test "ignores if task PID is nil" do
+      ref = make_ref()
+      send(self(), {ref, :done})
+
+      assert Task.shutdown(%Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}) ==
+               {:ok, :done}
+
+      ref = make_ref()
+      send(self(), {:DOWN, ref, :process, self(), :done})
+
+      assert Task.shutdown(%Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}) ==
+               {:exit, :done}
     end
 
     test "raises when invoked from a non-owner process" do
@@ -442,7 +740,7 @@ defmodule TaskTest do
       refute_received {:DOWN, _, _, _, _}
     end
 
-    test "returns {:ok, result} when reply and shutdown :DOWN in message queue" do
+    test "returns {:ok, result} when reply and shut down :DOWN in message queue" do
       task = create_dummy_task(:shutdown)
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, task.pid, :shutdown})
@@ -536,6 +834,54 @@ defmodule TaskTest do
 
     test "streams an enumerable with infinite timeout" do
       [ok: :ok] = Task.async_stream([1], fn _ -> :ok end, timeout: :infinity) |> Enum.to_list()
+    end
+
+    test "does not allow streaming with max_concurrency = 0" do
+      assert_raise ArgumentError, ":max_concurrency must be an integer greater than zero", fn ->
+        Task.async_stream([1], fn _ -> :ok end, max_concurrency: 0) |> Enum.to_list()
+      end
+    end
+
+    test "streams with fake down messages on the inbox" do
+      parent = self()
+
+      assert Task.async_stream([:ok], fn :ok ->
+               {:links, links} = Process.info(self(), :links)
+
+               for link <- links do
+                 send(link, {:DOWN, make_ref(), :process, parent, :oops})
+               end
+
+               :ok
+             end)
+             |> Enum.to_list() == [ok: :ok]
+    end
+
+    test "with $callers" do
+      grandparent = self()
+
+      Task.async_stream([1], fn 1 ->
+        parent = self()
+        assert Process.get(:"$callers") == [grandparent]
+
+        Task.async_stream([1], fn 1 ->
+          assert Process.get(:"$callers") == [parent, grandparent]
+          send(grandparent, :done)
+        end)
+        |> Stream.run()
+      end)
+      |> Stream.run()
+
+      assert_receive :done
+    end
+
+    test "consuming from another process" do
+      parent = self()
+      stream = Task.async_stream([1, 2, 3], &send(parent, &1))
+      Task.start(Stream, :run, [stream])
+      assert_receive 1
+      assert_receive 2
+      assert_receive 3
     end
   end
 
@@ -661,8 +1007,8 @@ defmodule TaskTest do
           1..4
           |> Task.async_stream(&sleep/1, @opts)
           |> Stream.transform(fn -> :ok end, fn x, acc -> {[x], acc} end, fn _ ->
-               Process.put(:stream_transform, true)
-             end)
+            Process.put(:stream_transform, true)
+          end)
 
         Process.put(:stream_transform, false)
         assert Enum.to_list(stream) == [ok: 1, ok: 2, ok: 3, ok: 4]
@@ -673,8 +1019,8 @@ defmodule TaskTest do
         stream =
           1..4
           |> Stream.transform(fn -> :ok end, fn x, acc -> {[x], acc} end, fn _ ->
-               Process.put(:stream_transform, true)
-             end)
+            Process.put(:stream_transform, true)
+          end)
           |> Task.async_stream(&sleep/1, @opts)
 
         Process.put(:stream_transform, false)
@@ -690,6 +1036,23 @@ defmodule TaskTest do
                |> Enum.to_list() == [exit: :timeout, ok: 1, exit: :timeout, ok: 1]
 
         refute_received _
+      end
+
+      test "with timeout and :zip_input_on_exit set to true" do
+        opts = Keyword.merge(@opts, zip_input_on_exit: true, on_timeout: :kill_task, timeout: 50)
+
+        assert [1, 100]
+               |> Task.async_stream(&sleep/1, opts)
+               |> Enum.to_list() == [ok: 1, exit: {100, :timeout}]
+      end
+
+      test "with outer halt on failure and :zip_input_on_exit" do
+        Process.flag(:trap_exit, true)
+        opts = Keyword.merge(@opts, zip_input_on_exit: true)
+
+        assert 1..8
+               |> Task.async_stream(&exit/1, opts)
+               |> Enum.take(4) == [exit: {1, 1}, exit: {2, 2}, exit: {3, 3}, exit: {4, 4}]
       end
     end
   end

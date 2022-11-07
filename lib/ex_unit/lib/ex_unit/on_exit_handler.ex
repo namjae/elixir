@@ -2,9 +2,11 @@ defmodule ExUnit.OnExitHandler do
   @moduledoc false
 
   @name __MODULE__
+  @ets_opts [:public, :named_table, read_concurrency: true, write_concurrency: true]
+
+  # ETS column numbers
   @supervisor 2
   @on_exit 3
-  @ets_opts [:public, :named_table, read_concurrency: true, write_concurrency: true]
 
   use Agent
 
@@ -16,9 +18,10 @@ defmodule ExUnit.OnExitHandler do
   @spec register(pid) :: :ok
   def register(pid) when is_pid(pid) do
     :ets.insert(@name, {pid, nil, []})
+    :ok
   end
 
-  @spec add(pid, term, (() -> term)) :: :ok | :error
+  @spec add(pid, term, (-> term)) :: :ok | :error
   def add(pid, name_or_ref, callback) when is_pid(pid) and is_function(callback, 0) do
     try do
       :ets.lookup_element(@name, pid, @on_exit)
@@ -141,6 +144,6 @@ defmodule ExUnit.OnExitHandler do
     nil
   catch
     kind, error ->
-      {kind, error, System.stacktrace()}
+      {kind, error, __STACKTRACE__}
   end
 end

@@ -20,14 +20,14 @@ defmodule Logger.FormatterTest do
 
   test "compile/1 with nil" do
     assert compile(nil) ==
-             ["\n", :time, " ", :metadata, "[", :level, "] ", :levelpad, :message, "\n"]
+             ["\n", :time, " ", :metadata, "[", :level, "] ", :message, "\n"]
   end
 
   test "compile/1 with str" do
     assert compile("$level $time $date $metadata $message $node") ==
              Enum.intersperse([:level, :time, :date, :metadata, :message, :node], " ")
 
-    assert_raise ArgumentError, "$bad is an invalid format pattern.", fn ->
+    assert_raise ArgumentError, "$bad is an invalid format pattern", fn ->
       compile("$bad $good")
     end
   end
@@ -51,7 +51,7 @@ defmodule Logger.FormatterTest do
     format = format(compiled, :error, nil, nil, meta: :data)
     assert IO.chardata_to_string(format) == "meta=data "
 
-    pid = :erlang.list_to_pid('<0.123.4>')
+    pid = :erlang.list_to_pid(~c"<0.123.4>")
     format = format(compiled, :error, nil, nil, meta: :data, pid: pid)
     assert IO.chardata_to_string(format) == "meta=data pid=<0.123.4> "
 
@@ -62,12 +62,17 @@ defmodule Logger.FormatterTest do
           <<104, 111, 115, 116, 0, 0, 0, 0, 80, 0, 0, 0, 0, 0, 0, 0, 0>>
       )
 
-    # ensure the deserialization worked correctly
+    # Ensure the deserialization worked correctly
     assert "#Reference<0.0.0.80>" == inspect(ref)
 
     assert IO.chardata_to_string(format(compiled, :error, nil, nil, meta: :data, ref: ref)) ==
              "meta=data ref=<0.0.0.80> "
 
+    # Also works with to_string
+    format = format(compiled, :error, nil, nil, date: ~D[2020-10-01])
+    assert IO.chardata_to_string(format) == "date=2020-10-01 "
+
+    # And with no metadata
     assert IO.chardata_to_string(format(compiled, :error, nil, nil, [])) == ""
 
     timestamp = {{2014, 12, 30}, {12, 6, 30, 100}}
@@ -77,10 +82,12 @@ defmodule Logger.FormatterTest do
              "2014-12-30 12:06:30.100"
   end
 
-  test "padding takes account of length of level" do
-    compiled = compile("[$level] $levelpad $message")
-    assert format(compiled, :error, "hello", nil, []) == ["[", "error", "] ", "", " ", "hello"]
-    assert format(compiled, :info, "hello", nil, []) == ["[", "info", "] ", " ", " ", "hello"]
+  test "format discards unknown formats" do
+    compiled = compile("$metadata $message")
+    metadata = [ancestors: [self()], crash_reason: {:some, :tuple}, foo: :bar]
+
+    assert format(compiled, :error, "hello", nil, metadata) ==
+             [["foo", 61, "bar", 32], " ", "hello"]
   end
 
   test "format_date/1" do

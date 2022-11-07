@@ -4,7 +4,17 @@ defmodule IEx.Config do
 
   @table __MODULE__
   @agent __MODULE__
-  @keys [:colors, :inspect, :history_size, :default_prompt, :alive_prompt, :width]
+  @keys [
+    :colors,
+    :inspect,
+    :history_size,
+    :default_prompt,
+    :continuation_prompt,
+    :alive_prompt,
+    :alive_continuation_prompt,
+    :width,
+    :parser
+  ]
 
   # Read API
 
@@ -14,7 +24,7 @@ defmodule IEx.Config do
 
   def width() do
     columns = columns()
-    value = Application.get_env(:iex, :width) || min(columns, 80)
+    value = Application.get_env(:iex, :width) || 80
     min(value, columns)
   end
 
@@ -26,7 +36,7 @@ defmodule IEx.Config do
   end
 
   def started?() do
-    Process.whereis(@agent) !== nil
+    Process.whereis(@agent) != nil
   end
 
   def history_size() do
@@ -37,8 +47,20 @@ defmodule IEx.Config do
     Application.fetch_env!(:iex, :default_prompt)
   end
 
+  def continuation_prompt() do
+    Application.get_env(:iex, :continuation_prompt, default_prompt())
+  end
+
   def alive_prompt() do
     Application.fetch_env!(:iex, :alive_prompt)
+  end
+
+  def alive_continuation_prompt() do
+    Application.get_env(:iex, :alive_continuation_prompt, alive_prompt())
+  end
+
+  def parser() do
+    Application.get_env(:iex, :parser, {IEx.Evaluator, :parse, []})
   end
 
   def color(color) do
@@ -48,11 +70,8 @@ defmodule IEx.Config do
   defp color(color, colors) do
     if colors_enabled?(colors) do
       case Keyword.fetch(colors, color) do
-        {:ok, value} ->
-          value
-
-        :error ->
-          default_color(color)
+        {:ok, value} -> value
+        :error -> default_color(color)
       end
     else
       nil
@@ -83,16 +102,7 @@ defmodule IEx.Config do
 
   # Used by inspect
   defp default_color(:syntax_colors) do
-    [
-      atom: :cyan,
-      string: :green,
-      list: :default_color,
-      boolean: :magenta,
-      nil: :magenta,
-      tuple: :default_color,
-      binary: :default_color,
-      map: :default_color
-    ]
+    IO.ANSI.syntax_colors()
   end
 
   # Used by ansi docs
@@ -102,10 +112,8 @@ defmodule IEx.Config do
 
   def ansi_docs() do
     colors = Application.get_env(:iex, :colors, [])
-
-    if enabled = colors_enabled?(colors) do
-      [width: width(), enabled: enabled] ++ colors
-    end
+    enabled = colors_enabled?(colors)
+    [width: width(), enabled: enabled] ++ colors
   end
 
   def inspect_opts() do
@@ -157,7 +165,7 @@ defmodule IEx.Config do
   end
 
   def handle_configure(tab, options) do
-    options = :lists.ukeysort(1, options)
+    Enum.each(options, &validate_option/1)
 
     configuration()
     |> Keyword.merge(options, &merge_option/3)
@@ -174,13 +182,19 @@ defmodule IEx.Config do
 
   defp merge_option(:colors, old, new) when is_list(new), do: Keyword.merge(old, new)
   defp merge_option(:inspect, old, new) when is_list(new), do: Keyword.merge(old, new)
-  defp merge_option(:history_size, _old, new) when is_integer(new), do: new
-  defp merge_option(:default_prompt, _old, new) when is_binary(new), do: new
-  defp merge_option(:alive_prompt, _old, new) when is_binary(new), do: new
-  defp merge_option(:width, _old, new) when is_integer(new), do: new
+  defp merge_option(_key, _old, new), do: new
 
-  defp merge_option(key, _old, new) do
-    raise ArgumentError,
-          "invalid configuration or value for pair #{inspect(key)} - #{inspect(new)}"
+  defp validate_option({:colors, new}) when is_list(new), do: :ok
+  defp validate_option({:inspect, new}) when is_list(new), do: :ok
+  defp validate_option({:history_size, new}) when is_integer(new), do: :ok
+  defp validate_option({:default_prompt, new}) when is_binary(new), do: :ok
+  defp validate_option({:continuation_prompt, new}) when is_binary(new), do: :ok
+  defp validate_option({:alive_prompt, new}) when is_binary(new), do: :ok
+  defp validate_option({:alive_continuation_prompt, new}) when is_binary(new), do: :ok
+  defp validate_option({:width, new}) when is_integer(new), do: :ok
+  defp validate_option({:parser, tuple}) when tuple_size(tuple) == 3, do: :ok
+
+  defp validate_option(option) do
+    raise ArgumentError, "invalid configuration #{inspect(option)}"
   end
 end

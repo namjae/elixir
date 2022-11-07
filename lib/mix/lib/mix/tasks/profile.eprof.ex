@@ -10,28 +10,30 @@ defmodule Mix.Tasks.Profile.Eprof do
   when you want to discover the bottlenecks related to this.
 
   Before running the code, it invokes the `app.start` task which compiles
-  and loads your project. Then the target expression is profiled, together
+  and loads your project. After that, the target expression is profiled together
   with all matching function calls using the Erlang trace BIFs. The tracing of
   the function calls for that is enabled when the profiling is begun, and
   disabled when profiling is stopped.
 
   To profile the code, you can use syntax similar to the `mix run` task:
 
-      mix profile.eprof -e Hello.world
-      mix profile.eprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
-      mix profile.eprof my_script.exs arg1 arg2 arg3
+      $ mix profile.eprof -e Hello.world
+      $ mix profile.eprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
+      $ mix profile.eprof my_script.exs arg1 arg2 arg3
+
+  This task is automatically re-enabled, so you can profile multiple times
+  in the same Mix invocation.
 
   ## Command line options
 
     * `--matching` - only profile calls matching the given `Module.function/arity` pattern
     * `--calls` - filters out any results with a call count lower than this
     * `--time` - filters out any results that took lower than specified (in µs)
-    * `--sort` - sort the results by `time` or `calls` (default: `time`)
-    * `--config`, `-c` - loads the given configuration file
-    * `--eval`, `-e` - evaluate the given code
+    * `--sort` - sorts the results by `time` or `calls` (default: `time`)
+    * `--eval`, `-e` - evaluates the given code
     * `--require`, `-r` - requires pattern before running the command
     * `--parallel`, `-p` - makes all requires parallel
-    * `--no-warmup` - skip the warmup step before profiling
+    * `--no-warmup` - skips the warmup step before profiling
     * `--no-compile` - does not compile even if files require compilation
     * `--no-deps-check` - does not check dependencies
     * `--no-archives-check` - does not check archives
@@ -74,15 +76,15 @@ defmodule Mix.Tasks.Profile.Eprof do
 
   The pattern can be a module name, such as `String` to count all calls to that module,
   a call without arity, such as `String.split`, to count all calls to that function
-  regardless of arity, or a call with arity, such as `String.split/2`, to count all
+  regardless of arity, or a call with arity, such as `String.split/3`, to count all
   calls to that exact module, function and arity.
 
   ## Caveats
 
   You should be aware that the code being profiled is running in an anonymous
-  function which is invoked by [`:eprof` module](http://wwww.erlang.org/doc/man/eprof.html).
+  function which is invoked by [`:eprof` module](https://www.erlang.org/doc/man/eprof.html).
   Thus, you'll see some additional entries in your profile output. It is also
-  important to notice that the profiler is stopped as soon as the code has finished running,
+  important to note that the profiler is stopped as soon as the code has finished running,
   and this may need special attention, when: running asynchronous code as function calls which were
   called before the profiler stopped will not be counted; running synchronous code as long
   running computations and a profiler without a proper MFA trace pattern or filter may
@@ -121,8 +123,10 @@ defmodule Mix.Tasks.Profile.Eprof do
     c: :config
   ]
 
+  @impl true
   def run(args) do
     {opts, head} = OptionParser.parse_head!(args, aliases: @aliases, strict: @switches)
+    Mix.Task.reenable("profile.eprof")
 
     Mix.Tasks.Run.run(
       ["--no-mix-exs" | args],
@@ -134,13 +138,15 @@ defmodule Mix.Tasks.Profile.Eprof do
   end
 
   defp profile_code(code_string, opts) do
+    opts = Enum.map(opts, &parse_opt/1)
+
     content =
       quote do
         unquote(__MODULE__).profile(
           fn ->
             unquote(Code.string_to_quoted!(code_string))
           end,
-          unquote(opts)
+          unquote(Macro.escape(opts))
         )
       end
 
@@ -148,11 +154,42 @@ defmodule Mix.Tasks.Profile.Eprof do
     Code.compile_quoted(content)
   end
 
-  @doc false
-  def profile(fun, opts) do
-    fun
-    |> profile_and_analyse(opts)
-    |> print_output
+  defp parse_opt({:matching, matching}) do
+    case Mix.Utils.parse_mfa(matching) do
+      {:ok, [m, f, a]} -> {:matching, {m, f, a}}
+      {:ok, [m, f]} -> {:matching, {m, f, :_}}
+      {:ok, [m]} -> {:matching, {m, :_, :_}}
+      :error -> Mix.raise("Invalid matching pattern: #{matching}")
+    end
+  end
+
+  defp parse_opt({:sort, "time"}), do: {:sort, :time}
+  defp parse_opt({:sort, "calls"}), do: {:sort, :calls}
+  defp parse_opt({:sort, other}), do: Mix.raise("Invalid sort option: #{other}")
+  defp parse_opt(other), do: other
+
+  @doc """
+  Allows to programmatically run the `eprof` profiler on expression in `fun`.
+
+  Returns the return value of `fun`.
+
+  ## Options
+
+    * `:matching` - only profile calls matching the given pattern in form of
+      `{module, function, arity}`, where each element may be replaced by `:_`
+      to allow any value
+    * `:calls` - filters out any results with a call count lower than this
+    * `:time` - filters out any results that took lower than specified (in µs)
+    * `:sort` - sort the results by `:time` or `:calls` (default: `:time`)
+
+  """
+  @spec profile((-> any()), keyword()) :: any()
+  def profile(fun, opts \\ []) when is_function(fun, 0) do
+    {return_value, results} = profile_and_analyse(fun, opts)
+
+    print_output(results)
+
+    return_value
   end
 
   defp profile_and_analyse(fun, opts) do
@@ -162,37 +199,23 @@ defmodule Mix.Tasks.Profile.Eprof do
     end
 
     :eprof.start()
-    :eprof.profile([], fun, matching_pattern(opts))
+    {:ok, return_value} = :eprof.profile([], fun, Keyword.get(opts, :matching, {:_, :_, :_}))
 
     results =
-      :eprof.dump()
-      |> extract_results
-      |> filter_results(opts)
-      |> sort_results(opts)
-      |> add_totals
+      Enum.map(:eprof.dump(), fn {pid, call_results} ->
+        parsed_calls =
+          call_results
+          |> filter_results(opts)
+          |> sort_results(opts)
+          |> add_totals()
+
+        {pid, parsed_calls}
+      end)
 
     :eprof.stop()
 
-    results
+    {return_value, results}
   end
-
-  defp matching_pattern(opts) do
-    case Keyword.get(opts, :matching) do
-      nil ->
-        {:_, :_, :_}
-
-      matching ->
-        case Mix.Utils.parse_mfa(matching) do
-          {:ok, [m, f, a]} -> {m, f, a}
-          {:ok, [m, f]} -> {m, f, :_}
-          {:ok, [m]} -> {m, :_, :_}
-          :error -> Mix.raise("Invalid matching pattern: #{matching}")
-        end
-    end
-  end
-
-  defp extract_results([]), do: []
-  defp extract_results([{_pid, call_results}]), do: call_results
 
   defp filter_results(call_results, opts) do
     calls_opt = Keyword.get(opts, :calls, 0)
@@ -204,12 +227,7 @@ defmodule Mix.Tasks.Profile.Eprof do
   end
 
   defp sort_results(call_results, opts) do
-    sort_by =
-      Keyword.get(opts, :sort, "time")
-      |> String.to_existing_atom()
-      |> sort_function
-
-    Enum.sort_by(call_results, sort_by)
+    Enum.sort_by(call_results, sort_function(Keyword.get(opts, :sort, :time)))
   end
 
   defp sort_function(:time), do: fn {_mfa, {_count, time}} -> time end
@@ -227,14 +245,23 @@ defmodule Mix.Tasks.Profile.Eprof do
 
   @header ["#", "CALLS", "%", "TIME", "µS/CALL"]
 
-  defp print_output({0, _, _, _}), do: print_function_count(0)
+  defp print_output([]) do
+    print_function_count(0)
+  end
 
-  defp print_output({function_count, call_results, call_count, total_time}) do
+  defp print_output(results) do
+    Enum.each(results, &print_result/1)
+  end
+
+  defp print_result({pid, {function_count, call_results, call_count, total_time}}) do
     formatted_rows = Enum.map(call_results, &format_row(&1, total_time))
     formatted_total = format_total(total_time, call_count)
 
     column_lengths = column_lengths(@header, formatted_rows)
 
+    IO.puts("")
+
+    print_pid_row(pid)
     print_row(@header, column_lengths)
     print_row(formatted_total, column_lengths)
     Enum.each(formatted_rows, &print_row(&1, column_lengths))
@@ -242,6 +269,10 @@ defmodule Mix.Tasks.Profile.Eprof do
     IO.puts("")
 
     print_function_count(function_count)
+  end
+
+  defp print_pid_row(pid) do
+    IO.puts("Profile results of #{inspect(pid)}")
   end
 
   defp format_row({{module, function, arity}, {count, time}}, total_time) do
@@ -293,7 +324,7 @@ defmodule Mix.Tasks.Profile.Eprof do
     :io.format(@format, to_print)
   end
 
-  def print_function_count(count) do
+  defp print_function_count(count) do
     IO.puts("Profile done over #{count} matching functions")
   end
 end
