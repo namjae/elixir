@@ -46,7 +46,7 @@ defmodule TypespecTest do
 
   describe "Kernel.Typespec errors" do
     test "invalid type specification" do
-      assert_raise CompileError, ~r"invalid type specification: my_type = 1", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid type specification: my_type = 1", fn ->
         test_module do
           @type my_type = 1
         end
@@ -54,21 +54,37 @@ defmodule TypespecTest do
     end
 
     test "unexpected expression in typespec" do
-      assert_raise CompileError, ~r"unexpected expression in typespec: \"foobar\"", fn ->
+      assert_raise Kernel.TypespecError, ~r"unexpected expression in typespec: \"foobar\"", fn ->
         test_module do
           @type my_type :: "foobar"
         end
       end
+
+      assert_raise Kernel.TypespecError,
+                   ~r"unexpected expression in typespec: integer\(\)\(\)",
+                   fn ->
+                     test_module do
+                       @type my_type :: integer()()
+                     end
+                   end
+
+      assert_raise Kernel.TypespecError,
+                   ~r"unexpected expression in typespec: %URI\.t\(\)\{\}",
+                   fn ->
+                     test_module do
+                       @type my_type :: %URI.t(){}
+                     end
+                   end
     end
 
     test "invalid function specification" do
-      assert_raise CompileError, ~r"invalid type specification: \"not a spec\"", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid type specification: \"not a spec\"", fn ->
         test_module do
           @spec "not a spec"
         end
       end
 
-      assert_raise CompileError, ~r"invalid type specification: 1 :: 2", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid type specification: 1 :: 2", fn ->
         test_module do
           @spec 1 :: 2
         end
@@ -76,26 +92,26 @@ defmodule TypespecTest do
     end
 
     test "undefined type" do
-      assert_raise CompileError, ~r"type foo/0 undefined", fn ->
+      assert_raise Kernel.TypespecError, ~r"type foo/0 undefined", fn ->
         test_module do
           @type omg :: foo
         end
       end
 
-      assert_raise CompileError, ~r"type foo/2 undefined", fn ->
+      assert_raise Kernel.TypespecError, ~r"type foo/2 undefined", fn ->
         test_module do
           @type omg :: foo(atom, integer)
         end
       end
 
-      assert_raise CompileError, ~r"type bar/0 undefined", fn ->
+      assert_raise Kernel.TypespecError, ~r"type bar/0 undefined", fn ->
         test_module do
           @spec foo(bar, integer) :: {atom, integer}
           def foo(var1, var2), do: {var1, var2}
         end
       end
 
-      assert_raise CompileError, ~r"type foo/0 undefined", fn ->
+      assert_raise Kernel.TypespecError, ~r"type foo/0 undefined", fn ->
         test_module do
           @type omg :: __MODULE__.foo()
         end
@@ -103,8 +119,8 @@ defmodule TypespecTest do
     end
 
     test "redefined type" do
-      assert_raise CompileError,
-                   ~r"type foo/0 is already defined in test/elixir/typespec_test.exs:110",
+      assert_raise Kernel.TypespecError,
+                   ~r"type foo/0 is already defined in .*test/elixir/typespec_test.exs:126",
                    fn ->
                      test_module do
                        @type foo :: atom
@@ -112,8 +128,8 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
-                   ~r"type foo/2 is already defined in test/elixir/typespec_test.exs:120",
+      assert_raise Kernel.TypespecError,
+                   ~r"type foo/2 is already defined in .*test/elixir/typespec_test.exs:136",
                    fn ->
                      test_module do
                        @type foo :: atom
@@ -122,8 +138,8 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
-                   ~r"type foo/0 is already defined in test/elixir/typespec_test.exs:129",
+      assert_raise Kernel.TypespecError,
+                   ~r"type foo/0 is already defined in .*test/elixir/typespec_test.exs:145",
                    fn ->
                      test_module do
                        @type foo :: atom
@@ -133,7 +149,7 @@ defmodule TypespecTest do
     end
 
     test "type variable unused (singleton type variable)" do
-      assert_raise CompileError, ~r"type variable x is used only once", fn ->
+      assert_raise Kernel.TypespecError, ~r"type variable x is used only once", fn ->
         test_module do
           @type foo(x) :: integer
         end
@@ -147,13 +163,13 @@ defmodule TypespecTest do
     end
 
     test "type variable named _" do
-      assert_raise CompileError, ~r"type variable '_' is invalid", fn ->
+      assert_raise Kernel.TypespecError, ~r"type variable '_' is invalid", fn ->
         test_module do
           @type foo(_) :: integer
         end
       end
 
-      assert_raise CompileError, ~r"type variable '_' is invalid", fn ->
+      assert_raise Kernel.TypespecError, ~r"type variable '_' is invalid", fn ->
         test_module do
           @type foo(_, _) :: integer
         end
@@ -161,15 +177,15 @@ defmodule TypespecTest do
     end
 
     test "spec for undefined function" do
-      assert_raise CompileError, ~r"spec for undefined function omg/0", fn ->
+      assert_compile_error(~r"spec for undefined function omg/0", fn ->
         test_module do
           @spec omg :: atom
         end
-      end
+      end)
     end
 
     test "spec variable used only once (singleton type variable)" do
-      assert_raise CompileError, ~r"type variable x is used only once", fn ->
+      assert_raise Kernel.TypespecError, ~r"type variable x is used only once", fn ->
         test_module do
           @spec foo(x, integer) :: integer when x: var
           def foo(x, y), do: x + y
@@ -178,50 +194,50 @@ defmodule TypespecTest do
     end
 
     test "invalid optional callback" do
-      assert_raise CompileError, ~r"invalid optional callback :foo", fn ->
+      assert_compile_error(~r"invalid optional callback :foo", fn ->
         test_module do
           @optional_callbacks :foo
         end
-      end
+      end)
     end
 
     test "unknown optional callback" do
-      assert_raise CompileError, ~r"unknown callback foo/1 given as optional callback", fn ->
+      assert_compile_error(~r"unknown callback foo/1 given as optional callback", fn ->
         test_module do
           @optional_callbacks foo: 1
         end
-      end
+      end)
     end
 
     test "repeated optional callback" do
       message = ~r"foo/1 has been specified as optional callback more than once"
 
-      assert_raise CompileError, message, fn ->
+      assert_compile_error(message, fn ->
         test_module do
           @callback foo(:ok) :: :ok
           @optional_callbacks foo: 1, foo: 1
         end
-      end
+      end)
     end
 
     test "behaviour_info/1 explicitly defined alongside @callback/@macrocallback" do
       message = ~r"cannot define @callback attribute for foo/1 when behaviour_info/1"
 
-      assert_raise CompileError, message, fn ->
+      assert_compile_error(message, fn ->
         test_module do
           @callback foo(:ok) :: :ok
           def behaviour_info(_), do: []
         end
-      end
+      end)
 
       message = ~r"cannot define @macrocallback attribute for foo/1 when behaviour_info/1"
 
-      assert_raise CompileError, message, fn ->
+      assert_compile_error(message, fn ->
         test_module do
           @macrocallback foo(:ok) :: :ok
           def behaviour_info(_), do: []
         end
-      end
+      end)
     end
 
     test "default is not supported" do
@@ -265,7 +281,7 @@ defmodule TypespecTest do
     test "@spec shows readable error message when return type is missing" do
       message = ~r"type specification missing return type: my_fun\(integer\)"
 
-      assert_raise CompileError, message, fn ->
+      assert_raise Kernel.TypespecError, message, fn ->
         test_module do
           @spec my_fun(integer)
         end
@@ -373,43 +389,43 @@ defmodule TypespecTest do
     end
 
     test "@type with invalid binary spec" do
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::3*8>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::atom>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::integer>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::(-4)>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::3, _::_*atom>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::3, _::_*(-8)>>
         end
       end
 
-      assert_raise CompileError, ~r"invalid binary specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid binary specification", fn ->
         test_module do
           @type my_type :: <<_::3, _::_*257>>
         end
@@ -433,7 +449,7 @@ defmodule TypespecTest do
     end
 
     test "@type with invalid range" do
-      assert_raise CompileError, ~r"invalid range specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid range specification", fn ->
         test_module do
           @type my_type :: atom..10
         end
@@ -522,13 +538,13 @@ defmodule TypespecTest do
     end
 
     test "@type with undefined struct" do
-      assert_raise CompileError, ~r"ThisModuleDoesNotExist.__struct__/0 is undefined", fn ->
+      assert_raise ArgumentError, ~r"ThisModuleDoesNotExist.__struct__/0 is undefined", fn ->
         test_module do
           @type my_type :: %ThisModuleDoesNotExist{}
         end
       end
 
-      assert_raise CompileError, ~r"cannot access struct TypespecTest.TypespecSample", fn ->
+      assert_raise ArgumentError, ~r"cannot access struct TypespecTest.TypespecSample", fn ->
         test_module do
           @type my_type :: %TypespecSample{}
         end
@@ -536,7 +552,7 @@ defmodule TypespecTest do
     end
 
     test "@type with a struct with undefined field" do
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"undefined field :no_field on struct TypespecTest.TypespecSample",
                    fn ->
                      test_module do
@@ -545,7 +561,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"undefined field :no_field on struct TypespecTest.TypespecSample",
                    fn ->
                      test_module do
@@ -556,7 +572,7 @@ defmodule TypespecTest do
     end
 
     test "@type when overriding Elixir built-in" do
-      assert_raise CompileError, ~r"type struct/0 is a built-in type", fn ->
+      assert_raise Kernel.TypespecError, ~r"type struct/0 is a built-in type", fn ->
         test_module do
           @type struct :: :oops
         end
@@ -564,7 +580,7 @@ defmodule TypespecTest do
     end
 
     test "@type when overriding Erlang built-in" do
-      assert_raise CompileError, ~r"type list/0 is a built-in type", fn ->
+      assert_raise Kernel.TypespecError, ~r"type list/0 is a built-in type", fn ->
         test_module do
           @type list :: :oops
         end
@@ -620,7 +636,7 @@ defmodule TypespecTest do
     end
 
     test "@type with undefined record" do
-      assert_raise CompileError, ~r"unknown record :this_record_does_not_exist", fn ->
+      assert_raise Kernel.TypespecError, ~r"unknown record :this_record_does_not_exist", fn ->
         test_module do
           @type my_type :: record(:this_record_does_not_exist, [])
         end
@@ -628,7 +644,7 @@ defmodule TypespecTest do
     end
 
     test "@type with a record with undefined field" do
-      assert_raise CompileError, ~r"undefined field no_field on record :timestamp", fn ->
+      assert_raise Kernel.TypespecError, ~r"undefined field no_field on record :timestamp", fn ->
         test_module do
           require Record
           Record.defrecord(:timestamp, date: 1, time: 2)
@@ -638,7 +654,7 @@ defmodule TypespecTest do
     end
 
     test "@type with a record which declares the name as the type `atom` rather than an atom literal" do
-      assert_raise CompileError, ~r"expected the record name to be an atom literal", fn ->
+      assert_raise Kernel.TypespecError, ~r"expected the record name to be an atom literal", fn ->
         test_module do
           @type my_type :: record(atom, field: :foo)
         end
@@ -657,7 +673,7 @@ defmodule TypespecTest do
     end
 
     test "@type with an invalid map notation" do
-      assert_raise CompileError, ~r"invalid map specification", fn ->
+      assert_raise Kernel.TypespecError, ~r"invalid map specification", fn ->
         test_module do
           @type content :: %{atom | String.t() => term}
         end
@@ -816,7 +832,7 @@ defmodule TypespecTest do
     end
 
     test "@type with a reserved signature" do
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type required\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -824,7 +840,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type optional\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -832,7 +848,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type required\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -840,7 +856,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type optional\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -848,7 +864,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type required\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -856,7 +872,7 @@ defmodule TypespecTest do
                      end
                    end
 
-      assert_raise CompileError,
+      assert_raise Kernel.TypespecError,
                    ~r"type optional\/1 is a reserved type and it cannot be defined",
                    fn ->
                      test_module do
@@ -866,7 +882,7 @@ defmodule TypespecTest do
     end
 
     test "invalid remote @type with module attribute that does not evaluate to a module" do
-      assert_raise CompileError, ~r/\(@foo is "bar"\)/, fn ->
+      assert_raise Kernel.TypespecError, ~r/\(@foo is "bar"\)/, fn ->
         test_module do
           @foo "bar"
           @type t :: @foo.t
@@ -1323,7 +1339,7 @@ defmodule TypespecTest do
     test "non-variables are given as arguments" do
       msg = ~r/The type one_bad_variable\/1 has an invalid argument\(s\): String.t\(\)/
 
-      assert_raise CompileError, msg, fn ->
+      assert_raise Kernel.TypespecError, msg, fn ->
         test_module do
           @type one_bad_variable(String.t()) :: String.t()
         end
@@ -1331,7 +1347,7 @@ defmodule TypespecTest do
 
       msg = ~r/The type two_bad_variables\/2 has an invalid argument\(s\): :ok, Enumerable.t\(\)/
 
-      assert_raise CompileError, msg, fn ->
+      assert_raise Kernel.TypespecError, msg, fn ->
         test_module do
           @type two_bad_variables(:ok, Enumerable.t()) :: {:ok, []}
         end
@@ -1339,7 +1355,7 @@ defmodule TypespecTest do
 
       msg = ~r/The type one_bad_one_good\/2 has an invalid argument\(s\): \"\"/
 
-      assert_raise CompileError, msg, fn ->
+      assert_raise Kernel.TypespecError, msg, fn ->
         test_module do
           @type one_bad_one_good(input1, "") :: {:ok, input1}
         end
@@ -1600,5 +1616,11 @@ defmodule TypespecTest do
     end)
 
     :ok
+  end
+
+  defp assert_compile_error(message, fun) do
+    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+             assert_raise CompileError, fun
+           end) =~ message
   end
 end

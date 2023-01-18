@@ -177,8 +177,31 @@ defmodule ExUnit.Diff do
   end
 
   defp diff_value(left, right, env) when is_binary(left) and is_binary(right) do
-    block_meta = [delimiter: ?"]
-    diff_string(left, right, block_meta, env)
+    diff_string(left, right, ?", env)
+  end
+
+  defp diff_value(left, right, env) when is_function(left) and is_function(right) do
+    # If they are local functions in the same module and same name,
+    # then they have different environment, which we compare.
+    if Function.info(left, :type) == {:type, :local} and
+         Function.info(right, :type) == {:type, :local} and
+         Function.info(left, :module) == Function.info(right, :module) and
+         Function.info(left, :new_uniq) == Function.info(right, :new_uniq) and
+         Function.info(left, :new_index) == Function.info(right, :new_index) do
+      {:env, left_env} = Function.info(left, :env)
+      {:env, right_env} = Function.info(right, :env)
+      {diff, env} = diff_maybe_improper_list(left_env, right_env, env)
+
+      diff = %{
+        diff
+        | left: %{custom: &function_env_to_algebra(left, diff.left, &1)},
+          right: %{custom: &function_env_to_algebra(right, diff.right, &1)}
+      }
+
+      {diff, env}
+    else
+      diff_value(left, right, env)
+    end
   end
 
   defp diff_value(left, right, env) do
@@ -324,8 +347,15 @@ defmodule ExUnit.Diff do
 
   defp diff_maybe_list(left, right, env) do
     if List.ascii_printable?(left) and List.ascii_printable?(right) do
-      block_meta = [delimiter: ?", sigil: ?c]
-      diff_string(List.to_string(left), List.to_string(right), block_meta, env)
+      {diff, env} = diff_string(List.to_string(left), List.to_string(right), ?", env)
+
+      diff = %{
+        diff
+        | left: %{custom: &charlist_to_algebra(diff.left, &1)},
+          right: %{custom: &charlist_to_algebra(diff.right, &1)}
+      }
+
+      {diff, env}
     else
       diff_maybe_improper_list(left, right, env)
     end
@@ -696,7 +726,7 @@ defmodule ExUnit.Diff do
          {:ok, inspect_left} <- safe_inspect(left),
          {:ok, inspect_right} <- safe_inspect(right) do
       if inspect_left != inspect_right do
-        diff_string(inspect_left, inspect_right, [], env)
+        diff_string(inspect_left, inspect_right, nil, env)
       else
         # If they are equivalent, still use their inspected form
         case diff_map(kw, right, struct1, struct2, env) do
@@ -742,8 +772,7 @@ defmodule ExUnit.Diff do
 
   # Strings
 
-  defp diff_string(left, right, block_meta, env) do
-    delimiter = block_meta[:delimiter]
+  defp diff_string(left, right, delimiter, env) do
     {escaped_left, _} = Code.Identifier.escape(left, delimiter)
     {escaped_right, _} = Code.Identifier.escape(right, delimiter)
     left = IO.iodata_to_binary(escaped_left)
@@ -751,12 +780,12 @@ defmodule ExUnit.Diff do
 
     cond do
       left == right ->
-        {string_script_to_diff([eq: left], block_meta, true, [], []), env}
+        {string_script_to_diff([eq: left], delimiter, true, [], []), env}
 
       diff_string?(left, right) ->
         diff =
           String.myers_difference(left, right)
-          |> string_script_to_diff(block_meta, true, [], [])
+          |> string_script_to_diff(delimiter, true, [], [])
 
         env =
           if String.equivalent?(left, right) do
@@ -768,7 +797,7 @@ defmodule ExUnit.Diff do
         {diff, env}
 
       true ->
-        {string_script_to_diff([del: left, ins: right], block_meta, true, [], []), env}
+        {string_script_to_diff([del: left, ins: right], delimiter, true, [], []), env}
     end
   end
 
@@ -782,8 +811,7 @@ defmodule ExUnit.Diff do
   end
 
   defp diff_string_concat(left, nil, indexes, _left_length, right, env) do
-    block_meta = [delimiter: ?"]
-    {parsed_diff, parsed_post_env} = diff_string(left, right, block_meta, env)
+    {parsed_diff, parsed_post_env} = diff_string(left, right, ?", env)
     left_diff = rebuild_concat_string(parsed_diff.left, nil, indexes)
 
     diff = %__MODULE__{parsed_diff | left: left_diff}
@@ -791,16 +819,14 @@ defmodule ExUnit.Diff do
   end
 
   defp diff_string_concat(left, quoted, indexes, left_length, right, env) do
-    block_meta = [delimiter: ?"]
     {parsed_right, continue_right} = String.split_at(right, left_length)
-    {parsed_diff, parsed_post_env} = diff_string(left, parsed_right, block_meta, env)
+    {parsed_diff, parsed_post_env} = diff_string(left, parsed_right, ?", env)
     {quoted_diff, quoted_post_env} = diff(quoted, continue_right, parsed_post_env)
 
     diff =
       merge_diff(parsed_diff, quoted_diff, fn left1, left2, right1, right2 ->
         new_left = rebuild_concat_string(left1, left2, indexes)
         new_right = rebuild_split_strings(right1, right2)
-
         {new_left, new_right}
       end)
 
@@ -830,12 +856,15 @@ defmodule ExUnit.Diff do
     left
   end
 
-  defp rebuild_split_strings({:__block__, meta, left_list}, {:__block__, _, right_list}) do
-    {:__block__, meta, left_list ++ right_list}
+  defp rebuild_split_strings(
+         %{contents: left, delimiter: delimiter},
+         %{contents: right, delimiter: delimiter}
+       ) do
+    %{contents: left ++ right, delimiter: delimiter}
   end
 
-  defp rebuild_split_strings({:__block__, meta, left_list}, right) do
-    {:__block__, meta, left_list ++ [right]}
+  defp rebuild_split_strings(%{contents: contents, delimiter: delimiter}, right) do
+    %{contents: contents ++ [{false, right}], delimiter: delimiter}
   end
 
   defp rebuild_concat_string(literal, nil, []) do
@@ -849,58 +878,59 @@ defmodule ExUnit.Diff do
   defp rebuild_concat_string(literal, quoted, [index | rest]) do
     {next, continue} = next_concat_result(literal, index)
     rebuilt_right = rebuild_concat_string(continue, quoted, rest)
-
     {:<>, [], [next, rebuilt_right]}
   end
 
-  defp next_concat_result({:__block__, [{:delimiter, _} | _] = meta, list}, index) do
-    {next, continue} = next_concat_result(list, index)
-    {{:__block__, meta, next}, {:__block__, meta, continue}}
+  defp next_concat_result(%{contents: contents, delimiter: delimiter}, index) do
+    {next, continue} = next_concat_result(contents, index)
+    {%{contents: next, delimiter: delimiter}, %{contents: continue, delimiter: delimiter}}
   end
 
-  defp next_concat_result([head | tail], index) do
-    {string, diff_meta?} = extract_diff_meta(head)
-    length = String.length(string)
+  defp next_concat_result([{diff?, head} | tail], index) do
+    length = String.length(head)
 
     cond do
       length > index ->
-        {next, continue} = String.split_at(string, index)
-        next = [update_diff_meta(next, diff_meta?)]
-        continue = [update_diff_meta(continue, diff_meta?) | tail]
-
-        {next, continue}
+        {next, continue} = String.split_at(head, index)
+        {[{diff?, next}], [{diff?, continue} | tail]}
 
       length < index ->
         {next, continue} = next_concat_result(tail, index - length)
-        {[head | next], continue}
+        {[{diff?, head} | next], continue}
 
       true ->
-        {[head], tail}
+        {[{diff?, head}], tail}
     end
   end
 
-  defp string_script_to_diff([], block_meta, equivalent?, left, right) do
-    left = {:__block__, block_meta, Enum.reverse(left)}
-    right = {:__block__, block_meta, Enum.reverse(right)}
+  defp string_script_to_diff([], delimiter, equivalent?, left, right) do
+    left = %{delimiter: delimiter, contents: Enum.reverse(left)}
+    right = %{delimiter: delimiter, contents: Enum.reverse(right)}
     %__MODULE__{equivalent?: equivalent?, left: left, right: right}
   end
 
-  defp string_script_to_diff([{:eq, string} | tail], block_meta, equivalent?, left, right) do
-    string_script_to_diff(tail, block_meta, equivalent?, [string | left], [string | right])
+  defp string_script_to_diff([{:eq, string} | tail], delimiter, equivalent?, left, right) do
+    string_script_to_diff(
+      tail,
+      delimiter,
+      equivalent?,
+      [{false, string} | left],
+      [{false, string} | right]
+    )
   end
 
-  defp string_script_to_diff([{:del, string} | tail], block_meta, _equivalent?, left, right) do
-    string_script_to_diff(tail, block_meta, false, [update_diff_meta(string, true) | left], right)
+  defp string_script_to_diff([{:del, string} | tail], delimiter, _equivalent?, left, right) do
+    string_script_to_diff(tail, delimiter, false, [{true, string} | left], right)
   end
 
-  defp string_script_to_diff([{:ins, string} | tail], block_meta, _equivalent?, left, right) do
-    string_script_to_diff(tail, block_meta, false, left, [update_diff_meta(string, true) | right])
+  defp string_script_to_diff([{:ins, string} | tail], delimiter, _equivalent?, left, right) do
+    string_script_to_diff(tail, delimiter, false, left, [{true, string} | right])
   end
 
   # Numbers
 
   defp diff_number(left, right, env) do
-    diff_string(inspect(left), inspect(right), [], env)
+    diff_string(inspect(left), inspect(right), nil, env)
   end
 
   # Algebra
@@ -910,29 +940,6 @@ defmodule ExUnit.Diff do
   """
   def to_algebra(quoted, diff_wrapper) do
     wrap_on_diff(quoted, &safe_to_algebra/2, diff_wrapper)
-  end
-
-  defp safe_to_algebra({:__block__, meta, list}, diff_wrapper) do
-    content_docs =
-      for item <- list do
-        # Each element of the list is either a literal or a wrapped literal in a diff
-        wrap_on_diff(item, fn literal, _ -> literal end, diff_wrapper)
-      end
-
-    if container = meta[:delimiter] do
-      closer = to_string([container])
-
-      opener =
-        if sigil = meta[:sigil] do
-          to_string([?~, sigil, container])
-        else
-          closer
-        end
-
-      Algebra.concat([opener] ++ content_docs ++ [closer])
-    else
-      Algebra.concat(content_docs)
-    end
   end
 
   defp safe_to_algebra(list, diff_wrapper) when is_list(list) do
@@ -974,6 +981,26 @@ defmodule ExUnit.Diff do
 
   defp safe_to_algebra({escaped}, _diff_wrapper) do
     inspect(escaped)
+  end
+
+  # Custom encoding for delimiters+contents
+  defp safe_to_algebra(%{delimiter: delimiter, contents: contents}, diff_wrapper) do
+    content_docs =
+      for {diff?, content} <- contents do
+        if diff?, do: diff_wrapper.(content), else: content
+      end
+
+    if delimiter do
+      delimiter = List.to_string([delimiter])
+      Algebra.concat([delimiter, Algebra.concat(content_docs), delimiter])
+    else
+      Algebra.concat(content_docs)
+    end
+  end
+
+  # Custom encoding for functions
+  defp safe_to_algebra(%{custom: literal}, diff_wrapper) do
+    literal.(diff_wrapper)
   end
 
   defp safe_to_algebra(literal, _diff_wrapper) do
@@ -1064,17 +1091,46 @@ defmodule ExUnit.Diff do
     end
   end
 
+  defp charlist_to_algebra(%{contents: contents}, diff_wrapper) do
+    content_doc =
+      for {diff, content} <- contents do
+        if diff, do: diff_wrapper.(content), else: content
+      end
+
+    Algebra.concat(["~c\"", Algebra.concat(content_doc), "\""])
+  end
+
+  defp function_env_to_algebra(function, ast, diff_wrapper) do
+    "#Function<" <> contents = inspect(function)
+
+    Algebra.concat([
+      "#Function<",
+      Algebra.nest(
+        Algebra.concat([
+          Algebra.line(),
+          binary_slice(contents, 0..-2//1),
+          Algebra.line(),
+          to_algebra(ast, diff_wrapper)
+        ]),
+        2
+      ),
+      Algebra.line(),
+      ">"
+    ])
+  end
+
   # Diff helpers
 
   defp add_hint(%{hints: hints} = env, hint) do
     if hint in hints, do: env, else: %{env | hints: [hint | hints]}
   end
 
-  # The left side is only escaped if it is a value
   defp maybe_escape(other, %{context: :match}), do: other
   defp maybe_escape(other, _env), do: escape(other)
 
-  # We escape it by wrapping it in one element tuple which is not valid AST
+  # We escape container types to make a distinction between AST
+  # and values that should be inspected. All other values have no
+  # special AST representation, so we can keep them as is.
   defp escape(other) when is_list(other) or is_tuple(other), do: {other}
   defp escape(other), do: other
 

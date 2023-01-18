@@ -35,7 +35,7 @@ defmodule Task.Supervisor do
   Instead of:
 
       children = [
-        {Task.Supervisor, name: Task.Supervisor}
+        {Task.Supervisor, name: MyApp.TaskSupervisor}
       ]
 
   and:
@@ -199,6 +199,10 @@ defmodule Task.Supervisor do
 
   Raises an error if `supervisor` has reached the maximum number of
   children.
+
+  Note this function requires the task supervisor to have `:temporary`
+  as the `:restart` option (the default), as `async_nolink/3` keeps a
+  direct reference to the task which is lost if the task is restarted.
 
   ## Options
 

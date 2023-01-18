@@ -291,13 +291,11 @@ defmodule Exception do
     end
   end
 
-  defp undo_is_struct_guard(
-         {:and, meta, [_, %{node: {_, _, [{_, _, [_, {struct, _, _}]} | optional]}}]}
-       ) do
+  defp undo_is_struct_guard({:and, meta, [_, %{node: {_, _, [{_, _, [_, arg]} | optional]}}]}) do
     args =
       case optional do
-        [] -> [{struct, meta, nil}]
-        [module] -> [{struct, meta, nil}, module]
+        [] -> [arg]
+        [module] -> [arg, module]
       end
 
     %{match?: meta[:value], node: {:is_struct, meta, args}}
@@ -950,7 +948,22 @@ defmodule CompileError do
 
   @impl true
   def message(%{file: file, line: line, description: description}) do
-    Exception.format_file_line(file && Path.relative_to_cwd(file), line) <> " " <> description
+    case Exception.format_file_line(file && Path.relative_to_cwd(file), line) do
+      "" -> description
+      formatted -> formatted <> " " <> description
+    end
+  end
+end
+
+defmodule Kernel.TypespecError do
+  defexception [:file, :line, :description]
+
+  @impl true
+  def message(%{file: file, line: line, description: description}) do
+    case Exception.format_file_line(file && Path.relative_to_cwd(file), line) do
+      "" -> description
+      formatted -> formatted <> " " <> description
+    end
   end
 end
 
@@ -1396,7 +1409,7 @@ defmodule KeyError do
     message = "key #{inspect(key)} not found"
 
     if term != nil do
-      message <> " in: #{inspect(term)}"
+      message <> " in: #{inspect(term, pretty: true, limit: :infinity)}"
     else
       message
     end

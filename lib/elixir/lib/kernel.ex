@@ -4231,9 +4231,9 @@ defmodule Kernel do
   @doc """
   Power operator.
 
-  It expects two numbers are input. If the left-hand side is an integer
-  and the right-hand side is more than or equal to 0, then the result is
-  integer. Otherwise it returns a float.
+  It takes two numbers for input. If both are integers and the right-hand
+  side (the `exponent`) is also greater than or equal to 0, then the result
+  will also be an integer. Otherwise it returns a float.
 
   ## Examples
 
@@ -4252,6 +4252,8 @@ defmodule Kernel do
   @spec integer ** non_neg_integer :: integer
   @spec integer ** neg_integer :: float
   @spec float ** float :: float
+  @spec integer ** float :: float
+  @spec float ** integer :: float
   def base ** exponent when is_integer(base) and is_integer(exponent) and exponent >= 0 do
     integer_pow(base, 1, exponent)
   end
@@ -4843,11 +4845,27 @@ defmodule Kernel do
           :elixir_quote.escape(block, :none, false)
       end
 
-    module_vars = :lists.map(&module_var/1, :maps.keys(env.versioned_vars))
+    versioned_vars = env.versioned_vars
+    prune = :erlang.is_map_key({:elixir, :prune_binding}, versioned_vars)
+
+    var_meta =
+      case prune do
+        true -> [generated: true, keep_unused: true]
+        false -> [generated: true]
+      end
+
+    module_vars = :lists.map(&module_var(&1, var_meta), :maps.keys(versioned_vars))
 
     quote do
       unquote(with_alias)
-      :elixir_module.compile(unquote(expanded), unquote(escaped), unquote(module_vars), __ENV__)
+
+      :elixir_module.compile(
+        unquote(expanded),
+        unquote(escaped),
+        unquote(module_vars),
+        unquote(prune),
+        __ENV__
+      )
     end
   end
 
@@ -4896,8 +4914,8 @@ defmodule Kernel do
     {module, module, nil}
   end
 
-  defp module_var({name, kind}) when is_atom(kind), do: {name, [generated: true], kind}
-  defp module_var({name, kind}), do: {name, [counter: kind, generated: true], nil}
+  defp module_var({name, kind}, meta) when is_atom(kind), do: {name, meta, kind}
+  defp module_var({name, kind}, meta), do: {name, [counter: kind] ++ meta, nil}
 
   @doc ~S"""
   Defines a public function with the given name and body.
@@ -5851,6 +5869,25 @@ defmodule Kernel do
       |> List.first() #=> "Elixir"
 
   With no arguments, `dbg()` debugs information about the current binding. See `binding/1`.
+
+  ## `dbg` inside IEx
+
+  You can enable IEx to replace `dbg` with its `IEx.pry/0` backend by calling:
+
+      $ iex --dbg pry
+
+  In such cases, `dbg` will start a `pry` session where you can interact with
+  the imports, aliases, and variables of the current environment at the location
+  of the `dbg` call.
+
+  If you call `dbg` at the end of a pipeline (using `|>`) within IEx, you are able
+  to go through each step of the pipeline one by one by entering "next" (or "n").
+
+  Note `dbg` only supports stepping for pipelines (in other words, it can only
+  step through the code it sees). For general stepping, you can set breakpoints
+  using `IEx.break!/4`.
+
+  For more information, [see IEx documentation](https://hexdocs.pm/iex/IEx.html#module-dbg-and-breakpoints).
 
   ## Configuring the debug function
 

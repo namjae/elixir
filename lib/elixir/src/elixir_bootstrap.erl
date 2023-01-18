@@ -20,7 +20,7 @@
 
 'MACRO-defmodule'(_Caller, Alias, [{do, Block}]) ->
   Escaped = elixir_quote:escape(Block, none, false),
-  Args = [Alias, Escaped, [], env()],
+  Args = [Alias, Escaped, [], false, env()],
   {{'.', [], [elixir_module, compile]}, [], Args}.
 
 '__info__'(functions) ->
@@ -44,9 +44,9 @@ define({Line, _S, E}, Kind, Call, Expr) ->
   {{'.', [], [elixir_def, store_definition]}, [], Args}.
 
 unless_loaded(Fun, Args, Callback) ->
-  case code:is_loaded(?kernel) of
-    {_, _} -> apply(?kernel, Fun, Args);
-    false  -> Callback()
+  case erlang:module_loaded(?kernel) of
+    true -> apply(?kernel, Fun, Args);
+    false -> Callback()
   end.
 
 env() ->

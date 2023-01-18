@@ -37,7 +37,8 @@ eval_or_compile(Forms, Args, E) ->
         (not elixir_config:is_bootstrap()) of
     true  -> fast_compile(Forms, E);
     false -> compile(Forms, Args, E)
-  end.
+  end,
+  ok.
 
 compile(Quoted, ArgsList, E) ->
   {Expanded, SE, EE} = elixir_expand:expand(Quoted, elixir_env:env_to_ex(E), E),
@@ -47,7 +48,7 @@ compile(Quoted, ArgsList, E) ->
     elixir_erl_compiler:spawn(fun() -> spawned_compile(Expanded, E) end),
 
   Args = list_to_tuple(ArgsList),
-  {dispatch(Module, Fun, Args, Purgeable), EE}.
+  {dispatch(Module, Fun, Args, Purgeable), SE, EE}.
 
 spawned_compile(ExExprs, #{line := Line, file := File} = E) ->
   {Vars, S} = elixir_erl_var:from_env(E),
@@ -126,7 +127,7 @@ fast_compile({defmodule, Meta, [Mod, [{do, TailBlock}]]}, NoLineE) ->
   end,
 
   ContextModules = [Expanded | ?key(E, context_modules)],
-  elixir_module:compile(Expanded, Block, [], E#{context_modules := ContextModules}).
+  elixir_module:compile(Expanded, Block, [], false, E#{context_modules := ContextModules}).
 
 %% Bootstrapper
 
@@ -136,6 +137,7 @@ bootstrap() ->
   elixir_config:put(docs, false),
   elixir_config:put(relative_paths, false),
   elixir_config:put(ignore_module_conflict, true),
+  elixir_config:put(on_undefined_variable, raise),
   elixir_config:put(tracers, []),
   elixir_config:put(parser_options, []),
   {Init, Main} = bootstrap_files(),

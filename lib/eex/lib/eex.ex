@@ -50,7 +50,7 @@ defmodule EEx do
     * `:indentation` - (since v1.11.0) an integer added to the column after every
       new line. Defaults to `0`.
 
-    * `:engine` - the EEx engine to be used for compilation.
+    * `:engine` - the EEx engine to be used for compilation. Defaults to `EEx.SmartEngine`.
 
     * `:trim` - if `true`, trims whitespace left and right of quotation as
       long as at least one newline is present. All subsequent newlines and
@@ -217,8 +217,7 @@ defmodule EEx do
   def compile_string(source, options \\ []) when is_binary(source) and is_list(options) do
     case tokenize(source, options) do
       {:ok, tokens} ->
-        options = [source: source] ++ options
-        EEx.Compiler.compile(tokens, options)
+        EEx.Compiler.compile(tokens, source, options)
 
       {:error, message, %{column: column, line: line}} ->
         file = options[:file] || "nofile"
@@ -333,7 +332,7 @@ defmodule EEx do
   Note new tokens may be added in the future.
   """
   @doc since: "1.14.0"
-  @spec tokenize(IO.chardata(), opts :: keyword) ::
+  @spec tokenize([char()] | String.t(), opts :: keyword) ::
           {:ok, [token()]} | {:error, String.t(), metadata()}
   def tokenize(contents, opts \\ []) do
     EEx.Compiler.tokenize(contents, opts)

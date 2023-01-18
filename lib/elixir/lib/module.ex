@@ -504,7 +504,7 @@ defmodule Module do
 
   Accepts a module or a `{module, function_name}` tuple. The function
   must take one argument: the module name. When just a module is provided,
-  the function is assumed to be `__after_verify__/2`.
+  the function is assumed to be `__after_verify__/1`.
 
   Callbacks will run in the order they are registered.
 
@@ -826,7 +826,7 @@ defmodule Module do
   defp create(meta, module, quoted, env_or_opts) do
     next = :elixir_module.next_counter(nil)
     quoted = :elixir_quote.linify_with_context_counter(meta, {module, next}, quoted)
-    :elixir_module.compile(module, quoted, [], :elixir.env_for_eval(env_or_opts))
+    :elixir_module.compile(module, quoted, [], false, :elixir.env_for_eval(env_or_opts))
   end
 
   @doc """

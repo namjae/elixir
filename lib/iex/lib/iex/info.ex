@@ -398,11 +398,12 @@ defimpl IEx.Info, for: Reference do
   end
 end
 
-defimpl IEx.Info, for: [Date, Time, NaiveDateTime] do
+defimpl IEx.Info, for: [Date, Time, DateTime, NaiveDateTime] do
   {sigil, repr} =
     case @for do
       Date -> {"D", "date"}
       Time -> {"T", "time"}
+      DateTime -> {"U", "datetime"}
       NaiveDateTime -> {"N", ~S{"naive" datetime (that is, a datetime without a time zone)}}
     end
 
@@ -418,6 +419,30 @@ defimpl IEx.Info, for: [Date, Time, NaiveDateTime] do
       {"Description", description},
       {"Raw representation", raw_inspect(value)},
       {"Reference modules", inspect(@for) <> ", Calendar, Map"}
+    ]
+  end
+
+  defp raw_inspect(value) do
+    value
+    |> Inspect.Any.inspect(%Inspect.Opts{})
+    |> Inspect.Algebra.format(:infinity)
+    |> IO.iodata_to_binary()
+  end
+end
+
+defimpl IEx.Info, for: Range do
+  def info(value) do
+    description = """
+    This is a struct representing a range of numbers. It is commonly
+    defined using the `first..last//step` syntax. The step is not
+    required and defaults to 1.
+    """
+
+    [
+      {"Data type", inspect(@for)},
+      {"Description", description},
+      {"Raw representation", raw_inspect(value)},
+      {"Reference modules", inspect(@for)}
     ]
   end
 

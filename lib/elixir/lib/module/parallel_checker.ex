@@ -63,7 +63,10 @@ defmodule Module.ParallelChecker do
               if is_map(info) do
                 info
               else
-                info |> File.read!() |> maybe_module_map(module)
+                case File.read(info) do
+                  {:ok, binary} -> maybe_module_map(binary, module)
+                  {:error, _} -> nil
+                end
               end
 
             module_map && cache_from_module_map(ets, module_map)
@@ -97,6 +100,7 @@ defmodule Module.ParallelChecker do
   @doc """
   Verifies the given compilation function
   by starting a checker if one does not exist.
+
   See `verify/3`.
   """
   def verify(fun) do
@@ -137,7 +141,7 @@ defmodule Module.ParallelChecker do
   the modules and adds the ExCk chunk to the binaries. Returns the updated
   list of warnings from the verification.
   """
-  @spec verify(pid(), [{module(), binary()}]) :: [warning()]
+  @spec verify(pid(), [{module(), Path.t()}]) :: [warning()]
   def verify(checker, runtime_files) do
     for {module, file} <- runtime_files do
       spawn({self(), checker}, module, file)
@@ -153,7 +157,7 @@ defmodule Module.ParallelChecker do
 
   defp collect_results(modules, warnings) do
     receive do
-      {:warning, file, location, message} ->
+      {:diagnostic, _type, file, location, message} ->
         file = file && Path.absname(file)
         message = :unicode.characters_to_binary(message)
         warning = {file, location, message}
@@ -290,7 +294,7 @@ defmodule Module.ParallelChecker do
   def emit_warnings(warnings) do
     Enum.flat_map(warnings, fn {module, warning, locations} ->
       message = module.format_warning(warning)
-      print_warning([message, ?\n, format_locations(locations)])
+      :elixir_errors.print_warning_no_diagnostic([message, ?\n, format_locations(locations)])
 
       Enum.map(locations, fn {file, line, _mfa} ->
         {file, line, message}
@@ -328,10 +332,6 @@ defmodule Module.ParallelChecker do
     ["  ", file, line]
   end
 
-  defp print_warning(message) do
-    IO.puts(:stderr, [:elixir_errors.warning_prefix(), message])
-  end
-
   ## Cache
 
   defp cache_module({server, ets}, module) do
@@ -343,8 +343,7 @@ defmodule Module.ParallelChecker do
 
   defp cache_from_chunk(ets, module) do
     with {^module, binary, _filename} <- :code.get_object_code(module),
-         {:ok, ^module} <- binary |> :beam_lib.info() |> Keyword.fetch(:module),
-         {:ok, {_, [{~c"ExCk", chunk}]}} <- :beam_lib.chunks(binary, [~c"ExCk"]),
+         {:ok, {^module, [{~c"ExCk", chunk}]}} <- :beam_lib.chunks(binary, [~c"ExCk"]),
          {:elixir_checker_v1, contents} <- :erlang.binary_to_term(chunk) do
       cache_chunk(ets, module, contents.exports)
       true

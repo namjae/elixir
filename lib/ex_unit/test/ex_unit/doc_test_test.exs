@@ -577,7 +577,7 @@ defmodule ExUnit.DocTestTest do
                 Doctest failed
                 doctest:
                   iex> :oops
-                  "#Inspect<[]>"
+                  #Inspect<[]>
                 code:  inspect(:oops) === "#Inspect<[]>"
                 left:  ":oops"
                 right: "#Inspect<[]>"
@@ -600,7 +600,7 @@ defmodule ExUnit.DocTestTest do
                 Doctest failed: expected exception WhatIsThis but got RuntimeError with message "oops"
                 doctest:
                   iex> raise "oops"
-                  ** (WhatIsThis) "oops"
+                  ** (WhatIsThis) oops
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 18}: ExUnit.DocTestTest.Invalid (module)
            """
@@ -615,7 +615,7 @@ defmodule ExUnit.DocTestTest do
                   "oops"
                 doctest:
                   iex> raise "oops"
-                  ** (RuntimeError) "hello"
+                  ** (RuntimeError) hello
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 21}: ExUnit.DocTestTest.Invalid (module)
            """
@@ -635,18 +635,17 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-             9) doctest ExUnit.DocTestTest.Invalid.dedented_past_fence/0 (9) (ExUnit.DocTestTest.ActuallyCompiled)
+            9) doctest ExUnit.DocTestTest.Invalid.b/0 (9) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
-                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 57}:5: unexpected token: "`" (column 5, code point U+0060)
-                 #{line_placeholder(starting_line + 57)} |
-                 #{starting_line + 57} |     ```
-                 #{line_placeholder(starting_line + 57)} |     ^
+                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 33}:6: syntax error before: '*'
+                 #{line_placeholder(starting_line + 33)} |
+                 #{starting_line + 33} |  1 + * 1
+                 #{line_placeholder(starting_line + 33)} |      ^
                 doctest:
-                  iex> 1 + 2
-                  3
-                      ```
+                  iex> 1 + * 1
+                  1
                 stacktrace:
-                  test/ex_unit/doc_test_test.exs:#{starting_line + 56}: ExUnit.DocTestTest.Invalid (module)
+                  test/ex_unit/doc_test_test.exs:#{starting_line + 33}: ExUnit.DocTestTest.Invalid (module)
            """
 
     assert output =~ """
@@ -680,7 +679,22 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-            12) doctest ExUnit.DocTestTest.Invalid.invalid_utf8/0 (12) (ExUnit.DocTestTest.ActuallyCompiled)
+            12) doctest ExUnit.DocTestTest.Invalid.dedented_past_fence/0 (12) (ExUnit.DocTestTest.ActuallyCompiled)
+                test/ex_unit/doc_test_test.exs:#{doctest_line}
+                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 57}:5: unexpected token: "`" (column 5, code point U+0060)
+                 #{line_placeholder(starting_line + 57)} |
+                 #{starting_line + 57} |     ```
+                 #{line_placeholder(starting_line + 57)} |     ^
+                doctest:
+                  iex> 1 + 2
+                  3
+                      ```
+                stacktrace:
+                  test/ex_unit/doc_test_test.exs:#{starting_line + 56}: ExUnit.DocTestTest.Invalid (module)
+           """
+
+    assert output =~ """
+            13) doctest ExUnit.DocTestTest.Invalid.invalid_utf8/0 (13) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (UnicodeConversionError) invalid encoding starting at <<255, 34, 41>>
                 stacktrace:
@@ -688,7 +702,7 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-            13) doctest ExUnit.DocTestTest.Invalid.misplaced_opaque_type/0 (13) (ExUnit.DocTestTest.ActuallyCompiled)
+            14) doctest ExUnit.DocTestTest.Invalid.misplaced_opaque_type/0 (14) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (TokenMissingError) test/ex_unit/doc_test_test.exs:#{starting_line + 69}:7: missing terminator: } (for "{" starting at line #{starting_line + 69})
                  #{line_placeholder(starting_line + 69)} |
@@ -702,28 +716,8 @@ defmodule ExUnit.DocTestTest do
                   test/ex_unit/doc_test_test.exs:#{starting_line + 69}: ExUnit.DocTestTest.Invalid (module)
            """
 
-    assert output =~ "14) doctest ExUnit.DocTestTest.Invalid.raising_inspect/0"
-    assert output =~ "iex> ExUnit.DocTestTest.Haiku.new(:this, :is, {:not, :a, :haiku})"
-
-    assert output =~
-             "test/ex_unit/doc_test_test.exs:#{starting_line + 82}: ExUnit.DocTestTest.Invalid (module)"
-
     assert output =~ """
-            15) doctest ExUnit.DocTestTest.Invalid.b/0 (15) (ExUnit.DocTestTest.ActuallyCompiled)
-                test/ex_unit/doc_test_test.exs:#{doctest_line}
-                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 33}:6: syntax error before: '*'
-                 #{line_placeholder(starting_line + 33)} |
-                 #{starting_line + 33} |  1 + * 1
-                 #{line_placeholder(starting_line + 33)} |      ^
-                doctest:
-                  iex> 1 + * 1
-                  1
-                stacktrace:
-                  test/ex_unit/doc_test_test.exs:#{starting_line + 33}: ExUnit.DocTestTest.Invalid (module)
-           """
-
-    assert output =~ """
-            16) doctest ExUnit.DocTestTest.Invalid.t/0 (16) (ExUnit.DocTestTest.ActuallyCompiled)
+            15) doctest ExUnit.DocTestTest.Invalid.t/0 (15) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 75}:6: syntax error before: '*'
                  #{line_placeholder(starting_line + 75)} |
@@ -735,6 +729,12 @@ defmodule ExUnit.DocTestTest do
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 75}: ExUnit.DocTestTest.Invalid (module)
            """
+
+    assert output =~ "16) doctest ExUnit.DocTestTest.Invalid.raising_inspect/0"
+    assert output =~ "iex> ExUnit.DocTestTest.Haiku.new(:this, :is, {:not, :a, :haiku})"
+
+    assert output =~
+             "test/ex_unit/doc_test_test.exs:#{starting_line + 82}: ExUnit.DocTestTest.Invalid (module)"
   end
 
   test "pattern matching assertions in doctests" do
@@ -890,34 +890,17 @@ defmodule ExUnit.DocTestTest do
   end
 
   test "fails on invalid module" do
-    message = ~r"module ExUnit\.DocTestTest\.Unknown is not loaded and could not be found"
-
-    assert_raise CompileError, message, fn ->
-      defmodule NeverCompiled do
-        import ExUnit.DocTest
-        doctest ExUnit.DocTestTest.Unknown
-      end
-    end
+    assert capture_io(:stderr, fn ->
+             assert_raise CompileError, fn ->
+               defmodule NeverCompiled do
+                 import ExUnit.DocTest
+                 doctest ExUnit.DocTestTest.Unknown
+               end
+             end
+           end) =~ "module ExUnit.DocTestTest.Unknown is not loaded and could not be found"
   end
 
-  test "fails when testing single function not found" do
-    message = """
-    test/ex_unit/doc_test_test\.exs: undefined or private function given to doctest:
-
-        ExUnit.DocTestTest.SomewhatGoodModuleWithOnly.three/0
-
-    """
-
-    assert_raise ExUnit.DocTest.Error, message, fn ->
-      defmodule NeverCompiled do
-        import ExUnit.DocTest
-
-        doctest ExUnit.DocTestTest.SomewhatGoodModuleWithOnly, only: [three: 0], import: true
-      end
-    end
-  end
-
-  test "fails when testing multiple functions not found" do
+  test "fails when testing functions are not found" do
     message = """
     test/ex_unit/doc_test_test\.exs: undefined or private functions given to doctest:
 
@@ -1022,6 +1005,16 @@ defmodule ExUnit.DocTestTest do
                 stacktrace:
                   test/fixtures/failing.md:4: ExUnit.DocTestTest.FileFailing (module)
            """
+  end
+
+  test "doctest direct invocation" do
+    defmodule Direct do
+      use ExUnit.Case, register: false
+      doctest ExUnit.DocTestTest.GoodModule, import: true
+    end
+
+    [head | _] = Direct.__ex_unit__().tests
+    assert apply(Direct, head.name, [%{}]) == {:ok, 2}
   end
 
   defp line_placeholder(line_number) do

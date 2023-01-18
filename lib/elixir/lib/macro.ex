@@ -163,7 +163,8 @@ defmodule Macro do
       the compiler or not. This means the compiler and tools like Dialyzer may not
       emit certain warnings.
     * `:if_undefined` - How to expand a variable that is undefined. Set it to
-      `:apply` if you want a variable to become a nullary call without warning.
+      `:apply` if you want a variable to become a nullary call without warning
+      or `:raise`
     * `:keep` - Used by `quote/2` with the option `location: :keep` to annotate
       the file and the line number of the quoted source.
     * `:line` - The line number of the AST node.
@@ -842,7 +843,11 @@ defmodule Macro do
   def struct!(module, env) when is_atom(module) do
     if module == env.module do
       Module.get_attribute(module, :__struct__)
-    end || :elixir_map.load_struct([line: env.line], module, [], [], env)
+    end ||
+      case :elixir_map.maybe_load_struct([line: env.line], module, [], [], env) do
+        {:ok, struct} -> struct
+        {:error, desc} -> raise ArgumentError, List.to_string(:elixir_map.format_error(desc))
+      end
   end
 
   @doc """
@@ -1763,7 +1768,7 @@ defmodule Macro do
       end
 
   """
-  @spec expand_once(t(), Macro.Env.t()) :: t()
+  @spec expand_once(input(), Macro.Env.t()) :: output()
   def expand_once(ast, env) do
     elem(do_expand_once(ast, env), 0)
   end
@@ -1795,13 +1800,15 @@ defmodule Macro do
   defp do_expand_once({:__DIR__, _, atom}, env) when is_atom(atom),
     do: {:filename.dirname(env.file), true}
 
-  defp do_expand_once({:__ENV__, _, atom}, env) when is_atom(atom),
-    do: {{:%{}, [], Map.to_list(env)}, true}
+  defp do_expand_once({:__ENV__, _, atom}, env) when is_atom(atom) do
+    env = update_in(env.versioned_vars, &maybe_escape_map/1)
+    {maybe_escape_map(env), true}
+  end
 
   defp do_expand_once({{:., _, [{:__ENV__, _, atom}, field]}, _, []} = original, env)
        when is_atom(atom) and is_atom(field) do
     if Map.has_key?(env, field) do
-      {Map.get(env, field), true}
+      {maybe_escape_map(Map.get(env, field)), true}
     else
       {original, false}
     end
@@ -1883,6 +1890,9 @@ defmodule Macro do
 
   # Anything else is just returned
   defp do_expand_once(other, _env), do: {other, false}
+
+  defp maybe_escape_map(map) when is_map(map), do: {:%{}, [], Map.to_list(map)}
+  defp maybe_escape_map(other), do: other
 
   @doc """
   Returns `true` if the given name and arity is a special form.
@@ -1967,9 +1977,34 @@ defmodule Macro do
   def quoted_literal?({:%{}, _, args}), do: quoted_literal?(args)
   def quoted_literal?({:{}, _, args}), do: quoted_literal?(args)
   def quoted_literal?({:__MODULE__, _, ctx}) when is_atom(ctx), do: true
+  def quoted_literal?({:<<>>, _, segments}), do: Enum.all?(segments, &quoted_bitstring_segment?/1)
   def quoted_literal?({left, right}), do: quoted_literal?(left) and quoted_literal?(right)
   def quoted_literal?(list) when is_list(list), do: :lists.all(&quoted_literal?/1, list)
   def quoted_literal?(term), do: is_atom(term) or is_number(term) or is_binary(term)
+
+  defp quoted_bitstring_segment?(term) when is_integer(term) or is_binary(term), do: true
+
+  defp quoted_bitstring_segment?({:"::", _, [term, modifier]})
+       when is_integer(term) or is_binary(term),
+       do: quoted_bitstring_modifier?(modifier)
+
+  defp quoted_bitstring_segment?(_other), do: false
+
+  defp quoted_bitstring_modifier?({:-, _, [left, right]}),
+    do: quoted_bitstring_modifier?(left) and quoted_bitstring_modifier?(right)
+
+  defp quoted_bitstring_modifier?({atom, _, [size]})
+       when atom in [:size, :unit] and is_integer(size),
+       do: true
+
+  defp quoted_bitstring_modifier?({:*, _, [left, right]})
+       when is_integer(left) and is_integer(right),
+       do: true
+
+  defp quoted_bitstring_modifier?({modifier, _, ctx}) when is_atom(ctx) or ctx == [],
+    do: :elixir_bitstring.validate_spec(modifier, nil) != :none
+
+  defp quoted_bitstring_modifier?(_other), do: false
 
   @doc false
   @deprecated "Use Macro.expand_literals/2 instead"
@@ -1995,7 +2030,7 @@ defmodule Macro do
   when they change.
   """
   @doc since: "1.14.1"
-  @spec expand_literals(t(), Macro.Env.t()) :: t()
+  @spec expand_literals(input(), Macro.Env.t()) :: output()
   def expand_literals(ast, env) do
     {ast, :ok} = expand_literals(ast, :ok, fn node, :ok -> {expand(node, env), :ok} end)
     ast
@@ -2075,7 +2110,7 @@ defmodule Macro do
   This function uses `expand_once/2` under the hood. Check
   it out for more information and examples.
   """
-  @spec expand(t(), Macro.Env.t()) :: t()
+  @spec expand(input(), Macro.Env.t()) :: output()
   def expand(ast, env) do
     expand_until({ast, true}, env)
   end

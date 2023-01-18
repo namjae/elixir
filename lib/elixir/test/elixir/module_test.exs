@@ -231,7 +231,7 @@ defmodule ModuleTest do
       @compile {:autoload, false}
     end
 
-    refute :code.is_loaded(NoAutoload)
+    refute Code.loaded?(NoAutoload)
   end
 
   ## Naming
@@ -330,6 +330,13 @@ defmodule ModuleTest do
     refute __ENV__.aliases[Elixir.ModuleTest]
     refute __ENV__.aliases[Elixir.NonAtomAlias]
     assert Elixir.ModuleTest.NonAtomAlias.hello() == :world
+  end
+
+  test "does not warn on captured underscored vars" do
+    _unused = 123
+
+    defmodule __MODULE__.NoVarWarning do
+    end
   end
 
   @compile {:no_warn_undefined, ModuleCreateSample}

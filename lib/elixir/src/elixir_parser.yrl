@@ -260,11 +260,11 @@ access_expr -> bracket_at_expr : '$1'.
 access_expr -> bracket_expr : '$1'.
 access_expr -> capture_int int : build_unary_op('$1', number_value('$2')).
 access_expr -> fn_eoe stab end_eoe : build_fn('$1', '$2', '$3').
-access_expr -> open_paren stab close_paren : build_stab('$1', '$2', '$3').
-access_expr -> open_paren stab ';' close_paren : build_stab('$1', '$2', '$4').
-access_expr -> open_paren ';' stab ';' close_paren : build_stab('$1', '$3', '$5').
-access_expr -> open_paren ';' stab close_paren : build_stab('$1', '$3', '$4').
-access_expr -> open_paren ';' close_paren : build_stab('$1', [], '$3').
+access_expr -> open_paren stab close_paren : build_paren_stab('$1', '$2', '$3').
+access_expr -> open_paren stab ';' close_paren : build_paren_stab('$1', '$2', '$4').
+access_expr -> open_paren ';' stab ';' close_paren : build_paren_stab('$1', '$3', '$5').
+access_expr -> open_paren ';' stab close_paren : build_paren_stab('$1', '$3', '$4').
+access_expr -> open_paren ';' close_paren : build_paren_stab('$1', [], '$3').
 access_expr -> empty_paren : warn_empty_paren('$1'), {'__block__', [], []}.
 access_expr -> int : handle_number(number_value('$1'), '$1', ?exprs('$1')).
 access_expr -> flt : handle_number(number_value('$1'), '$1', ?exprs('$1')).
@@ -405,7 +405,7 @@ at_op_eol -> at_op : '$1'.
 at_op_eol -> at_op eol : '$1'.
 
 match_op_eol -> match_op : '$1'.
-match_op_eol -> match_op eol : '$1'.
+match_op_eol -> match_op eol : next_is_eol('$1', '$2').
 
 dual_op_eol -> dual_op : '$1'.
 dual_op_eol -> dual_op eol : next_is_eol('$1', '$2').
@@ -784,8 +784,6 @@ build_map_update(Left, {Pipe, Struct, Map}, Right, Extra) ->
 
 %% Blocks
 
-build_block([{Op, _, [_]}]=Exprs) when ?rearrange_uop(Op) ->
-  {'__block__', [], Exprs};
 build_block([{unquote_splicing, _, [_]}]=Exprs) ->
   {'__block__', [], Exprs};
 build_block([Expr]) ->
@@ -1065,7 +1063,9 @@ build_stab(Stab) ->
     stab -> collect_stab(Stab, [], [])
   end.
 
-build_stab(Before, Stab, After) ->
+build_paren_stab(_Before, [{Op, _, [_]}]=Exprs, _After) when ?rearrange_uop(Op) ->
+  {'__block__', [], Exprs};
+build_paren_stab(Before, Stab, After) ->
   case build_stab(Stab) of
     {'__block__', Meta, Block} ->
       {'__block__', Meta ++ meta_from_token_with_closing(Before, After), Block};
@@ -1215,7 +1215,7 @@ warn_pipe(_Token, _) ->
   ok.
 
 %% TODO: Make this an error on v2.0
-warn_nested_no_parens_keyword(Key, Value) ->
+warn_nested_no_parens_keyword(Key, Value) when is_atom(Key) ->
   {line, Line} = lists:keyfind(line, 1, ?meta(Value)),
   warn(
     Line,
@@ -1232,7 +1232,11 @@ warn_nested_no_parens_keyword(Key, Value) ->
     "    function(arg, one: if(expr, do: :this, else: :that))\n"
     "    function(arg, one: nested_call(a, b, c))\n\n"
     "Ambiguity found at:"
-  ).
+  );
+
+% Key might not be an atom when using literal_encoder, we just skip the warning
+warn_nested_no_parens_keyword(_Key, _Value) ->
+  ok.
 
 warn_empty_paren({_, {Line, Column, _}}) ->
   warn(

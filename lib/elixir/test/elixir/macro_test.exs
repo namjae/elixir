@@ -172,10 +172,18 @@ defmodule MacroTest do
     end
 
     test "env" do
-      env = %{__ENV__ | line: 0}
-      assert Macro.expand_once(quote(do: __ENV__), env) == {:%{}, [], Map.to_list(env)}
+      env = %{__ENV__ | line: 0, lexical_tracker: self()}
+
+      expanded = Macro.expand_once(quote(do: __ENV__), env)
+      assert Macro.validate(expanded) == :ok
+      assert Code.eval_quoted(expanded) == {env, []}
+
       assert Macro.expand_once(quote(do: __ENV__.file), env) == env.file
       assert Macro.expand_once(quote(do: __ENV__.unknown), env) == quote(do: __ENV__.unknown)
+
+      expanded = Macro.expand_once(quote(do: __ENV__.versioned_vars), env)
+      assert Macro.validate(expanded) == :ok
+      assert Code.eval_quoted(expanded) == {env.versioned_vars, []}
     end
 
     defmacro local_macro(), do: raise("ignored")
@@ -420,6 +428,16 @@ defmodule MacroTest do
   describe "to_string/1" do
     test "converts quoted to string" do
       assert Macro.to_string(quote do: hello(world)) == "hello(world)"
+    end
+
+    test "large number literals" do
+      # with quote
+      assert Macro.to_string(quote do: 576_460_752_303_423_455) == "576_460_752_303_423_455"
+      assert Macro.to_string(quote do: -576_460_752_303_423_455) == "-576_460_752_303_423_455"
+
+      # without quote
+      assert Macro.to_string(576_460_752_303_423_455) == "576_460_752_303_423_455"
+      assert Macro.to_string(-576_460_752_303_423_455) == "-576_460_752_303_423_455"
     end
   end
 
@@ -1246,7 +1264,16 @@ defmodule MacroTest do
     assert Macro.quoted_literal?(quote(do: {"foo", 1}))
     assert Macro.quoted_literal?(quote(do: %{foo: "bar"}))
     assert Macro.quoted_literal?(quote(do: %URI{path: "/"}))
+    assert Macro.quoted_literal?(quote(do: <<>>))
+    assert Macro.quoted_literal?(quote(do: <<1, "foo", "bar"::utf16>>))
+    assert Macro.quoted_literal?(quote(do: <<1000::size(8)-unit(4)>>))
+    assert Macro.quoted_literal?(quote(do: <<1000::8*4>>))
+    assert Macro.quoted_literal?(quote(do: <<102::unsigned-big-integer-size(8)>>))
     refute Macro.quoted_literal?(quote(do: {"foo", var}))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::size(name_size)>>))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::binary-size(name_size)>>))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::custom_modifier()>>))
+    refute Macro.quoted_literal?(quote(do: <<102, rest::binary>>))
   end
 
   test "underscore/1" do

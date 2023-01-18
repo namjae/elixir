@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Xref do
 
   ## mix xref callers MODULE
 
-  Prints all callers of the given `MODULE`. Example:
+  Prints all callers of the given module. Example:
 
       $ mix xref callers MyMod
 
@@ -87,7 +87,7 @@ defmodule Mix.Tasks.Xref do
       to trim the graph to only the nodes that have the direct
       relationship given by label. There is also a special label
       called "compile-connected" that keeps only compile-time files
-      with at least one transitive dependency. See "Dependencies types"
+      with at least one transitive dependency. See "Dependency types"
       section below.
 
     * `--group` - provide comma-separated paths to consider as a group. Dependencies
@@ -215,7 +215,7 @@ defmodule Mix.Tasks.Xref do
       lib/a.ex
       └── lib/b.ex (compile)
 
-  ### Dependencies types
+  ### Dependency types
 
   Elixir tracks three types of dependencies between modules: compile,
   exports, and runtime. If a module has a compile time dependency on
@@ -225,7 +225,7 @@ defmodule Mix.Tasks.Xref do
   of functions). You can list all dependencies in a file by running
   `mix xref trace path/to/file.ex`.
 
-  Exports dependencies are compile time dependencies on the module API,
+  Export dependencies are compile time dependencies on the module API,
   namely structs and its public definitions. For example, if you import
   a module but only use its functions, it is an export dependency. If
   you use a struct, it is an export dependency too. Export dependencies

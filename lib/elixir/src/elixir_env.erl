@@ -1,7 +1,7 @@
 -module(elixir_env).
 -include("elixir.hrl").
 -export([
-  new/0, to_caller/1, with_vars/2, reset_vars/1, env_to_ex/1, env_to_ex/2,
+  new/0, to_caller/1, with_vars/2, reset_vars/1, env_to_ex/1, set_prematch_from_config/1,
   reset_unused_vars/1, check_unused_vars/2, merge_and_check_unused_vars/3,
   trace/2, format_error/1,
   reset_read/2, prepare_write/1, close_write/2
@@ -45,21 +45,16 @@ with_vars(Env, #{} = Vars) ->
 reset_vars(Env) ->
   Env#{versioned_vars := #{}}.
 
+set_prematch_from_config(#elixir_ex{} = S) ->
+  S#elixir_ex{prematch=elixir_config:get(on_undefined_variable)}.
+
 %% CONVERSIONS
 
-env_to_ex(Env) ->
-  env_to_ex(Env, false).
-
-env_to_ex(#{context := match, versioned_vars := Vars}, Prune) ->
+env_to_ex(#{context := match, versioned_vars := Vars}) ->
   Counter = map_size(Vars),
-  Unused = unused(Vars, Prune),
-  #elixir_ex{prematch={Vars, Counter}, vars={Vars, false}, unused={Unused, Counter}};
-env_to_ex(#{versioned_vars := Vars}, Prune) ->
-  Unused = unused(Vars, Prune),
-  #elixir_ex{vars={Vars, false}, unused={Unused, map_size(Vars)}}.
-
-unused(_Vars, false) -> #{};
-unused(Vars, true) -> maps:from_keys(maps:to_list(Vars), {0, false}).
+  #elixir_ex{prematch={Vars, Counter}, vars={Vars, false}, unused={#{}, Counter}};
+env_to_ex(#{versioned_vars := Vars}) ->
+  set_prematch_from_config(#elixir_ex{vars={Vars, false}, unused={#{}, map_size(Vars)}}).
 
 %% VAR HANDLING
 
@@ -90,7 +85,7 @@ reset_unused_vars(#elixir_ex{unused={_Unused, Version}} = S) ->
   S#elixir_ex{unused={#{}, Version}}.
 
 check_unused_vars(#elixir_ex{unused={Unused, _Version}}, E) ->
-  [elixir_errors:form_warn([{line, Line}], E, ?MODULE, {unused_var, Name, Overridden}) ||
+  [elixir_errors:file_warn([{line, Line}], E, ?MODULE, {unused_var, Name, Overridden}) ||
     {{{Name, nil}, _}, {Line, Overridden}} <- maps:to_list(Unused), is_unused_var(Name)],
   E.
 
@@ -115,7 +110,7 @@ merge_and_check_unused_vars(Current, Unused, ClauseUnused, E) ->
       case (Kind == nil) andalso is_unused_var(Name) of
         true ->
           Warn = {unused_var, Name, Overridden},
-          elixir_errors:form_warn([{line, Line}], E, ?MODULE, Warn);
+          elixir_errors:file_warn([{line, Line}], E, ?MODULE, Warn);
 
         false ->
           ok

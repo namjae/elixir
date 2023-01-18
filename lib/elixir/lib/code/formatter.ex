@@ -32,7 +32,7 @@ defmodule Code.Formatter do
   # Operators that are logical cannot be mixed without parens
   @required_parens_logical_binary_operands [:||, :|||, :or, :&&, :&&&, :and]
 
-  # Operators with next break fits. = and :: do not consider new lines though
+  # Operators with next break fits
   @next_break_fits_operators [:<-, :==, :!=, :=~, :===, :!==, :<, :>, :<=, :>=, :=, :"::"]
 
   # Operators that always require parens on operands when they are the parent
@@ -142,24 +142,6 @@ defmodule Code.Formatter do
   ]
 
   @do_end_keywords [:rescue, :catch, :else, :after]
-
-  @bitstring_modifiers [
-    :integer,
-    :float,
-    :bits,
-    :bitstring,
-    :binary,
-    :bytes,
-    :utf8,
-    :utf16,
-    :utf32,
-    :signed,
-    :unsigned,
-    :little,
-    :big,
-    :native,
-    :_
-  ]
 
   @doc """
   Converts the quoted expression into an algebra document.
@@ -1482,8 +1464,14 @@ defmodule Code.Formatter do
     quoted_to_algebra_with_parens_if_operator(spec_element, :parens_arg, state)
   end
 
-  defp bitstring_spec_normalize_empty_args(atom) when atom in @bitstring_modifiers, do: nil
-  defp bitstring_spec_normalize_empty_args(_atom), do: []
+  defp bitstring_spec_normalize_empty_args(:_), do: nil
+
+  defp bitstring_spec_normalize_empty_args(atom) do
+    case :elixir_bitstring.validate_spec(atom, nil) do
+      :none -> []
+      _ -> nil
+    end
+  end
 
   defp bitstring_wrap_parens(doc, i, last) when i == 0 or i == last do
     string = format_to_string(doc)
@@ -1623,6 +1611,10 @@ defmodule Code.Formatter do
 
     string = insert_underscores(int_part) <> "." <> decimal_part
     color(string, :number, inspect_otps)
+  end
+
+  defp insert_underscores("-" <> digits) do
+    "-" <> insert_underscores(digits)
   end
 
   defp insert_underscores(digits) do
@@ -1976,16 +1968,30 @@ defmodule Code.Formatter do
         Enum.split_while(comments, fn %{line: line} -> line <= min_line end)
       end)
 
-    {docs, comments?, state} =
-      each_quoted_to_algebra_with_comments(args, acc, max_line, state, false, fun)
+    {reverse_docs, comments?, state} =
+      if state.comments == [] do
+        each_quoted_to_algebra_without_comments(args, acc, state, fun)
+      else
+        each_quoted_to_algebra_with_comments(args, acc, max_line, state, false, fun)
+      end
 
+    docs = merge_algebra_with_comments(Enum.reverse(reverse_docs), @empty)
     {docs, comments?, update_in(state.comments, &(pre_comments ++ &1))}
+  end
+
+  defp each_quoted_to_algebra_without_comments([], acc, state, _fun) do
+    {acc, false, state}
+  end
+
+  defp each_quoted_to_algebra_without_comments([arg | args], acc, state, fun) do
+    {doc_triplet, state} = fun.(arg, args, state)
+    acc = [doc_triplet | acc]
+    each_quoted_to_algebra_without_comments(args, acc, state, fun)
   end
 
   defp each_quoted_to_algebra_with_comments([], acc, max_line, state, comments?, _fun) do
     {acc, comments, comments?} = extract_comments_before(max_line, acc, state.comments, comments?)
-    args_docs = merge_algebra_with_comments(Enum.reverse(acc), @empty)
-    {args_docs, comments?, %{state | comments: comments}}
+    {acc, comments?, %{state | comments: comments}}
   end
 
   defp each_quoted_to_algebra_with_comments([arg | args], acc, max_line, state, comments?, fun) do
@@ -2046,10 +2052,11 @@ defmodule Code.Formatter do
   defp adjust_trailing_newlines(doc_triplet, _, _), do: doc_triplet
 
   defp traverse_line({expr, meta, args}, {min, max}) do
+    # This is a hot path, so use :lists.keyfind/3 instead Keyword.fetch!/2
     acc =
-      case Keyword.fetch(meta, :line) do
-        {:ok, line} -> {min(line, min), max(line, max)}
-        :error -> {min, max}
+      case :lists.keyfind(:line, 1, meta) do
+        {:line, line} -> {min(line, min), max(line, max)}
+        false -> {min, max}
       end
 
     traverse_line(args, traverse_line(expr, acc))

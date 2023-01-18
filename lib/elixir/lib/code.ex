@@ -100,10 +100,15 @@ defmodule Code do
   following events are available to tracers:
 
     * `:start` - (since v1.11.0) invoked whenever the compiler starts to trace
-      a new lexical context, such as a new file. Keep in mind the compiler runs
-      in parallel, so multiple files may invoke `:start` and run at the same
-      time. The value of the `lexical_tracker` of the macro environment, albeit
-      opaque, can be used to uniquely identify the environment.
+      a new lexical context. A lexical context is started when compiling a new
+      file or when defining a module within a function. Note evaluated code
+      does not start a new lexical context (because they don't track unused
+      aliases, imports, etc) but defining a module inside evaluated code will.
+
+      Note this event may be emitted in parallel, where multiple files/modules
+      invoke `:start` and run at the same time. The value of the `lexical_tracker`
+      of the macro environment, albeit opaque, can be used to uniquely identify
+      the environment.
 
     * `:stop` - (since v1.11.0) invoked whenever the compiler stops tracing a
       new lexical context, such as a new file.
@@ -868,7 +873,10 @@ defmodule Code do
   ## Options
 
     * `:prune_binding` - (since v1.14.2) prune binding to keep only
-      variables read or written by the evaluated code
+      variables read or written by the evaluated code. Note that
+      variables used by modules are always pruned, even if later used
+      by the modules. You can submit to the `:on_module` tracer event
+      and access the variables used by the module from its environment.
 
   """
   @doc since: "1.14.0"
@@ -1362,7 +1370,7 @@ defmodule Code do
       already do such by default.
       Additionally, `mix test` disables it via the `:test_elixirc_options`
       project configuration option.
-      This option can also be overriden per module using the `@compile` directive.
+      This option can also be overridden per module using the `@compile` directive.
 
     * `:ignore_already_consolidated` - when `true`, does not warn when a protocol
       has already been consolidated and a new implementation is added. Defaults
@@ -1391,6 +1399,13 @@ defmodule Code do
       `string_to_quoted/2` (except by the options that change the AST itself).
       This can be used in combination with the tracer to retrieve localized
       information about events happening during compilation. Defaults to `[]`.
+
+    * `:on_undefined_variable` (since v1.15.0) - either `:warn` or `:raise`.
+      When `:warn`, undefined variables will emit a warning and be expanded as a
+      local call to the zero-arity function of the same name (`node` would be
+      expanded as `node()`).
+      When `:raise`, undefined variables will just trigger a compile error.
+      Defaults to `:raise`.
 
   It always returns `:ok`. Raises an error for invalid options.
 
@@ -1437,6 +1452,11 @@ defmodule Code do
     end
 
     :elixir_config.put(key, value)
+    :ok
+  end
+
+  def put_compiler_option(:on_undefined_variable, value) when value in [:raise, :warn] do
+    :elixir_config.put(:on_undefined_variable, value)
     :ok
   end
 
@@ -1665,6 +1685,27 @@ defmodule Code do
       other ->
         other
     end
+  end
+
+  @doc """
+  Returns `true` if the module is loaded.
+
+  This function doesn't attempt to load the module. For such behaviour,
+  `ensure_loaded?/1` can be used.
+
+  ## Examples
+
+      iex> Code.loaded?(Atom)
+      true
+
+      iex> Code.loaded?(NotYetLoaded)
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec loaded?(module) :: boolean
+  def loaded?(module) do
+    :erlang.module_loaded(module)
   end
 
   @doc """
